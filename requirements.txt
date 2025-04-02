@@ -1,0 +1,9 @@
+astropy==7.0.1
+joblib==1.4.2
+matplotlib==3.10.1
+numpy==2.2.4
+pandas==2.2.3
+ppxf==9.4.2
+scipy==1.15.2
+tqdm==4.67.1
+vorbin==3.1.5
