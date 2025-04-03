@@ -26,26 +26,26 @@ logger = logging.getLogger(__name__)
 
 # Galaxy data - updated to match available FITS files
 GALAXIES = [
-    {"name": "VCC0308", "redshift": 0.0055, "type": "dE", "has_emission": False},
+    {"name": "VCC0308", "redshift": 0.0055, "type": "dE", "has_emission": True},
     {"name": "VCC0667", "redshift": 0.0048, "type": "Sd", "has_emission": True},
     {"name": "VCC0688", "redshift": 0.0038, "type": "Sc", "has_emission": True},
-    {"name": "VCC0990", "redshift": 0.0058, "type": "dS0(N)", "has_emission": False},
-    {"name": "VCC1049", "redshift": 0.0021, "type": "dE(N)", "has_emission": False},
-    {"name": "VCC1146", "redshift": 0.0023, "type": "E", "has_emission": False},
+    {"name": "VCC0990", "redshift": 0.0058, "type": "dS0(N)", "has_emission": True},
+    {"name": "VCC1049", "redshift": 0.0021, "type": "dE(N)", "has_emission": True},
+    {"name": "VCC1146", "redshift": 0.0023, "type": "E", "has_emission": True},
     {"name": "VCC1193", "redshift": 0.0025, "type": "Sd", "has_emission": True},
-    {"name": "VCC1368", "redshift": 0.0035, "type": "SBa", "has_emission": False},
+    {"name": "VCC1368", "redshift": 0.0035, "type": "SBa", "has_emission": True},
     {"name": "VCC1410", "redshift": 0.0054, "type": "Sd", "has_emission": True},
-    {"name": "VCC1431", "redshift": 0.0050, "type": "dE", "has_emission": False},
+    {"name": "VCC1431", "redshift": 0.0050, "type": "dE", "has_emission": True},
     {"name": "VCC1486", "redshift": 0.0004, "type": "Sc", "has_emission": True},
-    {"name": "VCC1499", "redshift": 0.0055, "type": "dE", "has_emission": False},
+    {"name": "VCC1499", "redshift": 0.0055, "type": "dE", "has_emission": True},
     {"name": "VCC1549", "redshift": 0.0046, "type": "dE(N)", "has_emission": False},
     {"name": "VCC1588", "redshift": 0.0042, "type": "Sd", "has_emission": True},
-    {"name": "VCC1695", "redshift": 0.0058, "type": "dE", "has_emission": False},
+    {"name": "VCC1695", "redshift": 0.0058, "type": "dE", "has_emission": True},
     {"name": "VCC1811", "redshift": 0.0023, "type": "Sc", "has_emission": True},
-    {"name": "VCC1890", "redshift": 0.0040, "type": "dE", "has_emission": False},
-    {"name": "VCC1902", "redshift": 0.0038, "type": "SBa", "has_emission": False},
-    {"name": "VCC1910", "redshift": 0.0007, "type": "dE(N)", "has_emission": False},
-    {"name": "VCC1949", "redshift": 0.0058, "type": "dS0(N)", "has_emission": False},
+    {"name": "VCC1890", "redshift": 0.0040, "type": "dE", "has_emission": True},
+    {"name": "VCC1902", "redshift": 0.0038, "type": "SBa", "has_emission": True},
+    {"name": "VCC1910", "redshift": 0.0007, "type": "dE(N)", "has_emission": True},
+    {"name": "VCC1949", "redshift": 0.0058, "type": "dS0(N)", "has_emission": True},
 ]
 
 

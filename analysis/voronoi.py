@@ -156,12 +156,12 @@ def run_vnb_analysis(args, cube, p2p_results=None):
     )
 
     # Determine recommended SNR range with wider bounds as suggested
-    min_recommended_snr = min(10, median_snr * 5)
-    max_recommended_snr = max(max_pixel_snr * 0.5, median_snr * 100)
+    min_recommended_snr = min(2, median_snr * .5)
+    max_recommended_snr = max(max_pixel_snr * 1.2, median_snr * 10)
 
     # # Ensure min and max are in a reasonable range
-    # min_recommended_snr = max(2, min_recommended_snr)  # At least 2
-    # max_recommended_snr = max(15, max_recommended_snr)  # At least 15
+    min_recommended_snr = max(2, min_recommended_snr)  # At least 2
+    max_recommended_snr = max(50, max_recommended_snr)  # At least 15
 
     # If user-specified target_snr is outside the recommended range, adjust
     if target_snr < min_recommended_snr or target_snr > max_recommended_snr:
@@ -233,7 +233,7 @@ def run_vnb_analysis(args, cube, p2p_results=None):
         logger.info("Trying alternative binning approach")
 
         # Try a more comprehensive search through recommended SNR values
-        search_range = np.linspace(min_recommended_snr, max_recommended_snr, 10)
+        search_range = np.linspace(max_recommended_snr, min_recommended_snr, 20)
 
         for snr_value in search_range:
             # Skip the original value which already failed
