@@ -175,6 +175,32 @@ class MUSECube:
                         4000, 7000, self._raw_cube_data.shape[0]
                     )
 
+                # Extract WCS information for proper coordinate handling
+                try:
+                    from astropy import wcs
+                    self._wcs = wcs.WCS(self._fits_hdu_header)
+                    logger.info("Successfully loaded WCS information from FITS header")
+                    
+                    # Store the CD matrix for reference (rotation info)
+                    self._cd_matrix = None
+                    if all(key in self._fits_hdu_header for key in ['CD1_1', 'CD1_2', 'CD2_1', 'CD2_2']):
+                        self._cd_matrix = np.array([
+                            [self._fits_hdu_header['CD1_1'], self._fits_hdu_header['CD1_2']],
+                            [self._fits_hdu_header['CD2_1'], self._fits_hdu_header['CD2_2']]
+                        ])
+                        
+                        # Calculate the rotation angle from CD matrix
+                        # The rotation angle is defined as the angle between CD1_1 axis and RA axis
+                        rot_angle = np.degrees(np.arctan2(self._cd_matrix[0, 1], self._cd_matrix[0, 0]))
+                        self._ifu_rot_angle = rot_angle
+                        logger.info(f"IFU rotation angle: {rot_angle:.2f} degrees")
+                        
+                except Exception as e:
+                    logger.warning(f"Could not load WCS information: {e}")
+                    self._wcs = None
+                    self._cd_matrix = None
+                    self._ifu_rot_angle = 0.0
+
                 # Find and set goodwavelengthrange
                 good_wvl_range = None
 
@@ -259,6 +285,7 @@ class MUSECube:
                     "CD1_1" in self._fits_hdu_header
                     and "CD2_1" in self._fits_hdu_header
                 ):
+                    # Calculate pixel size accounting for rotation
                     self._pxl_size_x = (
                         abs(
                             np.sqrt(
@@ -284,6 +311,7 @@ class MUSECube:
                     warnings.warn(
                         "Pixel size information not found in header. Using default value of 0.2 arcsec."
                     )
+                    
         except Exception as e:
             logger.error(f"Error reading FITS file: {str(e)}")
             raise
@@ -3561,19 +3589,87 @@ class MUSECube:
                 save_path_bin = None
 
             # Plot bin fit
-            result = self.plot_bin_fit(
-                bin_idx,
-                wavelength_range=wavelength_range,
-                figsize=figsize,
-                save_path=save_path_bin,
-            )
+            from visualization import plot_bin_spectrum_fit
+            
+            try:
+                # Get gas best fit if available
+                bin_gas_bestfit = (
+                    self._bin_gas_bestfit if hasattr(self, "_bin_gas_bestfit") else None
+                )
 
-            if result is not None:
-                fig, axes = result
-                results.append(result)
+                # Get stellar best fit if directly available, or calculate as total - gas
+                if hasattr(self, "_bin_stellar_bestfit"):
+                    bin_stellar_bestfit = self._bin_stellar_bestfit
+                elif bin_gas_bestfit is not None:
+                    # Calculate stellar = total - gas
+                    bin_stellar_bestfit = self._bin_bestfit - bin_gas_bestfit
+                else:
+                    bin_stellar_bestfit = None
 
-                # Close the figure after adding to results to prevent memory leaks
-                plt.close(fig)
+                # Get wavelength range for plot
+                if wavelength_range is None:
+                    # Default to full wavelength range
+                    wavelength_range = (
+                        np.min(self._binned_wavelength),
+                        np.max(self._binned_wavelength),
+                    )
+
+                    # Try to find interesting spectral features to include
+                    if hasattr(self, "_emission_wavelength") and self._emission_wavelength:
+                        # Find emission line wavelengths
+                        emission_waves = list(self._emission_wavelength.values())
+                        if emission_waves:
+                            # Calculate range to include main emission lines
+                            em_min = min(emission_waves) - 100
+                            em_max = max(emission_waves) + 100
+
+                            # Use emission line range if it's within our data
+                            if (
+                                em_min > wavelength_range[0]
+                                and em_max < wavelength_range[1]
+                                and em_max - em_min > 200
+                            ):
+                                wavelength_range = (em_min, em_max)
+
+                # Create title with bin info
+                title = f"Bin {bin_idx}"
+
+                # Add velocity and dispersion if available
+                if hasattr(self, "_bin_velocity") and len(self._bin_velocity) > bin_idx:
+                    vel = self._bin_velocity[bin_idx]
+                    disp = self._bin_dispersion[bin_idx]
+                    if np.isfinite(vel) and np.isfinite(disp):
+                        title += f" - V={vel:.1f} km/s, σ={disp:.1f} km/s"
+
+                # If this is a radial bin, add radius information
+                if hasattr(self, "_bin_radii") and len(self._bin_radii) > bin_idx:
+                    radius = self._bin_radii[bin_idx]
+                    if np.isfinite(radius):
+                        title += f" - Radius={radius:.1f} arcsec"
+
+                # Call visualization function
+                fig, axes = plot_bin_spectrum_fit(
+                    self._binned_wavelength,
+                    bin_idx,
+                    self._binned_spectra,
+                    self._bin_bestfit,
+                    bin_gas_bestfit=bin_gas_bestfit,
+                    bin_stellar_bestfit=bin_stellar_bestfit,
+                    title=title,
+                    plot_range=wavelength_range,
+                    figsize=figsize,
+                )
+
+                # Save figure if path provided
+                if save_path_bin is not None:
+                    fig.savefig(save_path_bin, dpi=150, bbox_inches="tight")
+                    logger.info(f"Saved bin spectrum plot to {save_path_bin}")
+
+                results.append((fig, axes))
+                
+            except Exception as e:
+                logger.error(f"Error plotting bin fit: {e}")
+                continue
 
         return results
 
@@ -3981,14 +4077,14 @@ class MUSECube:
     def plot_bin_index_calculation(self, bin_idx, save_dir=None):
         """
         Plot the spectral index calculation visualization for a bin
-
+        
         Parameters
         ----------
         bin_idx : int
             Bin index to plot
-        save_dir : str, optional
+        save_dir : str or Path, optional
             Directory to save the plot
-
+            
         Returns
         -------
         tuple
@@ -3996,11 +4092,11 @@ class MUSECube:
         """
         if not hasattr(self, "_is_binned") or not self._is_binned:
             logger.warning("Not in binned mode, can't plot bin indices")
-            return None
+            return None, None
 
         if bin_idx < 0 or bin_idx >= self._n_bins:
             logger.warning(f"Invalid bin index: {bin_idx}")
-            return None
+            return None, None
 
         try:
             # Get bin data
@@ -4009,7 +4105,7 @@ class MUSECube:
             # Skip bins with insufficient data
             if not np.any(np.isfinite(bin_spectrum)):
                 logger.warning(f"No valid data for bin {bin_idx}")
-                return None
+                return None, None
 
             # Get stellar velocity
             stellar_velocity = 0.0
@@ -4018,7 +4114,7 @@ class MUSECube:
                 if not np.isfinite(stellar_velocity):
                     stellar_velocity = 0.0
 
-            # Get gas velocity if available - this is the key change
+            # Get gas velocity if available
             gas_velocity = None
             if hasattr(self, "_bin_emission_vel"):
                 # Try to find gas velocity from available emission lines
@@ -4027,22 +4123,19 @@ class MUSECube:
                         gas_velocity = vel_array[bin_idx]
                         break
 
-            # Get optimal template - CRITICAL: This must match how it's done in index calculation
+            # Get optimal template
             optimal_template = None
-            if (
-                hasattr(self, "_bin_optimal_tmpls")
-                and self._bin_optimal_tmpls is not None
-            ):
+            if hasattr(self, "_bin_optimal_tmpls") and self._bin_optimal_tmpls is not None:
                 optimal_template = self._bin_optimal_tmpls[:, bin_idx]
             else:
-                # Try to compute it from weights if available (from initial fitting)
+                # Try to compute it from weights if available
                 if hasattr(self, "_bin_weights") and len(self._bin_weights) > bin_idx:
                     weights = self._bin_weights[bin_idx]
                     if hasattr(self, "_sps") and hasattr(self._sps, "templates"):
                         # Basic optimal template from weights
                         optimal_template = np.dot(weights, self._sps.templates.T)
 
-                        # Add polynomial if available (from emission line fitting)
+                        # Add polynomial if available
                         if hasattr(self, "_bin_poly_coeffs"):
                             for b_idx, poly_coeff in self._bin_poly_coeffs:
                                 if b_idx == bin_idx:
@@ -4059,8 +4152,7 @@ class MUSECube:
                 fit_wave = self._sps.lam_temp
                 fit_flux = optimal_template
             else:
-                # Fallback to bestfit if optimal template not available
-                logger.info(f"Falling back to bestfit for bin {bin_idx}")
+                # Fallback to bestfit
                 fit_wave = self._binned_wavelength
                 fit_flux = (
                     self._bin_bestfit[:, bin_idx]
@@ -4077,20 +4169,6 @@ class MUSECube:
                     em_wave = self._binned_wavelength
                     em_flux = gas_data
 
-            # Print diagnostic info
-            logger.info(
-                f"Bin {bin_idx} - Stellar Velocity: {stellar_velocity:.2f} km/s"
-            )
-            if gas_velocity is not None:
-                logger.info(f"Bin {bin_idx} - Gas Velocity: {gas_velocity:.2f} km/s")
-            logger.info(
-                f"Bin {bin_idx} - Observed wavelength range: {np.min(self._binned_wavelength):.1f}-{np.max(self._binned_wavelength):.1f}"
-            )
-            if fit_wave is not None:
-                logger.info(
-                    f"Bin {bin_idx} - Template wavelength range: {np.min(fit_wave):.1f}-{np.max(fit_wave):.1f}"
-                )
-
             # Create a LineIndexCalculator
             from spectral_indices import LineIndexCalculator
 
@@ -4102,7 +4180,7 @@ class MUSECube:
                 em_wave=em_wave,
                 em_flux_list=em_flux,
                 velocity_correction=stellar_velocity,
-                gas_velocity_correction=gas_velocity,  # Pass gas velocity separately
+                gas_velocity_correction=gas_velocity,
                 continuum_mode="auto",
                 show_warnings=False,
             )
@@ -4113,25 +4191,23 @@ class MUSECube:
             # Create save path if requested
             save_path = None
             if save_dir:
-                from pathlib import Path
-
                 save_dir = Path(save_dir)
                 save_dir.mkdir(exist_ok=True, parents=True)
                 save_path = str(save_dir)
 
             # Plot with index calculations
-            fig, axes = calculator.plot_all_lines(
-                mode=mode, number=bin_idx, save_path=save_path, show_index=True
-            )
-
-            return fig, axes
+            try:
+                fig, axes = calculator.plot_all_lines(
+                    mode=mode, number=bin_idx, save_path=save_path, show_index=True
+                )
+                return fig, axes
+            except Exception as e:
+                logger.warning(f"Error in spectral index visualization: {e}")
+                return None, None
 
         except Exception as e:
             logger.error(f"Error plotting bin index calculation: {e}")
-            import traceback
-
-            logger.error(traceback.format_exc())
-            return None
+            return None, None
 
     def _post_process_emission_results(self):
         """
@@ -4172,6 +4248,53 @@ class MUSECube:
             if np.any(nan_mask):
                 # Replace NaNs with zeros
                 self._gas_bestfit_field[nan_mask] = 0.0
+
+    def calculate_physical_radius(self):
+        """
+        Calculate physically-motivated elliptical radius based on flux distribution
+        
+        Returns
+        -------
+        tuple
+            (R_galaxy, ellipse_params) - Same as output from calculate_galaxy_radius
+        """
+        from physical_radius import calculate_galaxy_radius
+        
+        try:
+            # Create a flux map that represents the galaxy
+            # Using median flux across wavelength
+            flux_2d = np.nanmedian(self._cube_data, axis=0)
+            
+            # Calculate the elliptical radius
+            R_galaxy, ellipse_params = calculate_galaxy_radius(
+                flux_2d, 
+                pixel_size_x=self._pxl_size_x,
+                pixel_size_y=self._pxl_size_y
+            )
+            
+            # Store the results for later use
+            self._physical_radius = R_galaxy
+            self._ellipse_params = ellipse_params
+            
+            logger.info(f"Calculated physical radius with PA={ellipse_params['PA_degrees']:.1f}°, "
+                        f"ε={ellipse_params['ellipticity']:.2f}")
+            
+            return R_galaxy, ellipse_params
+        
+        except Exception as e:
+            logger.error(f"Error calculating physical radius: {str(e)}")
+            # Return a fallback radius measure
+            r_galaxy = np.sqrt((np.indices(flux_2d.shape)[1] - flux_2d.shape[1]/2)**2 + 
+                            (np.indices(flux_2d.shape)[0] - flux_2d.shape[0]/2)**2) * self._pxl_size_x
+            ellipse_params = {
+                'center_x': flux_2d.shape[1]/2,
+                'center_y': flux_2d.shape[0]/2,
+                'PA_degrees': 0,
+                'ellipticity': 0,
+                'a': 1,
+                'b': 1
+            }
+            return r_galaxy, ellipse_params
 
     @property
     def redshift(self):

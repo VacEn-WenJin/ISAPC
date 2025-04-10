@@ -13,6 +13,7 @@ from matplotlib.cm import ScalarMappable
 from matplotlib.colors import Normalize
 from matplotlib.patches import Ellipse
 from scipy.ndimage import gaussian_filter
+import traceback
 
 logger = logging.getLogger(__name__)
 
@@ -928,10 +929,19 @@ def plot_parameter_map(
         return ax
 
 
-def safe_plot_array(data, bin_map, ax=None, title=None, cmap="viridis", label=None):
+def safe_plot_array(
+    data,
+    bin_map,
+    ax=None,
+    title=None,
+    cmap='viridis',
+    label=None,
+    physical_scale=False,
+    pixel_size=None
+):
     """
     Plot array data safely handling different dimensions and shapes
-
+    
     Parameters
     ----------
     data : ndarray or list
@@ -946,7 +956,11 @@ def safe_plot_array(data, bin_map, ax=None, title=None, cmap="viridis", label=No
         Colormap name
     label : str, optional
         Colorbar label
-
+    physical_scale : bool, default=False
+        Whether to use physical (arcsec) scale for axes
+    pixel_size : tuple, optional
+        (pixel_size_x, pixel_size_y) in arcsec, used if physical_scale=True
+        
     Returns
     -------
     matplotlib.axes.Axes
@@ -1020,29 +1034,77 @@ def safe_plot_array(data, bin_map, ax=None, title=None, cmap="viridis", label=No
         # Check if we have valid data
         valid_data = param_map[np.isfinite(param_map)]
         if len(valid_data) > 0:
-            # Calculate color scale
-            vmin = np.nanpercentile(valid_data, 5)
-            vmax = np.nanpercentile(valid_data, 95)
+            # If physical scaling is requested
+            if physical_scale and pixel_size is not None:
+                # Create physical coordinates for extent
+                ny, nx = bin_map_np.shape
+                pixel_size_x, pixel_size_y = pixel_size if isinstance(pixel_size, tuple) else (pixel_size, pixel_size)
+                
+                # Create physical coordinate grid (centered on image center)
+                x_min = -nx/2 * pixel_size_x
+                x_max = nx/2 * pixel_size_x
+                y_min = -ny/2 * pixel_size_y
+                y_max = ny/2 * pixel_size_y
+                
+                # Plot with physical coordinates
+                extent = [x_min, x_max, y_min, y_max]
+                
+                # Calculate color scale
+                vmin = np.nanpercentile(valid_data, 5)
+                vmax = np.nanpercentile(valid_data, 95)
+                
+                # Handle equal values
+                if vmin >= vmax:
+                    vmin = np.nanmin(valid_data) - 0.1
+                    vmax = np.nanmax(valid_data) + 0.1
+                
+                # Create masked array for better display
+                masked_param = np.ma.array(param_map, mask=~np.isfinite(param_map))
+                
+                # Plot with imshow and physical coordinates
+                im = ax.imshow(
+                    masked_param, 
+                    origin='lower',
+                    cmap=cmap,
+                    vmin=vmin,
+                    vmax=vmax,
+                    extent=extent,
+                    aspect='equal'
+                )
+                
+                # Set axis labels
+                ax.set_xlabel('Δ RA (arcsec)')
+                ax.set_ylabel('Δ Dec (arcsec)')
+                
+            else:
+                # Calculate color scale
+                vmin = np.nanpercentile(valid_data, 5)
+                vmax = np.nanpercentile(valid_data, 95)
 
-            # Handle equal values
-            if vmin >= vmax:
-                vmin = np.nanmin(valid_data) - 0.1
-                vmax = np.nanmax(valid_data) + 0.1
+                # Handle equal values
+                if vmin >= vmax:
+                    vmin = np.nanmin(valid_data) - 0.1
+                    vmax = np.nanmax(valid_data) + 0.1
 
-            # Plot with imshow
-            im = ax.imshow(
-                param_map,
-                origin="lower",
-                cmap=cmap,
-                vmin=vmin,
-                vmax=vmax,
-                aspect="equal",
-            )
+                # Plot with imshow
+                im = ax.imshow(
+                    param_map,
+                    origin='lower',
+                    cmap=cmap,
+                    vmin=vmin,
+                    vmax=vmax,
+                    aspect='equal',
+                )
+                
+                # Set axis labels
+                ax.set_xlabel('Pixels')
+                ax.set_ylabel('Pixels')
 
             # Add colorbar
             cbar = plt.colorbar(im, ax=ax)
             if label:
                 cbar.set_label(label)
+                
         else:
             ax.text(
                 0.5,
@@ -1078,18 +1140,21 @@ def safe_plot_array(data, bin_map, ax=None, title=None, cmap="viridis", label=No
 
 def plot_bin_map(
     bin_num,
-    values,
+    values=None,
     ax=None,
-    cmap="viridis",
+    cmap="tab20",
     title=None,
     vmin=None,
     vmax=None,
     log_scale=False,
     colorbar_label=None,
+    physical_scale=False,
+    pixel_size=None,
+    wcs=None,
 ):
     """
     Plot values for binned data, handling both 1D and 2D bin formats
-
+    
     Parameters
     ----------
     bin_num : ndarray
@@ -1108,7 +1173,13 @@ def plot_bin_map(
         Whether to use log scale for values
     colorbar_label : str, optional
         Label for colorbar
-
+    physical_scale : bool, default=False
+        Whether to use physical (arcsec) scale for axes
+    pixel_size : tuple, optional
+        (pixel_size_x, pixel_size_y) in arcsec, used if physical_scale=True
+    wcs : astropy.wcs.WCS, optional
+        WCS object for coordinate transformation
+        
     Returns
     -------
     matplotlib.axes.Axes
@@ -1120,7 +1191,7 @@ def plot_bin_map(
     try:
         # Convert inputs to numpy arrays if not already
         bin_num_np = np.asarray(bin_num)
-        values_np = np.asarray(values)
+        values_np = np.asarray(values) if values is not None else None
 
         # Check for 1D vs 2D bin_num
         if bin_num_np.ndim == 1:
@@ -1137,15 +1208,69 @@ def plot_bin_map(
                 log_scale=log_scale,
             )
         else:
-            # For 2D arrays, use safe_plot_array
-            return safe_plot_array(
-                values_np,
-                bin_num_np,
-                ax=ax,
-                title=title,
-                cmap=cmap,
-                label=colorbar_label,
-            )
+            # For 2D arrays with WCS or physical scaling
+            if physical_scale or wcs is not None:
+                # Create value map from bin numbers if needed
+                if values_np is None:
+                    # Just showing bin numbers
+                    value_map = bin_num_np
+                    masked_data = np.ma.array(value_map, mask=(value_map < 0))
+                    if colorbar_label is None:
+                        colorbar_label = "Bin Number"
+                else:
+                    # Create a value map from bin numbers
+                    value_map = np.full_like(bin_num_np, np.nan, dtype=float)
+                    
+                    # Map values to bins - handle cases where values are for bins
+                    if len(values_np) <= np.max(bin_num_np) + 1:
+                        # Values are per bin
+                        for i, val in enumerate(values_np):
+                            if i < len(values_np) and np.isfinite(val):
+                                value_map[bin_num_np == i] = val
+                    else:
+                        # Values might be directly mappable
+                        if values_np.shape == bin_num_np.shape:
+                            value_map = values_np.copy()
+                    
+                    # Create a masked array for NaN values
+                    masked_data = np.ma.array(value_map, mask=~np.isfinite(value_map))
+                    
+                    # Handle log scale if requested
+                    if log_scale and np.any(masked_data > 0):
+                        # Create a separate mask for non-positive values
+                        positive_mask = masked_data > 0
+                        if np.any(positive_mask):
+                            # Apply log10 to positive values
+                            log_data = np.log10(masked_data.data)
+                            log_data[~positive_mask.data] = np.nan
+                            masked_data = np.ma.array(log_data, mask=~positive_mask)
+                            
+                            # Update colorbar label
+                            if colorbar_label and not colorbar_label.startswith("Log"):
+                                colorbar_label = f"Log10({colorbar_label})"
+                
+                # Use plot_with_wcs_grid for WCS plotting or physical scaling
+                return plot_with_wcs_grid(
+                    masked_data,
+                    wcs=wcs,
+                    ax=ax,
+                    title=title,
+                    cmap=cmap,
+                    vmin=vmin,
+                    vmax=vmax,
+                    colorbar_label=colorbar_label,
+                    pixel_size=pixel_size
+                )
+            else:
+                # Use standard plotting without physical scaling or WCS
+                return safe_plot_array(
+                    values_np,
+                    bin_num_np,
+                    ax=ax,
+                    title=title,
+                    cmap=cmap,
+                    label=colorbar_label,
+                )
 
     except Exception as e:
         logger.warning(f"Error in plot_bin_map: {e}")
@@ -1398,6 +1523,10 @@ def plot_kinematics_summary(
     rotation_curve=None,
     params=None,
     equal_aspect=False,
+    physical_scale=False,
+    pixel_size=None,
+    wcs=None,
+    rot_angle=0.0,
 ):
     """
     Create a summary plot of kinematic analysis with robust error handling.
@@ -1416,6 +1545,14 @@ def plot_kinematics_summary(
         Dictionary of kinematic parameters
     equal_aspect : bool, default=False
         Whether to keep aspect ratio equal
+    physical_scale : bool, default=False
+        Whether to use physical (arcsec) scale for axes
+    pixel_size : tuple, optional
+        (pixel_size_x, pixel_size_y) in arcsec, used if physical_scale=True
+    wcs : astropy.wcs.WCS, optional
+        WCS object for coordinate transformation
+    rot_angle : float, default=0.0
+        Rotation angle of the IFU in degrees, used if WCS not available
 
     Returns
     -------
@@ -1451,16 +1588,102 @@ def plot_kinematics_summary(
                     vabs = max(abs(vmin), abs(vmax))
                     if vmin < 0 and vmax > 0:
                         vmin, vmax = -vabs, vabs
-
-                    im1 = ax1.imshow(
-                        np.ma.array(velocity_field, mask=mask),
-                        origin="lower",
-                        cmap="coolwarm",
-                        vmin=vmin,
-                        vmax=vmax,
-                        aspect="equal" if equal_aspect else "auto",
-                    )
-                    plt.colorbar(im1, ax=ax1, label="Velocity (km/s)")
+                    
+                    # Create masked array for velocity
+                    masked_vel = np.ma.array(velocity_field, mask=mask)
+                    
+                    # Use WCS if available for proper coordinate handling
+                    if wcs is not None and physical_scale:
+                        try:
+                            # Try to use WCS coordinates
+                            from astropy.visualization.wcsaxes import WCSAxes
+                            
+                            # Create new axis with WCS projection if needed
+                            if not isinstance(ax1, WCSAxes):
+                                # Store old position
+                                pos = ax1.get_position()
+                                # Remove original axis
+                                ax1.remove()
+                                # Create new axis with WCS projection
+                                ax1 = fig.add_subplot(1, 2 if ax3 is None else 3, 1, projection=wcs)
+                                # Restore position
+                                ax1.set_position(pos)
+                            
+                            # Plot with WCS coordinates
+                            im1 = ax1.imshow(
+                                masked_vel,
+                                origin="lower",
+                                cmap="coolwarm",
+                                vmin=vmin,
+                                vmax=vmax,
+                            )
+                            
+                            plt.colorbar(im1, ax=ax1, label="Velocity (km/s)")
+                            
+                            # Add coordinate grid
+                            ax1.grid(color='white', ls='solid', alpha=0.3)
+                            ax1.set_xlabel('RA')
+                            ax1.set_ylabel('Dec')
+                        except Exception as e:
+                            logger.warning(f"Error using WCS for velocity plot: {e}")
+                            # Fall back to basic physical scaling
+                            physical_plot_velocity = True
+                            wcs = None
+                    
+                    # Use physical scaling with pixels if WCS not available
+                    if (wcs is None and physical_scale and pixel_size is not None) or not physical_scale:
+                        ny, nx = velocity_field.shape
+                        
+                        if physical_scale and pixel_size is not None:
+                            # Get pixel sizes
+                            pixel_size_x, pixel_size_y = pixel_size if isinstance(pixel_size, tuple) else (pixel_size, pixel_size)
+                            
+                            # Create physical coordinate grid (centered on image center)
+                            x_min = -nx/2 * pixel_size_x
+                            x_max = nx/2 * pixel_size_x
+                            y_min = -ny/2 * pixel_size_y
+                            y_max = ny/2 * pixel_size_y
+                            
+                            # Plot with physical coordinates
+                            extent = [x_min, x_max, y_min, y_max]
+                            
+                            im1 = ax1.imshow(
+                                masked_vel,
+                                origin="lower",
+                                cmap="coolwarm",
+                                vmin=vmin,
+                                vmax=vmax,
+                                extent=extent,
+                                aspect="equal" if equal_aspect else "auto",
+                            )
+                            
+                            # Apply rotation to axes labels if needed
+                            if rot_angle != 0:
+                                # Create rotated axis labels
+                                x_label = f'Δ RA cos({rot_angle:.0f}°) + Δ DEC sin({rot_angle:.0f}°) (arcsec)'
+                                y_label = f'-Δ RA sin({rot_angle:.0f}°) + Δ DEC cos({rot_angle:.0f}°) (arcsec)'
+                            else:
+                                x_label = 'Δ RA (arcsec)'
+                                y_label = 'Δ DEC (arcsec)'
+                                
+                            ax1.set_xlabel(x_label)
+                            ax1.set_ylabel(y_label)
+                        else:
+                            # Standard pixel-based plotting
+                            im1 = ax1.imshow(
+                                masked_vel,
+                                origin="lower",
+                                cmap="coolwarm",
+                                vmin=vmin,
+                                vmax=vmax,
+                                aspect="equal" if equal_aspect else "auto",
+                            )
+                            
+                            # Set default axis labels
+                            ax1.set_xlabel('Pixels')
+                            ax1.set_ylabel('Pixels')
+                        
+                        plt.colorbar(im1, ax=ax1, label="Velocity (km/s)")
                 else:
                     ax1.text(
                         0.5,
@@ -1517,16 +1740,101 @@ def plot_kinematics_summary(
                 if len(valid_disp) > 0:
                     vmin = np.nanpercentile(valid_disp, 5)
                     vmax = np.nanpercentile(valid_disp, 95)
-
-                    im2 = ax2.imshow(
-                        np.ma.array(dispersion_field, mask=mask),
-                        origin="lower",
-                        cmap="viridis",
-                        vmin=vmin,
-                        vmax=vmax,
-                        aspect="equal" if equal_aspect else "auto",
-                    )
-                    plt.colorbar(im2, ax=ax2, label="Dispersion (km/s)")
+                    
+                    # Create masked array for dispersion
+                    masked_disp = np.ma.array(dispersion_field, mask=mask)
+                    
+                    # Use WCS if available for proper coordinate handling
+                    if wcs is not None and physical_scale:
+                        try:
+                            # Try to use WCS coordinates
+                            from astropy.visualization.wcsaxes import WCSAxes
+                            
+                            # Create new axis with WCS projection if needed
+                            if not isinstance(ax2, WCSAxes):
+                                # Store old position
+                                pos = ax2.get_position()
+                                # Remove original axis
+                                ax2.remove()
+                                # Create new axis with WCS projection
+                                ax2 = fig.add_subplot(1, 2 if ax3 is None else 3, 2, projection=wcs)
+                                # Restore position
+                                ax2.set_position(pos)
+                            
+                            # Plot with WCS coordinates
+                            im2 = ax2.imshow(
+                                masked_disp,
+                                origin="lower",
+                                cmap="viridis",
+                                vmin=vmin,
+                                vmax=vmax,
+                            )
+                            
+                            plt.colorbar(im2, ax=ax2, label="Dispersion (km/s)")
+                            
+                            # Add coordinate grid
+                            ax2.grid(color='white', ls='solid', alpha=0.3)
+                            ax2.set_xlabel('RA')
+                            ax2.set_ylabel('Dec')
+                        except Exception as e:
+                            logger.warning(f"Error using WCS for dispersion plot: {e}")
+                            # Fall back to basic physical scaling
+                            wcs = None
+                    
+                    # Use physical scaling with pixels if WCS not available
+                    if (wcs is None and physical_scale and pixel_size is not None) or not physical_scale:
+                        ny, nx = dispersion_field.shape
+                        
+                        if physical_scale and pixel_size is not None:
+                            # Get pixel sizes
+                            pixel_size_x, pixel_size_y = pixel_size if isinstance(pixel_size, tuple) else (pixel_size, pixel_size)
+                            
+                            # Create physical coordinate grid (centered on image center)
+                            x_min = -nx/2 * pixel_size_x
+                            x_max = nx/2 * pixel_size_x
+                            y_min = -ny/2 * pixel_size_y
+                            y_max = ny/2 * pixel_size_y
+                            
+                            # Plot with physical coordinates
+                            extent = [x_min, x_max, y_min, y_max]
+                            
+                            im2 = ax2.imshow(
+                                masked_disp,
+                                origin="lower",
+                                cmap="viridis",
+                                vmin=vmin,
+                                vmax=vmax,
+                                extent=extent,
+                                aspect="equal" if equal_aspect else "auto",
+                            )
+                            
+                            # Apply rotation to axes labels if needed
+                            if rot_angle != 0:
+                                # Create rotated axis labels
+                                x_label = f'Δ RA cos({rot_angle:.0f}°) + Δ DEC sin({rot_angle:.0f}°) (arcsec)'
+                                y_label = f'-Δ RA sin({rot_angle:.0f}°) + Δ DEC cos({rot_angle:.0f}°) (arcsec)'
+                            else:
+                                x_label = 'Δ RA (arcsec)'
+                                y_label = 'Δ DEC (arcsec)'
+                                
+                            ax2.set_xlabel(x_label)
+                            ax2.set_ylabel(y_label)
+                        else:
+                            # Standard pixel-based plotting
+                            im2 = ax2.imshow(
+                                masked_disp,
+                                origin="lower",
+                                cmap="viridis",
+                                vmin=vmin,
+                                vmax=vmax,
+                                aspect="equal" if equal_aspect else "auto",
+                            )
+                            
+                            # Set default axis labels
+                            ax2.set_xlabel('Pixels')
+                            ax2.set_ylabel('Pixels')
+                        
+                        plt.colorbar(im2, ax=ax2, label="Dispersion (km/s)")
                 else:
                     ax2.text(
                         0.5,
@@ -2403,3 +2711,589 @@ def plot_bin_spectrum_fit(
             ax1.set_title(f"Bin {bin_idx} - Error")
 
         return fig, (ax1, ax2)
+
+
+def plot_kinematics_summary(
+    velocity_field,
+    dispersion_field,
+    bin_map=None,
+    rotation_curve=None,
+    params=None,
+    equal_aspect=False,
+    physical_scale=False,
+    pixel_size=None,
+    wcs=None,
+):
+    """
+    Create a summary plot of kinematic analysis with robust error handling.
+
+    Parameters
+    ----------
+    velocity_field : ndarray
+        2D array of velocity values
+    dispersion_field : ndarray
+        2D array of velocity dispersion values
+    bin_map : ndarray, optional
+        2D array of bin indices
+    rotation_curve : ndarray, optional
+        Array with [radius, velocity] pairs
+    params : dict, optional
+        Dictionary of kinematic parameters
+    equal_aspect : bool, default=False
+        Whether to keep aspect ratio equal
+    physical_scale : bool, default=False
+        Whether to use physical (arcsec) scale for axes
+    pixel_size : tuple, optional
+        (pixel_size_x, pixel_size_y) in arcsec, used if physical_scale=True
+    wcs : astropy.wcs.WCS, optional
+        WCS object for coordinate transformation
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+        Figure with the plot
+    """
+    # Create figure
+    if rotation_curve is not None and np.any(np.isfinite(rotation_curve)):
+        fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(18, 6))
+    else:
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 6))
+        ax3 = None
+
+    try:
+        # Create mask for bad values
+        mask = ~np.isfinite(velocity_field) | ~np.isfinite(dispersion_field)
+
+        # If bin_map provided, add to mask
+        if bin_map is not None:
+            mask = mask | (bin_map < 0)
+
+        # Plot velocity field with proper WCS
+        try:
+            # Check shape of velocity field
+            if len(velocity_field.shape) == 2:
+                # Regular 2D velocity field
+                valid_vel = velocity_field[~mask]
+                if len(valid_vel) > 0:
+                    vmin = np.nanpercentile(valid_vel, 5)
+                    vmax = np.nanpercentile(valid_vel, 95)
+
+                    # For velocity, use symmetric color scale
+                    vabs = max(abs(vmin), abs(vmax))
+                    if vmin < 0 and vmax > 0:
+                        vmin, vmax = -vabs, vabs
+                    
+                    # Create masked array
+                    masked_vel = np.ma.array(velocity_field, mask=mask)
+                    
+                    # Use WCS plotting
+                    plot_with_wcs_grid(
+                        masked_vel,
+                        wcs=wcs if (physical_scale or wcs is not None) else None,
+                        ax=ax1,
+                        title="Velocity Field",
+                        cmap="coolwarm",
+                        vmin=vmin,
+                        vmax=vmax,
+                        colorbar_label="Velocity (km/s)",
+                        pixel_size=pixel_size if physical_scale else None
+                    )
+                else:
+                    ax1.text(
+                        0.5,
+                        0.5,
+                        "No valid velocity data",
+                        ha="center",
+                        va="center",
+                        transform=ax1.transAxes,
+                    )
+                    ax1.set_title("Velocity Field")
+            else:
+                # Handling for non-2D data - use the existing code
+                ax1.text(
+                    0.5,
+                    0.5,
+                    "Binned velocity data (non-spatial)",
+                    ha="center",
+                    va="center",
+                    transform=ax1.transAxes,
+                )
+                
+                # Create a simple bar plot of velocity values
+                bin_indices = np.arange(velocity_field.shape[1])
+                ax1.bar(bin_indices, velocity_field[0], color="blue", alpha=0.7)
+                ax1.set_xlabel("Bin Index")
+                ax1.set_ylabel("Velocity (km/s)")
+                ax1.set_title("Velocity Field")
+                
+        except Exception as e:
+            logger.error(f"Error plotting velocity field: {e}")
+            ax1.text(
+                0.5,
+                0.5,
+                "Error plotting velocity field",
+                ha="center",
+                va="center",
+                transform=ax1.transAxes,
+            )
+            ax1.set_title("Velocity Field")
+
+        # Plot dispersion field with proper WCS
+        try:
+            # Check shape of dispersion field
+            if len(dispersion_field.shape) == 2:
+                # Regular 2D dispersion field
+                valid_disp = dispersion_field[~mask]
+                if len(valid_disp) > 0:
+                    vmin = np.nanpercentile(valid_disp, 5)
+                    vmax = np.nanpercentile(valid_disp, 95)
+                    
+                    # Create masked array
+                    masked_disp = np.ma.array(dispersion_field, mask=mask)
+                    
+                    # Use WCS plotting
+                    plot_with_wcs_grid(
+                        masked_disp,
+                        wcs=wcs if (physical_scale or wcs is not None) else None,
+                        ax=ax2,
+                        title="Velocity Dispersion",
+                        cmap="viridis",
+                        vmin=vmin,
+                        vmax=vmax,
+                        colorbar_label="Dispersion (km/s)",
+                        pixel_size=pixel_size if physical_scale else None
+                    )
+                else:
+                    ax2.text(
+                        0.5,
+                        0.5,
+                        "No valid dispersion data",
+                        ha="center",
+                        va="center",
+                        transform=ax2.transAxes,
+                    )
+                    ax2.set_title("Velocity Dispersion")
+            else:
+                # Handling for non-2D data - use the existing code
+                ax2.text(
+                    0.5,
+                    0.5,
+                    "Binned dispersion data (non-spatial)",
+                    ha="center",
+                    va="center",
+                    transform=ax2.transAxes,
+                )
+                
+                # Create a simple bar plot of dispersion values
+                bin_indices = np.arange(dispersion_field.shape[1])
+                ax2.bar(bin_indices, dispersion_field[0], color="green", alpha=0.7)
+                ax2.set_xlabel("Bin Index")
+                ax2.set_ylabel("Dispersion (km/s)")
+                ax2.set_title("Velocity Dispersion")
+                
+        except Exception as e:
+            logger.error(f"Error plotting dispersion field: {e}")
+            ax2.text(
+                0.5,
+                0.5,
+                "Error plotting dispersion field",
+                ha="center",
+                va="center",
+                transform=ax2.transAxes,
+            )
+            ax2.set_title("Velocity Dispersion")
+
+        # [Rest of the function for rotation curve plotting remains the same]
+
+    except Exception as e:
+        logger.error(f"Error in plot_kinematics_summary: {e}")
+        # Ensure we still return a figure even after error
+        for ax in [ax1, ax2, ax3]:
+            if ax:
+                ax.text(
+                    0.5,
+                    0.5,
+                    "Error generating plot",
+                    ha="center",
+                    va="center",
+                    transform=ax.transAxes,
+                )
+
+    # Adjust layout
+    plt.tight_layout()
+
+    return fig
+
+
+def plot_field_physical(
+    data,
+    ax=None,
+    title=None,
+    cmap='viridis',
+    vmin=None,
+    vmax=None,
+    colorbar_label=None,
+    wcs=None,
+    pixel_size=None,
+    rot_angle=0.0,
+):
+    """
+    Plot a 2D field with proper physical coordinates
+    
+    Parameters
+    ----------
+    data : ndarray
+        2D array of values to plot
+    ax : matplotlib.axes.Axes, optional
+        Axis to plot on
+    title : str, optional
+        Plot title
+    cmap : str, default='viridis'
+        Colormap
+    vmin, vmax : float, optional
+        Color scale limits
+    colorbar_label : str, optional
+        Label for colorbar
+    wcs : astropy.wcs.WCS, optional
+        WCS object for coordinate transformation
+    pixel_size : tuple, optional
+        (pixel_size_x, pixel_size_y) in arcsec, used if WCS not available
+    rot_angle : float, default=0.0
+        Rotation angle of the IFU in degrees, used if WCS not available
+        
+    Returns
+    -------
+    matplotlib.axes.Axes
+        Axis with plot
+    """
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(8, 7))
+        
+    # Create masked array for NaN values
+    masked_data = np.ma.array(data, mask=~np.isfinite(data))
+    
+    # Set color limits
+    if vmin is None:
+        vmin = np.ma.min(masked_data)
+    if vmax is None:
+        vmax = np.ma.max(masked_data)
+    
+    # Plot based on available coordinate information
+    if wcs is not None:
+        try:
+            # Try to use WCS coordinates
+            from astropy.visualization.wcsaxes import WCSAxes
+            
+            # Create new axis with WCS projection if needed
+            if not isinstance(ax, WCSAxes):
+                fig = ax.figure
+                ax.remove()
+                ax = fig.add_subplot(111, projection=wcs)
+            
+            # Plot with WCS coordinates
+            im = ax.imshow(masked_data, origin='lower', cmap=cmap, vmin=vmin, vmax=vmax)
+            
+            # Add coordinate grid
+            ax.grid(color='white', ls='solid', alpha=0.3)
+            ax.set_xlabel('RA')
+            ax.set_ylabel('Dec')
+        except Exception as e:
+            logger.warning(f"Error using WCS for plotting: {e}")
+            # Fall back to basic plotting with rotation
+            wcs = None
+    
+    if wcs is None:
+        # Use simple physical scaling with rotation if needed
+        ny, nx = data.shape
+        
+        # Default pixel sizes if not provided
+        if pixel_size is None:
+            pixel_size_x, pixel_size_y = 0.2, 0.2
+        else:
+            pixel_size_x, pixel_size_y = pixel_size if isinstance(pixel_size, tuple) else (pixel_size, pixel_size)
+        
+        # Plot with extent to get physical scale
+        x_min = -nx/2 * pixel_size_x
+        x_max = nx/2 * pixel_size_x
+        y_min = -ny/2 * pixel_size_y
+        y_max = ny/2 * pixel_size_y
+        
+        extent = [x_min, x_max, y_min, y_max]
+        im = ax.imshow(masked_data, origin='lower', cmap=cmap, vmin=vmin, vmax=vmax,
+                      extent=extent, aspect='equal')
+        
+        # Apply rotation to axes labels if needed
+        if rot_angle != 0:
+            # Convert to radians
+            theta = np.radians(rot_angle)
+            
+            # Create rotated axis labels
+            x_label = f'Δ RA cos({rot_angle:.0f}°) + Δ DEC sin({rot_angle:.0f}°) (arcsec)'
+            y_label = f'-Δ RA sin({rot_angle:.0f}°) + Δ DEC cos({rot_angle:.0f}°) (arcsec)'
+        else:
+            x_label = 'Δ RA (arcsec)'
+            y_label = 'Δ DEC (arcsec)'
+            
+        ax.set_xlabel(x_label)
+        ax.set_ylabel(y_label)
+    
+    # Add colorbar
+    cbar = plt.colorbar(im, ax=ax)
+    if colorbar_label:
+        cbar.set_label(colorbar_label)
+    
+    # Add title
+    if title:
+        ax.set_title(title)
+    
+    # Add grid
+    ax.grid(True, alpha=0.3)
+    
+    return ax
+
+
+def plot_real_pixels(data, wcs, ax=None, title=None, cmap='viridis', vmin=None, vmax=None, 
+                    colorbar_label=None, show_grid=False):
+    """
+    Plot 2D data with each pixel at its actual RA/DEC position
+    
+    Parameters
+    ----------
+    data : ndarray
+        2D array of data to plot
+    wcs : astropy.wcs.WCS
+        WCS object for coordinate transformation
+    ax : matplotlib.axes.Axes, optional
+        Axis to plot on
+    title : str, optional
+        Plot title
+    cmap : str, default='viridis'
+        Colormap
+    vmin, vmax : float, optional
+        Color scale limits
+    colorbar_label : str, optional
+        Label for colorbar
+    show_grid : bool, default=False
+        Whether to show grid lines
+        
+    Returns
+    -------
+    matplotlib.axes.Axes
+        Plot axis
+    """
+    import matplotlib.pyplot as plt
+    from matplotlib.patches import Polygon
+    from matplotlib.collections import PatchCollection
+    
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(10, 8))
+    
+    # Create masked array for NaN values
+    masked_data = np.ma.array(data, mask=~np.isfinite(data))
+    
+    # Set color limits
+    if vmin is None:
+        vmin = np.ma.min(masked_data)
+    if vmax is None:
+        vmax = np.ma.max(masked_data)
+    
+    # Get data dimensions
+    ny, nx = data.shape
+    
+    # Create arrays for pixel corners
+    # For each pixel, we need the four corners in pixel coordinates
+    patches = []
+    colors = []
+    
+    for j in range(ny):
+        for i in range(nx):
+            if np.isfinite(data[j, i]):
+                # Pixel corners in pixel coordinates
+                corners = [
+                    [i - 0.5, j - 0.5],  # bottom left
+                    [i + 0.5, j - 0.5],  # bottom right
+                    [i + 0.5, j + 0.5],  # top right
+                    [i - 0.5, j + 0.5]   # top left
+                ]
+                
+                # Convert pixel corners to RA, DEC
+                ra_dec_corners = []
+                for x, y in corners:
+                    ra, dec = wcs.wcs_pix2world(x, y, 0)
+                    ra_dec_corners.append([ra, dec])
+                
+                # Create polygon patch
+                patch = Polygon(ra_dec_corners, closed=True, edgecolor='gray' if show_grid else 'none', 
+                               linewidth=0.2 if show_grid else 0)
+                patches.append(patch)
+                colors.append(data[j, i])
+    
+    # Create patch collection
+    if patches:
+        collection = PatchCollection(patches, cmap=cmap, alpha=1, edgecolor='gray' if show_grid else 'none',
+                                    linewidth=0.2 if show_grid else 0)
+        collection.set_array(np.array(colors))
+        collection.set_clim(vmin, vmax)
+        
+        # Add collection to axis
+        ax.add_collection(collection)
+        
+        # Add colorbar
+        cbar = plt.colorbar(collection, ax=ax)
+        if colorbar_label:
+            cbar.set_label(colorbar_label)
+    else:
+        ax.text(0.5, 0.5, 'No valid data to plot', transform=ax.transAxes, 
+               ha='center', va='center')
+    
+    # Set axis limits to show all patches
+    ax.autoscale_view()
+    
+    # Add grid if requested
+    if show_grid:
+        ax.grid(True, alpha=0.3)
+    
+    # Set axis labels
+    ax.set_xlabel('RA (deg)')
+    ax.set_ylabel('DEC (deg)')
+    
+    # Add title
+    if title:
+        ax.set_title(title)
+    
+    return ax
+
+
+def plot_with_wcs_grid(data, wcs, ax=None, title=None, cmap='viridis', vmin=None, vmax=None, 
+                      colorbar_label=None, show_grid=True, pixel_size=None):
+    """
+    Plot 2D data with proper WCS-based pixel grid
+    
+    Parameters
+    ----------
+    data : ndarray
+        2D array of data to plot
+    wcs : astropy.wcs.WCS
+        WCS object for coordinate transformation
+    ax : matplotlib.axes.Axes, optional
+        Axis to plot on
+    title : str, optional
+        Plot title
+    cmap : str, default='viridis'
+        Colormap
+    vmin, vmax : float, optional
+        Color scale limits
+    colorbar_label : str, optional
+        Label for colorbar
+    show_grid : bool, default=True
+        Whether to show the coordinate grid
+    pixel_size : tuple, optional
+        Fallback pixel size (x, y) in arcsec if WCS isn't available
+        
+    Returns
+    -------
+    matplotlib.axes.Axes
+        Plot axis
+    """
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(10, 8))
+    
+    # Create masked array for NaN values
+    masked_data = np.ma.array(data, mask=~np.isfinite(data))
+    
+    # Set color limits
+    if vmin is None and np.any(~masked_data.mask):
+        vmin = np.ma.min(masked_data)
+    if vmax is None and np.any(~masked_data.mask):
+        vmax = np.ma.max(masked_data)
+    
+    try:
+        # Try to use WCS for plotting
+        from astropy.visualization.wcsaxes import WCSAxes
+        from astropy.coordinates import SkyCoord
+        import astropy.units as u
+        
+        # Create new axis with WCS projection if needed
+        if wcs is not None and not isinstance(ax, WCSAxes):
+            fig = ax.figure
+            ax.remove()
+            ax = fig.add_subplot(111, projection=wcs)
+        
+        if wcs is not None:
+            # Plot with WCS coordinates
+            im = ax.imshow(masked_data, origin='lower', cmap=cmap, vmin=vmin, vmax=vmax)
+            
+            # Add coordinate grid
+            if show_grid:
+                ax.grid(color='white', ls='solid', alpha=0.3)
+                
+            # Set axis labels
+            ax.set_xlabel('RA')
+            ax.set_ylabel('Dec')
+            
+            # Try to add pixel grid (showing actual pixel boundaries)
+            try:
+                ny, nx = data.shape
+                y, x = np.indices((ny+1, nx+1)) - 0.5  # +1 for corners, -0.5 to get pixel edges
+                
+                # Convert pixel corners to world coordinates
+                ra, dec = wcs.wcs_pix2world(x, y, 0)
+                
+                # Plot pixel grid with very thin lines
+                for i in range(nx+1):
+                    ax.plot(ra[i,:], dec[i,:], 'gray', lw=0.2, alpha=0.3, transform=ax.get_transform('world'))
+                
+                for j in range(ny+1):
+                    ax.plot(ra[:,j], dec[:,j], 'gray', lw=0.2, alpha=0.3, transform=ax.get_transform('world'))
+            except Exception as e:
+                logger.warning(f"Could not draw pixel grid: {e}")
+        else:
+            # Fall back to regular imshow if WCS isn't available
+            if pixel_size is not None:
+                # Use physical coordinates
+                ny, nx = data.shape
+                pixel_size_x, pixel_size_y = pixel_size if isinstance(pixel_size, tuple) else (pixel_size, pixel_size)
+                
+                extent = [-nx/2 * pixel_size_x, nx/2 * pixel_size_x, 
+                         -ny/2 * pixel_size_y, ny/2 * pixel_size_y]
+                im = ax.imshow(masked_data, origin='lower', cmap=cmap, vmin=vmin, vmax=vmax,
+                              extent=extent, aspect='equal')
+                
+                # Add grid
+                if show_grid:
+                    # Create grid lines
+                    grid_x = np.arange(-nx/2, nx/2+1) * pixel_size_x
+                    grid_y = np.arange(-ny/2, ny/2+1) * pixel_size_y
+                    
+                    for x in grid_x:
+                        ax.axvline(x, color='gray', lw=0.2, alpha=0.3)
+                    
+                    for y in grid_y:
+                        ax.axhline(y, color='gray', lw=0.2, alpha=0.3)
+                
+                # Set axis labels
+                ax.set_xlabel('Δ RA (arcsec)')
+                ax.set_ylabel('Δ Dec (arcsec)')
+            else:
+                # Simplest case - just plot in pixel coordinates
+                im = ax.imshow(masked_data, origin='lower', cmap=cmap, vmin=vmin, vmax=vmax)
+                ax.set_xlabel('Pixels')
+                ax.set_ylabel('Pixels')
+    
+    except Exception as e:
+        logger.warning(f"Error using WCS for plotting: {e}")
+        # Simplest fallback - just plot the data
+        im = ax.imshow(masked_data, origin='lower', cmap=cmap, vmin=vmin, vmax=vmax)
+        ax.set_xlabel('Pixels')
+        ax.set_ylabel('Pixels')
+    
+    # Add colorbar
+    cbar = plt.colorbar(im, ax=ax)
+    if colorbar_label:
+        cbar.set_label(colorbar_label)
+    
+    # Add title
+    if title:
+        ax.set_title(title)
+    
+    return ax

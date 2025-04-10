@@ -159,6 +159,16 @@ def setup_parser():
         nargs="+",
         help="List of emission lines to fit (overrides config defaults)",
     )
+    parser.add_argument(
+        "--physical-radius",
+        action="store_true",
+        help="Use flux-based elliptical physical radius for radial binning"
+    )
+    parser.add_argument(
+        "--high-snr-mode",
+        action="store_true",
+        help="Use high-SNR optimization for Voronoi binning"
+    )
 
     return parser
 

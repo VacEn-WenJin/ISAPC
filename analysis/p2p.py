@@ -688,7 +688,8 @@ def create_p2p_plots(
         dispersion_field = np.full_like(velocity_field, np.nan)
         logger.warning("Dispersion field not found, using NaN array")
 
-    # Create kinematics plot
+    # Create kinematics plot with physical scaling and WCS
+    # In create_p2p_plots:
     try:
         fig = visualization.plot_kinematics_summary(
             velocity_field=velocity_field,
@@ -696,6 +697,9 @@ def create_p2p_plots(
             rotation_curve=rotation_result["rotation_curve"],
             params=rotation_result,
             equal_aspect=args.equal_aspect,
+            physical_scale=True,
+            pixel_size=(cube._pxl_size_x, cube._pxl_size_y),
+            wcs=cube._wcs if hasattr(cube, "_wcs") else None
         )
 
         # Use filename to distinguish gas/stellar kinematics
@@ -734,6 +738,10 @@ def create_p2p_plots(
                     velocity_field=gas_vel,
                     dispersion_field=gas_disp,
                     equal_aspect=args.equal_aspect,
+                    physical_scale=True,
+                    pixel_size=(cube._pxl_size_x, cube._pxl_size_y),
+                    wcs=cube._wcs if hasattr(cube, "_wcs") else None,
+                    rot_angle=cube._ifu_rot_angle if hasattr(cube, "_ifu_rot_angle") else 0.0,
                 )
             else:
                 # If function doesn't exist, create basic plot
@@ -746,30 +754,132 @@ def create_p2p_plots(
                 if len(valid_vel) > 0:
                     vmin_vel = np.percentile(valid_vel, 5)
                     vmax_vel = np.percentile(valid_vel, 95)
-                    im0 = axes[0].imshow(
-                        gas_vel,
-                        origin="lower",
-                        cmap="RdBu_r",
-                        vmin=vmin_vel,
-                        vmax=vmax_vel,
-                        aspect="auto" if not args.equal_aspect else 1,
-                    )
-                    plt.colorbar(im0, ax=axes[0], label="Velocity [km/s]")
-                    axes[0].set_title("Gas Velocity Field")
+                    
+                    # Use physical scaling
+                    if hasattr(cube, "_wcs") and cube._wcs is not None:
+                        # Plot with WCS coordinates
+                        from astropy.visualization.wcsaxes import WCSAxes
+                        
+                        # Create new axis with WCS projection
+                        fig = plt.figure(figsize=(12, 5))
+                        ax0 = fig.add_subplot(121, projection=cube._wcs)
+                        ax1 = fig.add_subplot(122, projection=cube._wcs)
+                        
+                        im0 = ax0.imshow(
+                            gas_vel,
+                            origin="lower",
+                            cmap="RdBu_r",
+                            vmin=vmin_vel,
+                            vmax=vmax_vel,
+                        )
+                        plt.colorbar(im0, ax=ax0, label="Velocity [km/s]")
+                        ax0.set_title("Gas Velocity Field")
+                        ax0.grid(color='white', ls='solid', alpha=0.3)
+                        ax0.set_xlabel('RA')
+                        ax0.set_ylabel('Dec')
+                        
+                        # Dispersion
+                        if len(valid_disp) > 0:
+                            vmin_disp = np.percentile(valid_disp, 5)
+                            vmax_disp = np.percentile(valid_disp, 95)
+                            im1 = ax1.imshow(
+                                gas_disp,
+                                origin="lower",
+                                cmap="viridis",
+                                vmin=vmin_disp,
+                                vmax=vmax_disp,
+                            )
+                            plt.colorbar(im1, ax=ax1, label="Dispersion [km/s]")
+                            ax1.set_title("Gas Velocity Dispersion")
+                            ax1.grid(color='white', ls='solid', alpha=0.3)
+                            ax1.set_xlabel('RA')
+                            ax1.set_ylabel('Dec')
+                    else:
+                        # Physical scaling with pixel size
+                        ny, nx = gas_vel.shape
+                        pixel_size_x = cube._pxl_size_x
+                        pixel_size_y = cube._pxl_size_y
+                        rot_angle = cube._ifu_rot_angle if hasattr(cube, "_ifu_rot_angle") else 0.0
+                        
+                        # Create physical coordinate grid
+                        x_min = -nx/2 * pixel_size_x
+                        x_max = nx/2 * pixel_size_x
+                        y_min = -ny/2 * pixel_size_y
+                        y_max = ny/2 * pixel_size_y
+                        
+                        # Plot with physical coordinates
+                        extent = [x_min, x_max, y_min, y_max]
+                        
+                        im0 = axes[0].imshow(
+                            gas_vel,
+                            origin="lower",
+                            cmap="RdBu_r",
+                            vmin=vmin_vel,
+                            vmax=vmax_vel,
+                            extent=extent,
+                            aspect="auto" if not args.equal_aspect else 1,
+                        )
+                        plt.colorbar(im0, ax=axes[0], label="Velocity [km/s]")
+                        axes[0].set_title("Gas Velocity Field")
+                        
+                        # Apply rotation to axes labels if needed
+                        if rot_angle != 0:
+                            # Create rotated axis labels
+                            x_label = f'Δ RA cos({rot_angle:.0f}°) + Δ DEC sin({rot_angle:.0f}°) (arcsec)'
+                            y_label = f'-Δ RA sin({rot_angle:.0f}°) + Δ DEC cos({rot_angle:.0f}°) (arcsec)'
+                        else:
+                            x_label = 'Δ RA (arcsec)'
+                            y_label = 'Δ DEC (arcsec)'
+                            
+                        axes[0].set_xlabel(x_label)
+                        axes[0].set_ylabel(y_label)
 
                 if len(valid_disp) > 0:
                     vmin_disp = np.percentile(valid_disp, 5)
                     vmax_disp = np.percentile(valid_disp, 95)
-                    im1 = axes[1].imshow(
-                        gas_disp,
-                        origin="lower",
-                        cmap="viridis",
-                        vmin=vmin_disp,
-                        vmax=vmax_disp,
-                        aspect="auto" if not args.equal_aspect else 1,
-                    )
-                    plt.colorbar(im1, ax=axes[1], label="Dispersion [km/s]")
-                    axes[1].set_title("Gas Velocity Dispersion")
+                    
+                    if hasattr(cube, "_wcs") and cube._wcs is not None:
+                        # Already handled in WCS case above
+                        pass
+                    else:
+                        # Physical scaling with pixel size
+                        ny, nx = gas_disp.shape
+                        pixel_size_x = cube._pxl_size_x
+                        pixel_size_y = cube._pxl_size_y
+                        rot_angle = cube._ifu_rot_angle if hasattr(cube, "_ifu_rot_angle") else 0.0
+                        
+                        # Create physical coordinate grid
+                        x_min = -nx/2 * pixel_size_x
+                        x_max = nx/2 * pixel_size_x
+                        y_min = -ny/2 * pixel_size_y
+                        y_max = ny/2 * pixel_size_y
+                        
+                        # Plot with physical coordinates
+                        extent = [x_min, x_max, y_min, y_max]
+                        
+                        im1 = axes[1].imshow(
+                            gas_disp,
+                            origin="lower",
+                            cmap="viridis",
+                            vmin=vmin_disp,
+                            vmax=vmax_disp,
+                            extent=extent,
+                            aspect="auto" if not args.equal_aspect else 1,
+                        )
+                        plt.colorbar(im1, ax=axes[1], label="Dispersion [km/s]")
+                        axes[1].set_title("Gas Velocity Dispersion")
+                        
+                        # Apply rotation to axes labels if needed
+                        if rot_angle != 0:
+                            # Create rotated axis labels
+                            x_label = f'Δ RA cos({rot_angle:.0f}°) + Δ DEC sin({rot_angle:.0f}°) (arcsec)'
+                            y_label = f'-Δ RA sin({rot_angle:.0f}°) + Δ DEC cos({rot_angle:.0f}°) (arcsec)'
+                        else:
+                            x_label = 'Δ RA (arcsec)'
+                            y_label = 'Δ DEC (arcsec)'
+                            
+                        axes[1].set_xlabel(x_label)
+                        axes[1].set_ylabel(y_label)
 
                 fig.suptitle("Gas Kinematics")
                 plt.tight_layout()
@@ -820,34 +930,14 @@ def create_p2p_plots(
         central_idx = central_y * n_x + central_x
 
         try:
-            # cube.plot_spectral_indices(mode="P2P",
-            #     spaxel_position=[central_x,central_y],
-            #     save_path=str(plots_dir))
             # Get spectral data
             observed_spectrum = cube._spectra[:, central_idx]
             model_spectrum = bestfit_field[:, central_y, central_x]
 
             # Get gas model if available
             gas_model = None
-            # if emission_result is not None:
-            # Try to get gas model from emission_result
-            # if 'gas_bestfit' in emission_result:
-            #     gas_bestfit = emission_result['gas_bestfit']
-            #     if gas_bestfit is not None:
-            #         # Check shape of gas_bestfit and extract appropriately
-            #         if len(gas_bestfit.shape) == 3:  # [n_wave, n_y, n_x]
-            #             gas_model = gas_bestfit[:, central_y, central_x]
-            #         elif len(gas_bestfit.shape) == 2:  # [n_wave, n_spectra]
-            #             gas_model = gas_bestfit[:, central_idx]
-
-            # # If not in emission_result, try cube
-            # if gas_model is None and hasattr(cube, '_gas_bestfit_field') and cube._gas_bestfit_field is not None:
             gas_model = cube._gas_bestfit_field[:, central_y, central_x]
 
-            # Verify it's a valid array
-            # if gas_model is not None and not np.any(np.isfinite(gas_model)):
-            #     gas_model = None
-            #     logger.warning("Gas model contains only non-finite values. Using None instead.")
             # Create LIC with error handling
             calculator = spectral_indices.LineIndexCalculator(
                 wave=cube._lambda_gal,
@@ -946,7 +1036,7 @@ def create_stellar_pop_plots(stellar_pop_params, plots_dir, galaxy_name):
                 plt.close("all")
 
 
-def create_emission_maps(emission_params, plots_dir, galaxy_name):
+def create_emission_maps(emission_params, plots_dir, galaxy_name, pixel_size=None):
     """
     Create emission line flux and ratio maps
 
@@ -958,6 +1048,8 @@ def create_emission_maps(emission_params, plots_dir, galaxy_name):
         Path to save plots
     galaxy_name : str
         Galaxy name for file naming
+    pixel_size : tuple, optional
+        (pixel_size_x, pixel_size_y) in arcseconds for physical scaling
     """
     # Find all emission line flux maps
     flux_maps = {}
@@ -991,13 +1083,39 @@ def create_emission_maps(emission_params, plots_dir, galaxy_name):
                     vmin=np.percentile(valid_values, 1),
                     vmax=np.percentile(valid_values, 99),
                 )
-
-                im = ax.imshow(
-                    flux_map, origin="lower", cmap="inferno", norm=norm, aspect="auto"
-                )
+                
+                # Apply physical scaling if pixel size provided
+                if pixel_size is not None:
+                    pixel_size_x, pixel_size_y = pixel_size
+                    ny, nx = flux_map.shape
+                    x_min = -nx/2 * pixel_size_x
+                    x_max = nx/2 * pixel_size_x
+                    y_min = -ny/2 * pixel_size_y
+                    y_max = ny/2 * pixel_size_y
+                    extent = [x_min, x_max, y_min, y_max]
+                    
+                    im = ax.imshow(
+                        flux_map, 
+                        origin="lower", 
+                        cmap="inferno", 
+                        norm=norm, 
+                        aspect="equal",
+                        extent=extent
+                    )
+                    ax.set_xlabel('Δ RA (arcsec)')
+                    ax.set_ylabel('Δ Dec (arcsec)')
+                else:
+                    im = ax.imshow(
+                        flux_map, origin="lower", cmap="inferno", norm=norm, aspect="auto"
+                    )
+                    ax.set_xlabel('Pixels')
+                    ax.set_ylabel('Pixels')
+                    
                 plt.colorbar(im, ax=ax, label="Flux")
                 ax.set_title(f"{line_name} Flux")
+                ax.grid(True, alpha=0.3)
 
+                fig.tight_layout()
                 fig.savefig(
                     plots_dir / f"{galaxy_name}_P2P_{line_name}_flux.png", dpi=150
                 )
@@ -1022,13 +1140,39 @@ def create_emission_maps(emission_params, plots_dir, galaxy_name):
                     vmin=np.percentile(valid_values, 1),
                     vmax=np.percentile(valid_values, 99),
                 )
+                
+                # Apply physical scaling if pixel size provided
+                if pixel_size is not None:
+                    pixel_size_x, pixel_size_y = pixel_size
+                    ny, nx = oiii_hb.shape
+                    x_min = -nx/2 * pixel_size_x
+                    x_max = nx/2 * pixel_size_x
+                    y_min = -ny/2 * pixel_size_y
+                    y_max = ny/2 * pixel_size_y
+                    extent = [x_min, x_max, y_min, y_max]
+                    
+                    im = ax.imshow(
+                        oiii_hb, 
+                        origin="lower", 
+                        cmap="viridis", 
+                        norm=norm, 
+                        aspect="equal",
+                        extent=extent
+                    )
+                    ax.set_xlabel('Δ RA (arcsec)')
+                    ax.set_ylabel('Δ Dec (arcsec)')
+                else:
+                    im = ax.imshow(
+                        oiii_hb, origin="lower", cmap="viridis", norm=norm, aspect="auto"
+                    )
+                    ax.set_xlabel('Pixels')
+                    ax.set_ylabel('Pixels')
 
-                im = ax.imshow(
-                    oiii_hb, origin="lower", cmap="viridis", norm=norm, aspect="auto"
-                )
                 plt.colorbar(im, ax=ax, label="Ratio")
                 ax.set_title("OIII/Hβ Ratio")
+                ax.grid(True, alpha=0.3)
 
+                fig.tight_layout()
                 fig.savefig(plots_dir / f"{galaxy_name}_P2P_OIII_Hb_ratio.png", dpi=150)
                 plt.close(fig)
         except Exception as e:
@@ -1152,7 +1296,7 @@ def create_sample_fits(
             plt.close("all")
 
 
-def create_indices_plots(cube, indices_result, plots_dir, galaxy_name):
+def create_indices_plots(cube, indices_result, plots_dir, galaxy_name, pixel_size=None):
     """
     Create spectral indices plots
 
@@ -1166,6 +1310,8 @@ def create_indices_plots(cube, indices_result, plots_dir, galaxy_name):
         Path to save plots
     galaxy_name : str
         Galaxy name for file naming
+    pixel_size : tuple, optional
+        (pixel_size_x, pixel_size_y) in arcseconds for physical scaling
     """
     # Plot maps for each index
     for name, index_map in indices_result.items():
@@ -1180,18 +1326,46 @@ def create_indices_plots(cube, indices_result, plots_dir, galaxy_name):
 
                 # Check for valid range
                 if vmin < vmax and np.isfinite(vmin) and np.isfinite(vmax):
-                    # Plot index map
-                    im = ax.imshow(
-                        index_map,
-                        origin="lower",
-                        cmap="viridis",
-                        vmin=vmin,
-                        vmax=vmax,
-                        aspect="auto",
-                    )
+                    # Apply physical scaling if pixel size provided
+                    if pixel_size is not None:
+                        pixel_size_x, pixel_size_y = pixel_size
+                        ny, nx = index_map.shape
+                        x_min = -nx/2 * pixel_size_x
+                        x_max = nx/2 * pixel_size_x
+                        y_min = -ny/2 * pixel_size_y
+                        y_max = ny/2 * pixel_size_y
+                        extent = [x_min, x_max, y_min, y_max]
+                        
+                        # Plot index map
+                        im = ax.imshow(
+                            index_map,
+                            origin="lower",
+                            cmap="viridis",
+                            vmin=vmin,
+                            vmax=vmax,
+                            aspect="equal",
+                            extent=extent
+                        )
+                        ax.set_xlabel('Δ RA (arcsec)')
+                        ax.set_ylabel('Δ Dec (arcsec)')
+                    else:
+                        # Plot index map
+                        im = ax.imshow(
+                            index_map,
+                            origin="lower",
+                            cmap="viridis",
+                            vmin=vmin,
+                            vmax=vmax,
+                            aspect="auto",
+                        )
+                        ax.set_xlabel('Pixels')
+                        ax.set_ylabel('Pixels')
+                        
                     plt.colorbar(im, ax=ax)
                     ax.set_title(f"{name} Index")
+                    ax.grid(True, alpha=0.3)
 
+                    fig.tight_layout()
                     fig.savefig(
                         plots_dir / f"{galaxy_name}_P2P_{name}_index.png", dpi=150
                     )

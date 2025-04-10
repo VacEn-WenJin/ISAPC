@@ -328,19 +328,54 @@ def run_rdb_analysis(args, cube, p2p_results=None):
     log_spacing = args.log_spacing if hasattr(args, "log_spacing") else False
 
     try:
-        # Calculate radial bins - now with center_x and center_y possibly None
-        # The calculate_radial_bins function will use IFU center if they are None
-        indices = np.arange(len(x))
-        bin_num, bin_edges, bin_radii = calculate_radial_bins(
-            x,
-            y,
-            center_x=center_x,
-            center_y=center_y,
-            pa=pa,
-            ellipticity=ellipticity,
-            n_rings=n_rings,
-            log_spacing=log_spacing,
-        )
+        # Calculate physical radius if requested (new flag)
+        use_physical_radius = args.physical_radius if hasattr(args, 'physical_radius') else False
+        
+        if use_physical_radius:
+            logger.info("Using flux-based elliptical radius for binning")
+            # Calculate or retrieve physical radius
+            if not hasattr(cube, '_physical_radius'):
+                R_galaxy, ellipse_params = cube.calculate_physical_radius()
+            else:
+                R_galaxy = cube._physical_radius
+                ellipse_params = cube._ellipse_params
+                
+            # Update parameters from ellipse calculation
+            center_x = ellipse_params['center_x']
+            center_y = ellipse_params['center_y']
+            pa = ellipse_params['PA_degrees']
+            ellipticity = ellipse_params['ellipticity']
+            
+            logger.info(f"Using ellipse parameters: center=({center_x:.1f},{center_y:.1f}), "
+                        f"PA={pa:.1f}°, ε={ellipticity:.2f}")
+            
+            # Flatten the radius map to match the coordinate vectors
+            r_galaxy_flat = R_galaxy.flatten()
+            
+            # Calculate radial bins with the physical radius
+            indices = np.arange(len(x))
+            bin_num, bin_edges, bin_radii = calculate_radial_bins(
+                x, y, 
+                center_x=center_x, 
+                center_y=center_y,
+                pa=pa,
+                ellipticity=ellipticity,
+                n_rings=n_rings,
+                log_spacing=log_spacing,
+                r_galaxy=r_galaxy_flat  # Pass the pre-calculated radius
+            )
+        else:
+            # Original code for geometrical radius
+            indices = np.arange(len(x))
+            bin_num, bin_edges, bin_radii = calculate_radial_bins(
+                x, y,
+                center_x=center_x,
+                center_y=center_y,
+                pa=pa,
+                ellipticity=ellipticity, 
+                n_rings=n_rings,
+                log_spacing=log_spacing
+            )
 
         # Get valid mask (pixels that are assigned to bins)
         valid_mask = bin_num >= 0
@@ -526,6 +561,40 @@ def run_rdb_analysis(args, cube, p2p_results=None):
             if hasattr(cube, "_bin_indices_result") and cube._bin_indices_result:
                 rdb_results["bin_indices"] = cube._bin_indices_result
 
+        # Add this after the spectral indices calculation in run_rdb_analysis
+        # (place it right after the indices_result = cube.calculate_spectral_indices(...) line)
+
+        # Add this to run_rdb_analysis right after indices_result calculation
+        if indices_result is not None and not args.no_plots:
+            # Create directory for spectral indices plots
+            indices_plots_dir = plots_dir / "spectral_indices"
+            indices_plots_dir.mkdir(exist_ok=True, parents=True)
+            
+            try:
+                # Plot spectral index visualizations for representative bins
+                # First, select a few bins to plot
+                n_bins_to_plot = min(5, len(bin_radii))
+                
+                # Try to get evenly spaced bins across the radial range
+                bin_indices = list(range(0, len(bin_radii), max(1, len(bin_radii) // n_bins_to_plot)))[:n_bins_to_plot]
+                
+                # For each selected bin, create diagnostic plots
+                for bin_idx in bin_indices:
+                    # Only plot if the bin has valid data
+                    if np.isfinite(bin_radii[bin_idx]):
+                        try:
+                            # Use the MUSECube method for consistency
+                            if hasattr(cube, "plot_bin_index_calculation"):
+                                fig, axes = cube.plot_bin_index_calculation(
+                                    bin_idx, save_dir=indices_plots_dir
+                                )
+                                if fig is not None:
+                                    plt.close(fig)
+                        except Exception as e:
+                            logger.warning(f"Error plotting spectral indices for bin {bin_idx}: {e}")
+            
+            except Exception as e:
+                logger.warning(f"Error creating spectral index visualizations: {e}")
         # Create spectral index visualizations if requested
         if indices_result is not None and not args.no_plots:
             try:
@@ -625,19 +694,8 @@ def run_rdb_analysis(args, cube, p2p_results=None):
 def create_rdb_plots(cube, rdb_results, galaxy_name, plots_dir, args):
     """
     Create visualization plots for RDB analysis
-
-    Parameters
-    ----------
-    cube : MUSECube
-        MUSE cube with binned data
-    rdb_results : dict
-        RDB analysis results
-    galaxy_name : str
-        Galaxy name
-    plots_dir : Path
-        Directory to save plots
-    args : argparse.Namespace
-        Command line arguments
+    
+    [existing docstring]
     """
     try:
         import visualization
@@ -700,7 +758,7 @@ def create_rdb_plots(cube, rdb_results, galaxy_name, plots_dir, args):
                 )
                 plt.close(fig)
 
-                # Also create 2D maps of the radial bins
+                # Also create 2D maps of the radial bins with physical scaling
                 bin_num = rdb_results["binning"]["bin_num"]
 
                 # Ensure bin_num is properly formatted for plotting
@@ -714,7 +772,7 @@ def create_rdb_plots(cube, rdb_results, galaxy_name, plots_dir, args):
                         # Keep as is if reshape fails
                         bin_num_2d = bin_num
 
-                # Velocity map
+                # Velocity map with physical scaling
                 fig, ax = plt.subplots(figsize=(10, 8))
                 visualization.plot_bin_map(
                     bin_num_2d,
@@ -725,13 +783,15 @@ def create_rdb_plots(cube, rdb_results, galaxy_name, plots_dir, args):
                     vmin=np.percentile(velocity[np.isfinite(velocity)], 5),
                     vmax=np.percentile(velocity[np.isfinite(velocity)], 95),
                     colorbar_label="Velocity (km/s)",
+                    physical_scale=True,
+                    pixel_size=(cube._pxl_size_x, cube._pxl_size_y),
                 )
                 visualization.standardize_figure_saving(
                     fig, plots_dir / f"{galaxy_name}_RDB_velocity_map.png"
                 )
                 plt.close(fig)
 
-                # Dispersion map
+                # Dispersion map with physical scaling
                 fig, ax = plt.subplots(figsize=(10, 8))
                 visualization.plot_bin_map(
                     bin_num_2d,
@@ -742,16 +802,19 @@ def create_rdb_plots(cube, rdb_results, galaxy_name, plots_dir, args):
                     vmin=np.percentile(dispersion[np.isfinite(dispersion)], 5),
                     vmax=np.percentile(dispersion[np.isfinite(dispersion)], 95),
                     colorbar_label="Dispersion (km/s)",
+                    physical_scale=True,
+                    pixel_size=(cube._pxl_size_x, cube._pxl_size_y),
                 )
                 visualization.standardize_figure_saving(
                     fig, plots_dir / f"{galaxy_name}_RDB_dispersion_map.png"
                 )
                 plt.close(fig)
+                
             except Exception as e:
                 logger.warning(f"Error creating kinematics plots: {e}")
                 plt.close("all")
 
-        # Create emission line plots if available
+        # Create emission line plots if available - with physical scaling
         if "emission" in rdb_results and "bin_distances" in rdb_results.get(
             "distance", {}
         ):
@@ -814,12 +877,11 @@ def create_rdb_plots(cube, rdb_results, galaxy_name, plots_dir, args):
 
                             visualization.standardize_figure_saving(
                                 fig,
-                                plots_dir
-                                / f"{galaxy_name}_RDB_{line_name}_profile.png",
+                                plots_dir / f"{galaxy_name}_RDB_{line_name}_profile.png",
                             )
                             plt.close(fig)
 
-                            # Create 2D map if bin_num is properly formatted
+                            # Create 2D map with physical scaling
                             fig, ax = plt.subplots(figsize=(10, 8))
                             visualization.plot_bin_map(
                                 bin_num_2d,
@@ -829,10 +891,11 @@ def create_rdb_plots(cube, rdb_results, galaxy_name, plots_dir, args):
                                 title=f"{galaxy_name} - RDB {line_name} Flux",
                                 log_scale=True,
                                 colorbar_label="Log Flux",
+                                physical_scale=True,
+                                pixel_size=(cube._pxl_size_x, cube._pxl_size_y),
                             )
                             visualization.standardize_figure_saving(
-                                fig,
-                                plots_dir / f"{galaxy_name}_RDB_{line_name}_map.png",
+                                fig, plots_dir / f"{galaxy_name}_RDB_{line_name}_map.png"
                             )
                             plt.close(fig)
                         else:
@@ -843,7 +906,7 @@ def create_rdb_plots(cube, rdb_results, galaxy_name, plots_dir, args):
                 logger.warning(f"Error creating emission line plots: {e}")
                 plt.close("all")
 
-        # Create spectral indices plots if available
+        # Create spectral indices plots if available - with physical scaling
         if "indices" in rdb_results and "bin_distances" in rdb_results.get(
             "distance", {}
         ):
@@ -883,12 +946,11 @@ def create_rdb_plots(cube, rdb_results, galaxy_name, plots_dir, args):
                                 ax.grid(True, alpha=0.3)
                                 visualization.standardize_figure_saving(
                                     fig,
-                                    plots_dir
-                                    / f"{galaxy_name}_RDB_{idx_name}_profile.png",
+                                    plots_dir / f"{galaxy_name}_RDB_{idx_name}_profile.png",
                                 )
                                 plt.close(fig)
 
-                                # Create 2D map
+                                # Create 2D map with physical scaling
                                 fig, ax = plt.subplots(figsize=(10, 8))
                                 visualization.plot_bin_map(
                                     bin_num_2d,
@@ -897,10 +959,11 @@ def create_rdb_plots(cube, rdb_results, galaxy_name, plots_dir, args):
                                     cmap="plasma",
                                     title=f"{galaxy_name} - RDB {idx_name}",
                                     colorbar_label="Index Value",
+                                    physical_scale=True,
+                                    pixel_size=(cube._pxl_size_x, cube._pxl_size_y),
                                 )
                                 visualization.standardize_figure_saving(
-                                    fig,
-                                    plots_dir / f"{galaxy_name}_RDB_{idx_name}_map.png",
+                                    fig, plots_dir / f"{galaxy_name}_RDB_{idx_name}_map.png"
                                 )
                                 plt.close(fig)
                             else:
@@ -931,12 +994,11 @@ def create_rdb_plots(cube, rdb_results, galaxy_name, plots_dir, args):
                                 ax.grid(True, alpha=0.3)
                                 visualization.standardize_figure_saving(
                                     fig,
-                                    plots_dir
-                                    / f"{galaxy_name}_RDB_{idx_name}_profile.png",
+                                    plots_dir / f"{galaxy_name}_RDB_{idx_name}_profile.png",
                                 )
                                 plt.close(fig)
 
-                                # Create 2D map
+                                # Create 2D map with physical scaling
                                 fig, ax = plt.subplots(figsize=(10, 8))
                                 visualization.plot_bin_map(
                                     bin_num_2d,
@@ -945,10 +1007,11 @@ def create_rdb_plots(cube, rdb_results, galaxy_name, plots_dir, args):
                                     cmap="plasma",
                                     title=f"{galaxy_name} - RDB {idx_name}",
                                     colorbar_label="Index Value",
+                                    physical_scale=True,
+                                    pixel_size=(cube._pxl_size_x, cube._pxl_size_y),
                                 )
                                 visualization.standardize_figure_saving(
-                                    fig,
-                                    plots_dir / f"{galaxy_name}_RDB_{idx_name}_map.png",
+                                    fig, plots_dir / f"{galaxy_name}_RDB_{idx_name}_map.png"
                                 )
                                 plt.close(fig)
                             else:
@@ -971,17 +1034,19 @@ def create_rdb_plots(cube, rdb_results, galaxy_name, plots_dir, args):
                             ):
                                 # Check if dimensions match
                                 if len(idx_values) == len(bin_radii):
-                                    # Create 2D index map
+                                    # Create 2D index map with physical scaling
                                     fig, ax = plt.subplots(figsize=(10, 8))
 
-                                    # Use safe_plot_array for robust plotting
-                                    visualization.safe_plot_array(
-                                        idx_values,
+                                    # Use safe_plot_array for robust plotting with physical scaling
+                                    visualization.plot_bin_map(
                                         bin_num_2d,
+                                        idx_values,
                                         ax=ax,
                                         title=f"{galaxy_name} - {idx_name}",
                                         cmap="plasma",
-                                        label="Index Value",
+                                        colorbar_label="Index Value",
+                                        physical_scale=True,
+                                        pixel_size=(cube._pxl_size_x, cube._pxl_size_y),
                                     )
 
                                     visualization.standardize_figure_saving(
@@ -1001,3 +1066,82 @@ def create_rdb_plots(cube, rdb_results, galaxy_name, plots_dir, args):
         logger.error(f"Error in create_rdb_plots: {str(e)}")
         logger.error(traceback.format_exc())
         plt.close("all")
+
+
+def create_visualization_plots(self, output_dir, galaxy_name):
+    """Create radial specific visualization plots with physical coordinates"""
+    # Call parent method first
+    super().create_visualization_plots(output_dir, galaxy_name)
+    
+    plots_dir = Path(output_dir) / "plots"
+    plots_dir.mkdir(exist_ok=True, parents=True)
+    
+    # Add physical radius visualization if available
+    if 'physical_radius' in self.metadata and self.metadata['physical_radius']:
+        try:
+            from physical_radius import visualize_galaxy_radius
+            
+            # Get flux map from metadata if available
+            if 'flux_map' in self.metadata:
+                flux_map = self.metadata['flux_map']
+            else:
+                # Create dummy flux map
+                ny, nx = self.metadata.get('ny', 50), self.metadata.get('nx', 50)
+                flux_map = np.ones((ny, nx))
+                
+            # Get radius map and ellipse parameters from metadata
+            R_galaxy = self.metadata.get('R_galaxy_map')
+            ellipse_params = self.metadata.get('ellipse_params')
+            
+            if R_galaxy is not None and ellipse_params is not None:
+                # Create visualization
+                figs = visualize_galaxy_radius(
+                    flux_map, 
+                    R_galaxy, 
+                    ellipse_params,
+                    output_path=plots_dir
+                )
+                
+                # Create custom visualization showing bins on R_galaxy
+                try:
+                    fig, ax = plt.subplots(figsize=(10, 8))
+                    
+                    # Create colormap with distinct colors for each bin
+                    import matplotlib.colors as mcolors
+                    unique_bins = np.unique(self.bin_num[self.bin_num >= 0])
+                    cmap = plt.cm.get_cmap('tab20', len(unique_bins))
+                    
+                    # Create a colored binned radius map
+                    bin_map = np.full_like(R_galaxy, -1)
+                    bin_map_flat = bin_map.flatten()
+                    
+                    for bin_idx, indices in enumerate(self.bin_indices):
+                        for idx in indices:
+                            if idx < len(bin_map_flat):
+                                bin_map_flat[idx] = bin_idx
+                    
+                    bin_map = bin_map_flat.reshape(R_galaxy.shape)
+                    
+                    # Create a masked colormap array
+                    colors = np.zeros((*bin_map.shape, 4))
+                    for i, bin_id in enumerate(unique_bins):
+                        mask = bin_map == bin_id
+                        colors[mask] = cmap(i % 20)
+                    
+                    # Plot the R_galaxy map with bin overlays
+                    im1 = ax.imshow(R_galaxy, origin='lower', cmap='plasma', alpha=0.7)
+                    im2 = ax.imshow(colors, origin='lower')
+                    
+                    plt.colorbar(im1, ax=ax, label='R_galaxy (arcsec)')
+                    
+                    ax.set_title(f'{galaxy_name} - Binned Physical Radius')
+                    
+                    # Save the figure
+                    plt.savefig(plots_dir / f"{galaxy_name}_binned_physical_radius.png", dpi=150)
+                    plt.close(fig)
+                    
+                except Exception as e:
+                    logger.warning(f"Error creating combined visualization: {e}")
+        
+        except Exception as e:
+            logger.warning(f"Error creating physical radius visualization: {e}")

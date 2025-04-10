@@ -86,6 +86,12 @@ def run_vnb_analysis(args, cube, p2p_results=None):
     target_snr = args.target_snr if hasattr(args, "target_snr") else 30
     min_snr = args.min_snr if hasattr(args, "min_snr") else 1
     use_cvt = args.cvt if hasattr(args, "cvt") else True
+    
+    # New parameter for high-SNR mode
+    high_snr_mode = args.high_snr_mode if hasattr(args, "high_snr_mode") else False
+    
+    # Check if we should use physical radius calculation
+    use_physical_radius = args.physical_radius if hasattr(args, "physical_radius") else False
 
     # Extract coordinates, signal, and noise for VNB
     # Use wavelength-integrated signal-to-noise
@@ -178,121 +184,248 @@ def run_vnb_analysis(args, cube, p2p_results=None):
 
     logger.info(f"Running Voronoi binning with target SNR = {safe_target_snr:.1f}")
 
-    # First attempt with the selected target SNR
-    try:
-        success = True
+    # If requested to use physical radius, calculate it now for later use in binning
+    ellipse_params = None
+    if use_physical_radius:
+        try:
+            from physical_radius import calculate_galaxy_radius
+            
+            # Create flux map for radius calculation
+            flux_2d = np.nanmedian(cube._cube_data, axis=0)
+            
+            # Calculate physical radius
+            R_galaxy, ellipse_params = calculate_galaxy_radius(
+                flux_2d,
+                pixel_size_x=cube._pxl_size_x,
+                pixel_size_y=cube._pxl_size_y
+            )
+            
+            logger.info(f"Calculated physical radius with PA={ellipse_params['PA_degrees']:.1f}°, "
+                        f"ε={ellipse_params['ellipticity']:.2f}")
+                        
+            # Store for later use
+            cube._physical_radius = R_galaxy
+            cube._ellipse_params = ellipse_params
+            
+        except Exception as e:
+            logger.warning(f"Error calculating physical radius: {e}")
+            use_physical_radius = False
 
-        # Use all valid pixels
-        x_valid = x
-        y_valid = y
-        signal_valid = signal
-        noise_valid = noise
+    # Modified high-SNR mode for better binning
+    if high_snr_mode:
+        logger.info("Using high-SNR optimization mode for Voronoi binning")
+        
+        # Sort pixels by SNR in descending order
+        sorted_indices = np.argsort(-pixel_snr)  # Negative for descending order
+        
+        # Take the top X% of pixels with highest SNR as seeds
+        top_percent = 10  # Use top 10% as seeds
+        n_seed_pixels = max(1, int(len(sorted_indices) * top_percent / 100))
+        seed_indices = sorted_indices[:n_seed_pixels]
+        
+        logger.info(f"Using {n_seed_pixels} high-SNR seed pixels (top {top_percent}%)")
+        
+        # Extract seed pixels
+        seed_x = x[seed_indices]
+        seed_y = y[seed_indices]
+        seed_signal = signal[seed_indices]
+        seed_noise = noise[seed_indices]
+        
+        # Run a preliminary binning on just the seed pixels
+        # This ensures we have good initial bins with high SNR
+        try:
+            from vorbin.voronoi_2d_binning import voronoi_2d_binning
+            seed_bin_num, seed_x_gen, seed_y_gen, seed_sn, seed_n_pixels, seed_scale = voronoi_2d_binning(
+                seed_x, seed_y, seed_signal, seed_noise,
+                safe_target_snr, plot=0, quiet=True, cvt=use_cvt
+            )
+            
+            logger.info(f"Created {len(seed_x_gen)} high-SNR seed bins")
+            
+            # Now run the main binning using these seed bins as anchors
+            # We would need to implement a custom version of voronoi_2d_binning to use seed bins
+            # For now, we'll use a simpler approach of two-stage binning
+            
+            # Create a mask for remaining pixels
+            remaining_mask = np.ones(len(x), dtype=bool)
+            remaining_mask[seed_indices] = False
+            
+            # Initialize a bin map for all pixels, starting with seed bins
+            full_bin_num = np.full(len(x), -1, dtype=int)
+            for i, seed_idx in enumerate(seed_indices):
+                full_bin_num[seed_idx] = seed_bin_num[i]
+            
+            # Assign each remaining pixel to the nearest seed bin
+            from scipy.spatial import cKDTree
+            seed_points = np.column_stack([seed_x_gen, seed_y_gen])
+            tree = cKDTree(seed_points)
+            
+            # Get remaining points
+            remaining_x = x[remaining_mask]
+            remaining_y = y[remaining_mask]
+            remaining_indices = np.where(remaining_mask)[0]
+            
+            # Find nearest seed bin for each remaining point
+            query_points = np.column_stack([remaining_x, remaining_y])
+            distances, nearest_bins = tree.query(query_points)
+            
+            # Assign each remaining pixel to nearest bin
+            for i, bin_idx in enumerate(nearest_bins):
+                full_bin_num[remaining_indices[i]] = bin_idx
+                
+            # Generate bin metadata for compatibility
+            from collections import defaultdict
+            bin_indices_dict = defaultdict(list)
+            for i, bin_id in enumerate(full_bin_num):
+                if bin_id >= 0:
+                    bin_indices_dict[bin_id].append(i)
+            
+            bin_indices_list = [bin_indices_dict.get(i, []) for i in range(max(bin_indices_dict.keys()) + 1)]
+            n_pixels = np.array([len(indices) for indices in bin_indices_list])
+            
+            # Calculate average position for each bin
+            x_gen = []
+            y_gen = []
+            sn = []
+            
+            for i, indices in enumerate(bin_indices_list):
+                if indices:
+                    x_gen.append(np.mean(x[indices]))
+                    y_gen.append(np.mean(y[indices]))
+                    
+                    # Calculate SNR for the bin
+                    bin_signal = np.mean(signal[indices])
+                    bin_noise = np.mean(noise[indices]) / np.sqrt(len(indices))
+                    sn.append(bin_signal / bin_noise)
+                else:
+                    x_gen.append(0)
+                    y_gen.append(0)
+                    sn.append(0)
+            
+            x_gen = np.array(x_gen)
+            y_gen = np.array(y_gen)
+            sn = np.array(sn)
+            
+            success = True
+            best_result = (full_bin_num, x_gen, y_gen, sn, n_pixels, 1.0)
+            logger.info(f"High-SNR binning created {len(x_gen)} bins")
+            
+        except Exception as e:
+            logger.warning(f"High-SNR optimization failed: {str(e)}")
+            logger.info("Falling back to standard Voronoi binning")
+            success = False
+            high_snr_mode = False
+    else:
+        success = False  # Force standard binning if high-SNR mode is not requested
 
-        logger.info(f"Running Voronoi binning with {len(x_valid)} valid pixels")
+    # Standard Voronoi binning if high-SNR mode is not used or failed
+    if not high_snr_mode or not success:
+        # First attempt with the selected target SNR
+        try:
+            success = True
 
-        # Handle return values more robustly to accommodate different version of vorbin
-        result = voronoi_2d_binning(
-            x_valid,
-            y_valid,
-            signal_valid,
-            noise_valid,
-            safe_target_snr,
-            plot=0,
-            quiet=True,
-            cvt=use_cvt,
-        )
+            # Use all valid pixels
+            x_valid = x
+            y_valid = y
+            signal_valid = signal
+            noise_valid = noise
 
-        # Robust handling of return values
-        if isinstance(result, tuple):
-            # Check length of returned tuple
-            if len(result) >= 6:
-                # Extract the first 6 values we need
-                bin_num = result[0]
-                x_gen = result[1]
-                y_gen = result[2]
-                sn = result[3]
-                n_pixels = result[4]
-                scale = result[5]
-                best_result = (bin_num, x_gen, y_gen, sn, n_pixels, scale)
-                logger.info(
-                    f"Voronoi binning succeeded with target SNR = {safe_target_snr:.1f}"
-                )
+            logger.info(f"Running Voronoi binning with {len(x_valid)} valid pixels")
+
+            # If using physical radius, apply elliptical transformation to coordinates
+            if use_physical_radius and ellipse_params is not None:
+                # Extract parameters
+                center_x = ellipse_params['center_x']
+                center_y = ellipse_params['center_y']
+                PA_rad = np.radians(ellipse_params['PA_degrees'])
+                ellipticity = ellipse_params['ellipticity']
+                
+                # Apply transformation: centered, rotated, and stretched coordinates
+                dx = x_valid - center_x
+                dy = y_valid - center_y
+                
+                # Rotate coordinates
+                x_rot = dx * np.cos(PA_rad) + dy * np.sin(PA_rad)
+                y_rot = -dx * np.sin(PA_rad) + dy * np.cos(PA_rad)
+                
+                # Apply ellipticity stretch
+                y_rot_scaled = y_rot / (1 - ellipticity) if ellipticity < 1 else y_rot
+                
+                # Use transformed coordinates for binning
+                logger.info(f"Using elliptical coordinates for Voronoi binning (PA={ellipse_params['PA_degrees']:.1f}°, ε={ellipticity:.2f})")
+                x_for_binning = x_rot
+                y_for_binning = y_rot_scaled
             else:
-                # Not enough values
-                raise ValueError(
-                    f"Voronoi binning returned {len(result)} values, expected at least 6"
-                )
-        else:
-            # Single return value (unlikely but handle anyway)
-            raise ValueError("Unexpected return format from Voronoi binning")
+                # Use original coordinates
+                x_for_binning = x_valid
+                y_for_binning = y_valid
 
-    except Exception as e:
-        success = False
-        best_result = None
-        logger.warning(f"Initial Voronoi binning failed: {str(e)}")
-        logger.info("Trying alternative binning approach")
+            # Handle return values more robustly to accommodate different version of vorbin
+            result = voronoi_2d_binning(
+                x_for_binning,
+                y_for_binning,
+                signal_valid,
+                noise_valid,
+                safe_target_snr,
+                plot=0,
+                quiet=True,
+                cvt=use_cvt,
+            )
 
-        # Try a more comprehensive search through recommended SNR values
-        search_range = np.linspace(max_recommended_snr, min_recommended_snr, 20)
-
-        for snr_value in search_range:
-            # Skip the original value which already failed
-            if abs(snr_value - safe_target_snr) < 0.1:
-                continue
-
-            # Try with CVT first
-            try:
-                logger.info(
-                    f"Trying Voronoi binning with target SNR = {snr_value:.1f}, CVT=True"
-                )
-                with warnings.catch_warnings():
-                    warnings.simplefilter("ignore")
-                    result = voronoi_2d_binning(
-                        x_valid,
-                        y_valid,
-                        signal_valid,
-                        noise_valid,
-                        snr_value,
-                        plot=0,
-                        quiet=True,
-                        cvt=True,
+            # Robust handling of return values
+            if isinstance(result, tuple):
+                # Check length of returned tuple
+                if len(result) >= 6:
+                    # Extract the first 6 values we need
+                    bin_num = result[0]
+                    x_gen = result[1]
+                    y_gen = result[2]
+                    sn = result[3]
+                    n_pixels = result[4]
+                    scale = result[5]
+                    best_result = (bin_num, x_gen, y_gen, sn, n_pixels, scale)
+                    logger.info(
+                        f"Voronoi binning succeeded with target SNR = {safe_target_snr:.1f}"
                     )
+                else:
+                    # Not enough values
+                    raise ValueError(
+                        f"Voronoi binning returned {len(result)} values, expected at least 6"
+                    )
+            else:
+                # Single return value (unlikely but handle anyway)
+                raise ValueError("Unexpected return format from Voronoi binning")
 
-                    # Extract the first 6 values
-                    if isinstance(result, tuple) and len(result) >= 6:
-                        bin_num = result[0]
-                        x_gen = result[1]
-                        y_gen = result[2]
-                        sn = result[3]
-                        n_pixels = result[4]
-                        scale = result[5]
-                        best_result = (bin_num, x_gen, y_gen, sn, n_pixels, scale)
-                        success = True
-                        logger.info(
-                            f"Voronoi binning succeeded with target SNR = {snr_value:.1f}"
-                        )
-                        break
-                    else:
-                        raise ValueError(
-                            "Unexpected return format from Voronoi binning"
-                        )
-            except Exception as e:
-                # Now try without CVT
+        except Exception as e:
+            success = False
+            best_result = None
+            logger.warning(f"Initial Voronoi binning failed: {str(e)}")
+            logger.info("Trying alternative binning approach")
+
+            # Try a more comprehensive search through recommended SNR values
+            search_range = np.linspace(max_recommended_snr, min_recommended_snr, 20)
+
+            for snr_value in search_range:
+                # Skip the original value which already failed
+                if abs(snr_value - safe_target_snr) < 0.1:
+                    continue
+
+                # Try with CVT first
                 try:
                     logger.info(
-                        f"Trying Voronoi binning with target SNR = {snr_value:.1f}, CVT=False"
+                        f"Trying Voronoi binning with target SNR = {snr_value:.1f}, CVT=True"
                     )
                     with warnings.catch_warnings():
                         warnings.simplefilter("ignore")
                         result = voronoi_2d_binning(
-                            x_valid,
-                            y_valid,
+                            x_for_binning,
+                            y_for_binning,
                             signal_valid,
                             noise_valid,
                             snr_value,
                             plot=0,
                             quiet=True,
-                            cvt=False,
+                            cvt=True,
                         )
 
                         # Extract the first 6 values
@@ -314,7 +447,44 @@ def run_vnb_analysis(args, cube, p2p_results=None):
                                 "Unexpected return format from Voronoi binning"
                             )
                 except Exception as e:
-                    continue
+                    # Now try without CVT
+                    try:
+                        logger.info(
+                            f"Trying Voronoi binning with target SNR = {snr_value:.1f}, CVT=False"
+                        )
+                        with warnings.catch_warnings():
+                            warnings.simplefilter("ignore")
+                            result = voronoi_2d_binning(
+                                x_for_binning,
+                                y_for_binning,
+                                signal_valid,
+                                noise_valid,
+                                snr_value,
+                                plot=0,
+                                quiet=True,
+                                cvt=False,
+                            )
+
+                            # Extract the first 6 values
+                            if isinstance(result, tuple) and len(result) >= 6:
+                                bin_num = result[0]
+                                x_gen = result[1]
+                                y_gen = result[2]
+                                sn = result[3]
+                                n_pixels = result[4]
+                                scale = result[5]
+                                best_result = (bin_num, x_gen, y_gen, sn, n_pixels, scale)
+                                success = True
+                                logger.info(
+                                    f"Voronoi binning succeeded with target SNR = {snr_value:.1f}"
+                                )
+                                break
+                            else:
+                                raise ValueError(
+                                    "Unexpected return format from Voronoi binning"
+                                )
+                    except Exception as e:
+                        continue
 
     # Fallback to grid binning if all else fails
     if not success or best_result is None:
@@ -431,6 +601,14 @@ def run_vnb_analysis(args, cube, p2p_results=None):
         "pixelsize_y": cube._pxl_size_y,
         "redshift": cube._redshift if hasattr(cube, "_redshift") else 0.0,
     }
+    
+    # Add physical radius information if used
+    if use_physical_radius and ellipse_params is not None:
+        metadata["physical_radius"] = True
+        metadata["ellipse_params"] = ellipse_params
+        if hasattr(cube, "_physical_radius"):
+            metadata["R_galaxy_map"] = cube._physical_radius
+        metadata["flux_map"] = np.nanmedian(cube._cube_data, axis=0)
 
     # Create VoronoiBinnedData object
     binned_data = VoronoiBinnedData(
@@ -531,6 +709,15 @@ def run_vnb_analysis(args, cube, p2p_results=None):
             "target_snr": target_snr,
         },
     }
+    
+    # Add physical radius information if used
+    if use_physical_radius and ellipse_params is not None:
+        vnb_results["physical_radius"] = {
+            "center_x": ellipse_params["center_x"],
+            "center_y": ellipse_params["center_y"],
+            "pa": ellipse_params["PA_degrees"],
+            "ellipticity": ellipse_params["ellipticity"],
+        }
 
     # Add emission line results if available
     if emission_result is not None:
@@ -662,7 +849,7 @@ def run_vnb_analysis(args, cube, p2p_results=None):
 def create_vnb_plots(cube, vnb_results, galaxy_name, plots_dir, args):
     """
     Create visualization plots for VNB analysis
-
+    
     Parameters
     ----------
     cube : MUSECube
@@ -678,27 +865,72 @@ def create_vnb_plots(cube, vnb_results, galaxy_name, plots_dir, args):
     """
     try:
         import visualization
-
-        # Create kinematics plot
-        if "stellar_kinematics" in vnb_results:
+        
+        # Create bin map plot with physical scaling
+        if "binning" in vnb_results and "bin_num" in vnb_results["binning"]:
             try:
                 bin_num = vnb_results["binning"]["bin_num"]
+                
+                # Reshape to 2D for plotting
+                if isinstance(bin_num, np.ndarray) and bin_num.ndim == 1:
+                    bin_num_2d = bin_num.reshape(cube._n_y, cube._n_x)
+                else:
+                    bin_num_2d = bin_num
+                    
+                # Create bin map with physical scaling
+                fig, ax = plt.subplots(figsize=(10, 8))
+                visualization.plot_bin_map(
+                    bin_num_2d,
+                    None,
+                    ax=ax,
+                    cmap="tab20",
+                    title=f"{galaxy_name} - Voronoi Bins",
+                    physical_scale=True,
+                    pixel_size=(cube._pxl_size_x, cube._pxl_size_y),
+                )
+                visualization.standardize_figure_saving(
+                    fig, plots_dir / f"{galaxy_name}_VNB_bin_map.png"
+                )
+                plt.close(fig)
+                
+                # Create SNR map
+                if "binning" in vnb_results and "snr" in vnb_results["binning"]:
+                    snr = vnb_results["binning"]["snr"]
+                    
+                    fig, ax = plt.subplots(figsize=(10, 8))
+                    visualization.plot_bin_map(
+                        bin_num_2d,
+                        snr,
+                        ax=ax,
+                        cmap="viridis",
+                        title=f"{galaxy_name} - Bin SNR",
+                        colorbar_label="Signal-to-Noise Ratio",
+                        physical_scale=True,
+                        pixel_size=(cube._pxl_size_x, cube._pxl_size_y),
+                    )
+                    visualization.standardize_figure_saving(
+                        fig, plots_dir / f"{galaxy_name}_VNB_snr_map.png"
+                    )
+                    plt.close(fig)
+            except Exception as e:
+                logger.warning(f"Error creating bin map: {e}")
+                plt.close("all")
+                
+        # Create kinematics plots
+        if "stellar_kinematics" in vnb_results:
+            try:
                 velocity = vnb_results["stellar_kinematics"]["velocity"]
                 dispersion = vnb_results["stellar_kinematics"]["dispersion"]
-
-                # Create velocity map
+                bin_num = vnb_results["binning"]["bin_num"]
+                
+                # Reshape to 2D for plotting
+                if isinstance(bin_num, np.ndarray) and bin_num.ndim == 1:
+                    bin_num_2d = bin_num.reshape(cube._n_y, cube._n_x)
+                else:
+                    bin_num_2d = bin_num
+                    
+                # Velocity map with physical scaling
                 fig, ax = plt.subplots(figsize=(10, 8))
-                # Reshape bin_num to 2D if it's 1D
-                bin_num_2d = bin_num
-                if bin_num.ndim == 1:
-                    # Reshape bin_num to 2D grid matching the original image dimensions
-                    bin_num_2d = np.full((cube._n_y, cube._n_x), -1)
-                    for i, bin_id in enumerate(bin_num):
-                        if i < cube._n_y * cube._n_x:
-                            row = i // cube._n_x
-                            col = i % cube._n_x
-                            bin_num_2d[row, col] = bin_id
-
                 visualization.plot_bin_map(
                     bin_num_2d,
                     velocity,
@@ -708,13 +940,15 @@ def create_vnb_plots(cube, vnb_results, galaxy_name, plots_dir, args):
                     vmin=np.percentile(velocity[np.isfinite(velocity)], 5),
                     vmax=np.percentile(velocity[np.isfinite(velocity)], 95),
                     colorbar_label="Velocity (km/s)",
+                    physical_scale=True,
+                    pixel_size=(cube._pxl_size_x, cube._pxl_size_y),
                 )
                 visualization.standardize_figure_saving(
-                    fig, plots_dir / f"{galaxy_name}_VNB_velocity.png"
+                    fig, plots_dir / f"{galaxy_name}_VNB_velocity_map.png"
                 )
                 plt.close(fig)
-
-                # Create dispersion map
+                
+                # Dispersion map with physical scaling
                 fig, ax = plt.subplots(figsize=(10, 8))
                 visualization.plot_bin_map(
                     bin_num_2d,
@@ -725,92 +959,104 @@ def create_vnb_plots(cube, vnb_results, galaxy_name, plots_dir, args):
                     vmin=np.percentile(dispersion[np.isfinite(dispersion)], 5),
                     vmax=np.percentile(dispersion[np.isfinite(dispersion)], 95),
                     colorbar_label="Dispersion (km/s)",
+                    physical_scale=True,
+                    pixel_size=(cube._pxl_size_x, cube._pxl_size_y),
                 )
                 visualization.standardize_figure_saving(
-                    fig, plots_dir / f"{galaxy_name}_VNB_dispersion.png"
+                    fig, plots_dir / f"{galaxy_name}_VNB_dispersion_map.png"
                 )
                 plt.close(fig)
+                
             except Exception as e:
                 logger.warning(f"Error creating kinematics plots: {e}")
                 plt.close("all")
-
+                
         # Create emission line plots if available
         if "emission" in vnb_results:
             try:
-                bin_num = vnb_results["binning"]["bin_num"]
                 emission = vnb_results["emission"]
-
-                # Find emission flux maps
-                for line_name, flux in emission.get("flux", {}).items():
-                    if isinstance(flux, np.ndarray) and len(flux) > 0:
-                        fig, ax = plt.subplots(figsize=(10, 8))
-                        visualization.plot_bin_map(
-                            bin_num,
-                            flux,
-                            ax=ax,
-                            cmap="inferno",
-                            title=f"{galaxy_name} - VNB {line_name} Flux",
-                            log_scale=True,
-                            colorbar_label="Log Flux",
-                        )
-                        visualization.standardize_figure_saving(
-                            fig, plots_dir / f"{galaxy_name}_VNB_{line_name}_flux.png"
-                        )
-                        plt.close(fig)
+                bin_num = vnb_results["binning"]["bin_num"]
+                
+                # Reshape to 2D for plotting
+                if isinstance(bin_num, np.ndarray) and bin_num.ndim == 1:
+                    bin_num_2d = bin_num.reshape(cube._n_y, cube._n_x)
+                else:
+                    bin_num_2d = bin_num
+                    
+                # Process each emission line field
+                for field_name, field_data in emission.items():
+                    if field_name in ["flux", "velocity", "dispersion"] and isinstance(field_data, dict):
+                        for line_name, line_values in field_data.items():
+                            try:
+                                if np.any(np.isfinite(line_values)):
+                                    # Create map with physical scaling
+                                    fig, ax = plt.subplots(figsize=(10, 8))
+                                    
+                                    # Determine colormap based on field type
+                                    if field_name == "flux":
+                                        cmap = "inferno"
+                                        title = f"{galaxy_name} - {line_name} Flux"
+                                        label = "Flux"
+                                        log_scale = True
+                                    elif field_name == "velocity":
+                                        cmap = "coolwarm"
+                                        title = f"{galaxy_name} - {line_name} Velocity"
+                                        label = "Velocity (km/s)"
+                                        log_scale = False
+                                    else:  # dispersion
+                                        cmap = "viridis"
+                                        title = f"{galaxy_name} - {line_name} Dispersion"
+                                        label = "Dispersion (km/s)"
+                                        log_scale = False
+                                        
+                                    visualization.plot_bin_map(
+                                        bin_num_2d,
+                                        line_values,
+                                        ax=ax,
+                                        cmap=cmap,
+                                        title=title,
+                                        colorbar_label=label,
+                                        log_scale=log_scale,
+                                        physical_scale=True,
+                                        pixel_size=(cube._pxl_size_x, cube._pxl_size_y),
+                                    )
+                                    visualization.standardize_figure_saving(
+                                        fig, plots_dir / f"{galaxy_name}_VNB_{line_name}_{field_name}.png"
+                                    )
+                                    plt.close(fig)
+                            except Exception as e:
+                                logger.warning(f"Error creating plot for {line_name} {field_name}: {e}")
+                                plt.close("all")
             except Exception as e:
                 logger.warning(f"Error creating emission line plots: {e}")
                 plt.close("all")
-
-        # Create spectral indices plots if available
-        if "indices" in vnb_results:
+                
+        # Create spectral indices plots
+        if "bin_indices" in vnb_results:
             try:
+                bin_indices = vnb_results["bin_indices"]
                 bin_num = vnb_results["binning"]["bin_num"]
-                indices = vnb_results["indices"]
-
-                for idx_name, idx_values in indices.items():
-                    if (
-                        isinstance(idx_values, np.ndarray)
-                        and idx_values.shape == bin_num.shape
-                    ):
-                        fig, ax = plt.subplots(figsize=(10, 8))
-                        # Reshape bin_num to 2D if it's 1D
-                        bin_num_2d = bin_num
-                        if bin_num.ndim == 1:
-                            # Reshape bin_num to 2D grid matching the original image dimensions
-                            bin_num_2d = np.full((cube._n_y, cube._n_x), -1)
-                            for i, bin_id in enumerate(bin_num):
-                                if i < cube._n_y * cube._n_x:
-                                    row = i // cube._n_x
-                                    col = i % cube._n_x
-                                    bin_num_2d[row, col] = bin_id
-
-                        # Use safe_plot_array for robust plotting
-                        visualization.safe_plot_array(
-                            idx_values,
-                            bin_num_2d,
-                            ax=ax,
-                            title=f"{galaxy_name} - {idx_name}",
-                            cmap="plasma",
-                            label="Index Value",
-                        )
-                        visualization.standardize_figure_saving(
-                            fig, plots_dir / f"{galaxy_name}_VNB_{idx_name}.png"
-                        )
-                        plt.close(fig)
-                    elif (
-                        "bin_indices" in vnb_results
-                        and idx_name in vnb_results["bin_indices"]
-                    ):
-                        # Try bin-level indices
-                        bin_values = vnb_results["bin_indices"][idx_name]
+                
+                # Reshape to 2D for plotting
+                if isinstance(bin_num, np.ndarray) and bin_num.ndim == 1:
+                    bin_num_2d = bin_num.reshape(cube._n_y, cube._n_x)
+                else:
+                    bin_num_2d = bin_num
+                    
+                # Process each spectral index
+                for idx_name, idx_values in bin_indices.items():
+                    if np.any(np.isfinite(idx_values)):
+                        # Create map with physical scaling
                         fig, ax = plt.subplots(figsize=(10, 8))
                         visualization.plot_bin_map(
-                            bin_num,
-                            bin_values,
+                            bin_num_2d,
+                            idx_values,
                             ax=ax,
                             cmap="plasma",
-                            title=f"{galaxy_name} - VNB {idx_name}",
+                            title=f"{galaxy_name} - {idx_name}",
                             colorbar_label="Index Value",
+                            physical_scale=True,
+                            pixel_size=(cube._pxl_size_x, cube._pxl_size_y),
                         )
                         visualization.standardize_figure_saving(
                             fig, plots_dir / f"{galaxy_name}_VNB_{idx_name}.png"
@@ -819,35 +1065,7 @@ def create_vnb_plots(cube, vnb_results, galaxy_name, plots_dir, args):
             except Exception as e:
                 logger.warning(f"Error creating spectral indices plots: {e}")
                 plt.close("all")
-
-        # Add spectral indices visualization
-        if "indices" in vnb_results and "bin_indices" in vnb_results:  # For voronoi.py
-            try:
-                bin_indices = vnb_results["bin_indices"]
-                if bin_indices and isinstance(bin_indices, dict):
-                    for idx_name, idx_values in bin_indices.items():
-                        if isinstance(idx_values, np.ndarray) and len(idx_values) > 0:
-                            # Create 2D index map
-                            fig, ax = plt.subplots(figsize=(10, 8))
-
-                            # Use safe_plot_array for robust plotting
-                            visualization.safe_plot_array(
-                                idx_values,
-                                bin_num,
-                                ax=ax,
-                                title=f"{galaxy_name} - {idx_name}",
-                                cmap="plasma",
-                                label="Index Value",
-                            )
-
-                            visualization.standardize_figure_saving(
-                                fig, plots_dir / f"{galaxy_name}_VNB_{idx_name}.png"
-                            )
-                            plt.close(fig)
-            except Exception as e:
-                logger.warning(f"Error creating spectral indices maps: {e}")
-                plt.close("all")
-
+                
     except Exception as e:
         logger.error(f"Error in create_vnb_plots: {str(e)}")
         logger.error(traceback.format_exc())

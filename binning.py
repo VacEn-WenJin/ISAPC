@@ -1382,10 +1382,11 @@ def calculate_radial_bins(
     ellipticity=0,
     n_rings=10,
     log_spacing=False,
+    r_galaxy=None  # New parameter to use pre-calculated R_galaxy
 ):
     """
     Calculate radial bins with improved error handling and proper centering
-
+    
     Parameters
     ----------
     x : ndarray
@@ -1404,44 +1405,50 @@ def calculate_radial_bins(
         Number of radial rings
     log_spacing : bool, default=False
         Use logarithmic spacing
-
+    r_galaxy : ndarray, optional
+        Pre-calculated elliptical galaxy radius array (flattened)
+        
     Returns
     -------
     tuple
         (bin_num, bin_edges, bin_radii)
     """
     try:
-        # Determine the center if not provided
-        if center_x is None or center_y is None:
-            # Use the center of the IFU field (geometric center)
-            x_min, x_max = np.min(x[np.isfinite(x)]), np.max(x[np.isfinite(x)])
-            y_min, y_max = np.min(y[np.isfinite(y)]), np.max(y[np.isfinite(y)])
+        # If r_galaxy is provided, use it directly for binning
+        if r_galaxy is not None and len(r_galaxy) == len(x):
+            radius = r_galaxy
+            logger.info("Using provided R_galaxy values for radial binning")
+        else:
+            # Original calculation method
+            # Determine the center if not provided
+            if center_x is None or center_y is None:
+                # Use the center of the IFU field (geometric center)
+                x_min, x_max = np.min(x[np.isfinite(x)]), np.max(x[np.isfinite(x)])
+                y_min, y_max = np.min(y[np.isfinite(y)]), np.max(y[np.isfinite(y)])
 
-            if center_x is None:
-                center_x = (x_min + x_max) / 2.0
-            if center_y is None:
-                center_y = (y_min + y_max) / 2.0
+                if center_x is None:
+                    center_x = (x_min + x_max) / 2.0
+                if center_y is None:
+                    center_y = (y_min + y_max) / 2.0
 
-            logger.info(
-                f"Using IFU center as bin center: ({center_x:.2f}, {center_y:.2f})"
-            )
+                logger.info(f"Using IFU center as bin center: ({center_x:.2f}, {center_y:.2f})")
 
-        # Convert position angle to radians
-        pa_rad = np.radians(pa)
+            # Convert position angle to radians
+            pa_rad = np.radians(pa)
 
-        # Calculate semi-major axis
-        dx = x - center_x
-        dy = y - center_y
+            # Calculate semi-major axis
+            dx = x - center_x
+            dy = y - center_y
 
-        # Rotate coordinates
-        x_rot = dx * np.cos(pa_rad) + dy * np.sin(pa_rad)
-        y_rot = -dx * np.sin(pa_rad) + dy * np.cos(pa_rad)
+            # Rotate coordinates
+            x_rot = dx * np.cos(pa_rad) + dy * np.sin(pa_rad)
+            y_rot = -dx * np.sin(pa_rad) + dy * np.cos(pa_rad)
 
-        # Apply ellipticity
-        y_rot_scaled = y_rot / (1 - ellipticity) if ellipticity < 1 else y_rot
+            # Apply ellipticity
+            y_rot_scaled = y_rot / (1 - ellipticity) if ellipticity < 1 else y_rot
 
-        # Calculate radius
-        radius = np.sqrt(x_rot**2 + y_rot_scaled**2)
+            # Calculate radius
+            radius = np.sqrt(x_rot**2 + y_rot_scaled**2)
 
         # Check for valid data points
         valid_mask = np.isfinite(radius)
