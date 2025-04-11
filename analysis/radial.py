@@ -11,6 +11,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 
+import visualization
 import spectral_indices
 from binning import (
     RadialBinnedData,
@@ -467,6 +468,165 @@ def run_rdb_analysis(args, cube, p2p_results=None):
 
         # Set up binning in the cube
         cube.setup_binning("RDB", binned_data)
+
+        # Add this after the binning but before the spectral fitting in run_rdb_analysis
+
+        # Create flux map visualization with radial bins
+        try:
+            # Create flux map
+            flux_map = np.nanmedian(cube._cube_data, axis=0)
+            
+            # Create directory for special plots
+            special_plots_dir = plots_dir / "special"
+            special_plots_dir.mkdir(exist_ok=True, parents=True)
+            
+            # Create figure
+            fig, ax = plt.subplots(figsize=(10, 8))
+            
+            # Get binning parameters from local variables
+            # These are already defined in run_rdb_analysis
+            if 'center_x' not in locals() or center_x is None:
+                center_x = cube._n_x / 2
+            if 'center_y' not in locals() or center_y is None:
+                center_y = cube._n_y / 2
+            if 'pa' not in locals() or pa is None:
+                pa = 0
+            if 'ellipticity' not in locals() or ellipticity is None:
+                ellipticity = 0
+            
+            # Get bin radii and add extra radii for display
+            from scipy.interpolate import interp1d
+            
+            # Display existing bin radii
+            display_radii = bin_radii.copy()
+            
+            # Add extra radii for smoother visualization
+            if len(bin_radii) > 1:
+                r_min, r_max = np.min(bin_radii), np.max(bin_radii)
+                # Add smaller radii for inner regions
+                if r_min > 1:
+                    inner_radii = np.linspace(r_min / 3, r_min, 3)
+                    display_radii = np.concatenate([inner_radii, display_radii])
+                # Add larger radii for outer regions
+                outer_radii = np.linspace(r_max, r_max * 1.5, 3)[1:]
+                display_radii = np.concatenate([display_radii, outer_radii])
+            
+            # Sort radii
+            display_radii = np.sort(display_radii)
+            
+            # Plot flux map with radial bins
+            visualization.plot_flux_with_radial_bins(
+                flux_map,
+                bin_radii=display_radii,
+                center_x=center_x,
+                center_y=center_y,
+                pa=pa,
+                ellipticity=ellipticity,
+                wcs=cube._wcs if hasattr(cube, "_wcs") else None,
+                pixel_size=(cube._pxl_size_x, cube._pxl_size_y),
+                ax=ax,
+                title=f"{galaxy_name} - Flux Map with Radial Bins",
+                cmap="inferno",
+                log_scale=True,
+            )
+            
+            # Save figure
+            visualization.standardize_figure_saving(
+                fig, special_plots_dir / f"{galaxy_name}_flux_with_radial_bins.png", dpi=150
+            )
+            plt.close(fig)
+            
+            # Also create a version showing the physical radius calculation
+            if hasattr(cube, '_physical_radius') and hasattr(cube, '_ellipse_params'):
+                fig, ax = plt.subplots(figsize=(10, 8))
+                
+                # Get parameters
+                ellipse_params = cube._ellipse_params
+                phys_center_x = ellipse_params['center_x']
+                phys_center_y = ellipse_params['center_y']
+                phys_pa = ellipse_params['PA_degrees']
+                phys_ellipticity = ellipse_params['ellipticity']
+                
+                # Create radii for display
+                phys_display_radii = np.linspace(
+                    np.percentile(cube._physical_radius[np.isfinite(cube._physical_radius)], 10),
+                    np.percentile(cube._physical_radius[np.isfinite(cube._physical_radius)], 90),
+                    8
+                )
+                
+                # Plot the physical radius map
+                ax.imshow(cube._physical_radius, origin='lower', cmap='plasma')
+                
+                # Add ellipses showing the physical radius contours
+                from matplotlib.patches import Ellipse
+                for radius in phys_display_radii:
+                    ell = Ellipse(
+                        (phys_center_x, phys_center_y),
+                        2 * radius / cube._pxl_size_x,  # major axis (diameter)
+                        2 * radius / cube._pxl_size_y * (1 - phys_ellipticity),  # minor axis
+                        angle=phys_pa,
+                        fill=False,
+                        edgecolor='white',
+                        linestyle='-',
+                        linewidth=1,
+                        alpha=0.7
+                    )
+                    ax.add_patch(ell)
+                    
+                    # Add radius label
+                    label_x = phys_center_x + (radius / cube._pxl_size_x) * np.cos(np.radians(phys_pa))
+                    label_y = phys_center_y + (radius / cube._pxl_size_y) * np.sin(np.radians(phys_pa))
+                    ax.text(
+                        label_x, 
+                        label_y, 
+                        f"{radius:.1f}″", 
+                        color='white', 
+                        fontsize=8,
+                        ha='center', 
+                        va='center',
+                        bbox=dict(facecolor='black', alpha=0.5, boxstyle="round,pad=0.1")
+                    )
+                
+                # Add colorbar and title
+                cbar = plt.colorbar(ax.images[0], ax=ax)
+                cbar.set_label('Physical Radius (arcsec)')
+                ax.set_title(f"{galaxy_name} - Physical Radius Map (PA={phys_pa:.1f}°, e={phys_ellipticity:.2f})")
+                
+                # Save figure
+                visualization.standardize_figure_saving(
+                    fig, special_plots_dir / f"{galaxy_name}_physical_radius_map.png", dpi=150
+                )
+                plt.close(fig)
+                
+                # Create a flux map with physical radius bins
+                fig, ax = plt.subplots(figsize=(10, 8))
+                
+                # Plot flux map with physical radial bins
+                visualization.plot_flux_with_radial_bins(
+                    flux_map,
+                    bin_radii=phys_display_radii,
+                    center_x=phys_center_x,
+                    center_y=phys_center_y,
+                    pa=phys_pa,
+                    ellipticity=phys_ellipticity,
+                    wcs=cube._wcs if hasattr(cube, "_wcs") else None,
+                    pixel_size=(cube._pxl_size_x, cube._pxl_size_y),
+                    ax=ax,
+                    title=f"{galaxy_name} - Flux Map with Physical Radial Bins",
+                    cmap="inferno",
+                    log_scale=True,
+                )
+                
+                # Save figure
+                visualization.standardize_figure_saving(
+                    fig, special_plots_dir / f"{galaxy_name}_flux_with_physical_bins.png", dpi=150
+                )
+                plt.close(fig)
+
+        except Exception as e:
+            logger.warning(f"Could not create flux map visualization: {e}")
+            import traceback
+            logger.debug(traceback.format_exc())
 
         # Run analysis using the enhanced MUSECube methods
         velocity_field, dispersion_field, bestfit_field, optimal_tmpls, poly_coeffs = (

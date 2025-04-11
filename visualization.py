@@ -36,8 +36,6 @@ def figure_context(*args, **kwargs):
     finally:
         plt.close(fig)
 
-
-# Update the standardize_figure_saving function in visualization.py
 def standardize_figure_saving(fig, file_path, dpi=150, close_after=True):
     """Standard approach to save figures with consistent settings"""
     try:
@@ -62,7 +60,6 @@ def standardize_figure_saving(fig, file_path, dpi=150, close_after=True):
             except:
                 pass
         return False
-
 
 def plot_spectrum(
     wavelength,
@@ -1187,6 +1184,10 @@ def plot_bin_map(
     """
     if ax is None:
         fig, ax = plt.subplots(figsize=(8, 6))
+        # Store the figure for later closing
+        should_close_fig = True
+    else:
+        should_close_fig = False
 
     try:
         # Convert inputs to numpy arrays if not already
@@ -3296,4 +3297,232 @@ def plot_with_wcs_grid(data, wcs, ax=None, title=None, cmap='viridis', vmin=None
     if title:
         ax.set_title(title)
     
+    return ax
+
+
+def plot_flux_with_radial_bins(
+    flux_map,
+    bin_radii=None,
+    center_x=None,
+    center_y=None,
+    pa=0,
+    ellipticity=0,
+    wcs=None,
+    pixel_size=None,
+    ax=None,
+    title=None,
+    cmap='inferno',
+    log_scale=True,
+):
+    """
+    Plot flux map with overlaid radial bins to visualize the physical radius calculation
+    
+    Parameters
+    ----------
+    flux_map : ndarray
+        2D array of flux values
+    bin_radii : array-like, optional
+        Radii of bins in arcsec
+    center_x, center_y : float, optional
+        Center coordinates in pixels
+    pa : float, default=0
+        Position angle in degrees
+    ellipticity : float, default=0
+        Ellipticity (0-1)
+    wcs : astropy.wcs.WCS, optional
+        WCS object for coordinate transformation
+    pixel_size : tuple, optional
+        (pixel_size_x, pixel_size_y) in arcsec
+    ax : matplotlib.axes.Axes, optional
+        Axis to plot on
+    title : str, optional
+        Plot title
+    cmap : str, default='inferno'
+        Colormap
+    log_scale : bool, default=True
+        Whether to use log scale for flux
+        
+    Returns
+    -------
+    matplotlib.axes.Axes
+        Axis with plot
+    """
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(10, 8))
+    
+    # Create masked array for NaN values
+    masked_flux = np.ma.array(flux_map, mask=~np.isfinite(flux_map))
+    
+    # Apply log scale if requested and data is positive
+    if log_scale and np.any(masked_flux > 0):
+        # Create mask for non-positive values
+        pos_mask = masked_flux > 0
+        if np.any(pos_mask):
+            # Apply log10 to positive values
+            log_data = np.log10(masked_flux.data)
+            log_data[~pos_mask.data] = np.nan
+            masked_flux = np.ma.array(log_data, mask=~pos_mask)
+            colorbar_label = "Log10(Flux)"
+        else:
+            colorbar_label = "Flux"
+    else:
+        colorbar_label = "Flux"
+    
+    # Use WCS if available
+    if wcs is not None:
+        try:
+            from astropy.visualization.wcsaxes import WCSAxes
+            
+            # Create WCS axis if needed
+            if not isinstance(ax, WCSAxes):
+                fig = ax.figure
+                ax.remove()
+                ax = fig.add_subplot(111, projection=wcs)
+            
+            # Plot flux with WCS coordinates
+            im = ax.imshow(masked_flux, origin='lower', cmap=cmap)
+            
+            # Add radial bin ellipses if provided
+            if bin_radii is not None and center_x is not None and center_y is not None:
+                # Convert center pixel coordinates to world coordinates
+                center_ra, center_dec = wcs.wcs_pix2world(center_x, center_y, 0)
+                
+                # Try to estimate pixel scale for proper scaling of ellipses
+                try:
+                    # Get pixel scale near center (may vary across field)
+                    pixel_scale_x = np.abs(wcs.wcs.cd[0, 0]) * 3600  # deg to arcsec
+                    pixel_scale_y = np.abs(wcs.wcs.cd[1, 1]) * 3600
+                    
+                    # Average pixel scale in arcsec for radius conversion
+                    pixel_scale = (pixel_scale_x + pixel_scale_y) / 2
+                    
+                    # Get WCS rotation angle
+                    wcs_pa = np.degrees(np.arctan2(wcs.wcs.cd[0, 1], wcs.wcs.cd[0, 0]))
+                    
+                    # Add total PA to WCS PA
+                    total_pa = pa + wcs_pa
+                    
+                    for radius in bin_radii:
+                        # Convert radius to degrees (WCS units)
+                        radius_deg = radius / 3600  # arcsec to deg
+                        
+                        # Create ellipse
+                        from matplotlib.patches import Ellipse
+                        ell = Ellipse(
+                            (center_ra, center_dec),
+                            2 * radius_deg,  # major axis (diameter)
+                            2 * radius_deg * (1 - ellipticity),  # minor axis
+                            angle=total_pa,
+                            fill=False,
+                            edgecolor='white',
+                            linestyle='-',
+                            linewidth=1,
+                            alpha=0.7,
+                            transform=ax.get_transform('world')
+                        )
+                        ax.add_patch(ell)
+                
+                except Exception as e:
+                    logger.warning(f"Could not draw ellipses in WCS space: {e}")
+            
+            # Set axis labels
+            ax.set_xlabel('RA')
+            ax.set_ylabel('Dec')
+            ax.grid(True, color='white', ls='solid', alpha=0.2)
+        
+        except Exception as e:
+            logger.warning(f"Error using WCS for plotting: {e}")
+            # Fall back to regular plotting
+            wcs = None
+    
+    # Standard plotting if WCS is not available
+    if wcs is None:
+        # Use physical pixel size if provided
+        if pixel_size is not None:
+            ny, nx = flux_map.shape
+            pixel_size_x, pixel_size_y = pixel_size if isinstance(pixel_size, tuple) else (pixel_size, pixel_size)
+            
+            # Create physical coordinate grid
+            extent = [
+                -nx/2 * pixel_size_x, 
+                nx/2 * pixel_size_x, 
+                -ny/2 * pixel_size_y, 
+                ny/2 * pixel_size_y
+            ]
+            
+            # Plot with physical coordinates
+            im = ax.imshow(masked_flux, origin='lower', cmap=cmap, extent=extent)
+            
+            # Add radial bin ellipses if provided
+            if bin_radii is not None and center_x is not None and center_y is not None:
+                # Convert center pixel coordinates to physical coordinates
+                center_phys_x = (center_x - nx/2) * pixel_size_x
+                center_phys_y = (center_y - ny/2) * pixel_size_y
+                
+                for radius in bin_radii:
+                    # Create ellipse
+                    from matplotlib.patches import Ellipse
+                    ell = Ellipse(
+                        (center_phys_x, center_phys_y),
+                        2 * radius,  # major axis (diameter)
+                        2 * radius * (1 - ellipticity),  # minor axis
+                        angle=pa,
+                        fill=False,
+                        edgecolor='white',
+                        linestyle='-',
+                        linewidth=1,
+                        alpha=0.7
+                    )
+                    ax.add_patch(ell)
+            
+            # Set axis labels
+            ax.set_xlabel('Δ RA (arcsec)')
+            ax.set_ylabel('Δ Dec (arcsec)')
+        
+        else:
+            # Simple pixel coordinates
+            im = ax.imshow(masked_flux, origin='lower', cmap=cmap)
+            
+            # Add radial bin ellipses if provided
+            if bin_radii is not None and center_x is not None and center_y is not None and pixel_size is not None:
+                pixel_size_x, pixel_size_y = pixel_size
+                
+                for radius in bin_radii:
+                    # Convert radius from arcsec to pixels
+                    radius_px_x = radius / pixel_size_x
+                    radius_px_y = radius / pixel_size_y
+                    
+                    # Average radius in pixels
+                    radius_px = (radius_px_x + radius_px_y) / 2
+                    
+                    # Create ellipse
+                    from matplotlib.patches import Ellipse
+                    ell = Ellipse(
+                        (center_x, center_y),
+                        2 * radius_px,  # major axis (diameter)
+                        2 * radius_px * (1 - ellipticity),  # minor axis
+                        angle=pa,
+                        fill=False,
+                        edgecolor='white',
+                        linestyle='-',
+                        linewidth=1,
+                        alpha=0.7
+                    )
+                    ax.add_patch(ell)
+            
+            # Set axis labels
+            ax.set_xlabel('Pixels')
+            ax.set_ylabel('Pixels')
+    
+    # Add colorbar
+    cbar = plt.colorbar(im, ax=ax)
+    cbar.set_label(colorbar_label)
+    
+    # Add title
+    if title:
+        ax.set_title(title)
+    else:
+        ax.set_title('Galaxy Flux with Radial Bins')
+    # standardize_figure_saving()
+    plt.close(fig)
     return ax

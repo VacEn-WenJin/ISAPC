@@ -103,6 +103,14 @@ def build_command(galaxy, args):
     if args.equal_aspect:
         cmd.append("--equal-aspect")
 
+    # Add physical radius option if specified
+    if args.physical_radius:
+        cmd.append("--physical-radius")
+        
+    # Add high-SNR optimization mode if specified
+    if args.high_snr_mode:
+        cmd.append("--high-snr-mode")
+
     # Add no-plots option if specified
     if args.no_plots:
         cmd.append("--no-plots")
@@ -334,6 +342,17 @@ if __name__ == "__main__":
         "--no-plots",
         action="store_true",
         help="Disable generation of plots to save memory",
+    )
+    # New parameters
+    parser.add_argument(
+        "--physical-radius",
+        action="store_true",
+        help="Use flux-based elliptical radius for binning",
+    )
+    parser.add_argument(
+        "--high-snr-mode",
+        action="store_true", 
+        help="Use high-SNR optimization for Voronoi binning",
     )
 
     args = parser.parse_args()

@@ -716,6 +716,7 @@ def create_p2p_plots(
         create_stellar_pop_plots(
             p2p_results["stellar_population"], plots_dir, galaxy_name
         )
+        plt.close(fig)
 
     # If using stellar kinematics but emission line data is available, create gas kinematics plot
     if (

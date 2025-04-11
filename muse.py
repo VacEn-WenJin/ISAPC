@@ -3496,7 +3496,7 @@ class MUSECube:
             if save_path is not None:
                 fig.savefig(save_path, dpi=150, bbox_inches="tight")
                 logger.info(f"Saved bin spectrum plot to {save_path}")
-
+            plt.close(fig)
             return fig, axes
 
         except Exception as e:
@@ -3666,7 +3666,7 @@ class MUSECube:
                     logger.info(f"Saved bin spectrum plot to {save_path_bin}")
 
                 results.append((fig, axes))
-                
+                plt.close(fig)
             except Exception as e:
                 logger.error(f"Error plotting bin fit: {e}")
                 continue
@@ -4275,15 +4275,79 @@ class MUSECube:
             # Store the results for later use
             self._physical_radius = R_galaxy
             self._ellipse_params = ellipse_params
+            self._flux_map = flux_2d  # Store flux map for later use
             
             logger.info(f"Calculated physical radius with PA={ellipse_params['PA_degrees']:.1f}°, "
                         f"ε={ellipse_params['ellipticity']:.2f}")
+            
+            # Optionally create a visualization
+            try:
+                if hasattr(self, "_galaxy_dir"):
+                    # If we have a galaxy directory, create a visualization there
+                    import matplotlib.pyplot as plt
+                    import visualization
+                    from pathlib import Path
+                    
+                    # Create directory for special plots
+                    special_plots_dir = Path(self._galaxy_dir) / "special"
+                    special_plots_dir.mkdir(exist_ok=True, parents=True)
+                    
+                    # Create figure showing flux and physical radius
+                    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 7))
+                    
+                    # Plot flux
+                    im1 = ax1.imshow(flux_2d, origin='lower', cmap='inferno')
+                    plt.colorbar(im1, ax=ax1, label='Flux')
+                    ax1.set_title('Galaxy Flux')
+                    
+                    # Plot physical radius
+                    im2 = ax2.imshow(R_galaxy, origin='lower', cmap='plasma')
+                    plt.colorbar(im2, ax=ax2, label='Physical Radius (arcsec)')
+                    ax2.set_title(f'Physical Radius (PA={ellipse_params["PA_degrees"]:.1f}°, ε={ellipse_params["ellipticity"]:.2f})')
+                    
+                    # Add ellipses to both plots
+                    from matplotlib.patches import Ellipse
+                    
+                    # Create radii for display
+                    phys_display_radii = np.linspace(
+                        np.percentile(R_galaxy[np.isfinite(R_galaxy)], 10),
+                        np.percentile(R_galaxy[np.isfinite(R_galaxy)], 90),
+                        6
+                    )
+                    
+                    for radius in phys_display_radii:
+                        for ax in [ax1, ax2]:
+                            ell = Ellipse(
+                                (ellipse_params['center_x'], ellipse_params['center_y']),
+                                2 * radius / self._pxl_size_x,  # major axis (diameter)
+                                2 * radius / self._pxl_size_y * (1 - ellipse_params['ellipticity']),  # minor axis
+                                angle=ellipse_params['PA_degrees'],
+                                fill=False,
+                                edgecolor='white',
+                                linestyle='-',
+                                linewidth=1,
+                                alpha=0.7
+                            )
+                            ax.add_patch(ell)
+                    
+                    # Save figure
+                    galaxy_name = getattr(self, "_galaxy_name", "galaxy")
+                    fig.savefig(
+                        special_plots_dir / f"{galaxy_name}_physical_radius_calculation.png", 
+                        dpi=150, 
+                        bbox_inches='tight'
+                    )
+                    plt.close(fig)
+                    
+            except Exception as e:
+                logger.debug(f"Could not create physical radius visualization: {e}")
             
             return R_galaxy, ellipse_params
         
         except Exception as e:
             logger.error(f"Error calculating physical radius: {str(e)}")
             # Return a fallback radius measure
+            flux_2d = np.nanmedian(self._cube_data, axis=0)
             r_galaxy = np.sqrt((np.indices(flux_2d.shape)[1] - flux_2d.shape[1]/2)**2 + 
                             (np.indices(flux_2d.shape)[0] - flux_2d.shape[0]/2)**2) * self._pxl_size_x
             ellipse_params = {
