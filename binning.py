@@ -767,7 +767,13 @@ def run_voronoi_binning(
     Returns
     -------
     tuple
-        Binning results (bin_num, x_gen, y_gen, sn, n_pixels, scale)
+        Binning results (bin_num, x_gen, y_gen, x_bar, y_bar, sn, n_pixels, scale)
+        - bin_num: array of bin numbers for each pixel
+        - x_gen, y_gen: coordinates of bin generators
+        - x_bar, y_bar: luminosity-weighted centroids of bins
+        - sn: signal-to-noise ratio of each bin
+        - n_pixels: number of pixels in each bin
+        - scale: scale length of the bins
     """
     try:
         # Try to import vorbin
@@ -837,6 +843,7 @@ def run_voronoi_binning(
             # First try with the user's specified target_snr
             success = False
             error_message = ""
+            binning_result = None  # Will hold the successful result
 
             # Try the main target first
             try:
@@ -851,19 +858,32 @@ def run_voronoi_binning(
                         with warnings.catch_warnings():
                             warnings.simplefilter("ignore")
 
-                            bin_num, x_gen, y_gen, sn, n_pixels, scale = (
-                                voronoi_2d_binning(
-                                    x_valid,
-                                    y_valid,
-                                    signal_valid,
-                                    noise_valid,
-                                    target_snr,
-                                    cvt=use_cvt,
-                                    plot=0,
-                                    quiet=True,
-                                    wvt=True,
-                                )
+                            # UPDATED: Capture all 8 return values
+                            binning_result = voronoi_2d_binning(
+                                x_valid,
+                                y_valid,
+                                signal_valid,
+                                noise_valid,
+                                target_snr,
+                                cvt=use_cvt,
+                                plot=0,
+                                quiet=True,
+                                wvt=True,
                             )
+                            
+                            # Check number of outputs and unpack appropriately
+                            if isinstance(binning_result, tuple):
+                                if len(binning_result) >= 8:
+                                    # Full result with 8 parameters
+                                    bin_num, x_gen, y_gen, x_bar, y_bar, sn, n_pixels, scale = binning_result
+                                elif len(binning_result) >= 6:
+                                    # Partial result with 6 parameters - create dummy x_bar, y_bar
+                                    bin_num, x_gen, y_gen, sn, n_pixels, scale = binning_result
+                                    x_bar, y_bar = x_gen.copy(), y_gen.copy()  # Use generators as centroids
+                                else:
+                                    raise ValueError(f"Unexpected number of return values: {len(binning_result)}")
+                            else:
+                                raise ValueError("Unexpected return format from voronoi_2d_binning")
 
                         # Check if we have any valid bins
                         if len(x_gen) > 0:
@@ -899,7 +919,7 @@ def run_voronoi_binning(
                 
                 # Create a logarithmically spaced array of SNR values to try
                 # Start from max_recommended down to min_recommended with 100 steps
-                num_steps = 100
+                num_steps = 300
                 
                 # Ensure we have valid values for the range
                 max_search = max_recommended * 0.99  # Slightly below max to avoid boundary issues
@@ -920,7 +940,7 @@ def run_voronoi_binning(
                     for alternative_target in snr_values_to_try:
                         if not quiet and (num_steps > 10):
                             # Only log occasionally to avoid flooding the logs
-                            if np.random.random() < 0.1:  # Log approximately 10% of attempts
+                            if np.random.random() < 0.03:  # Log approximately 3% of attempts
                                 logger.info(f"Trying SNR = {alternative_target:.1f}")
                         
                         # Try with both CVT options
@@ -929,19 +949,32 @@ def run_voronoi_binning(
                                 with warnings.catch_warnings():
                                     warnings.simplefilter("ignore")
                                     
-                                    bin_num, x_gen, y_gen, sn, n_pixels, scale = (
-                                        voronoi_2d_binning(
-                                            x_valid,
-                                            y_valid,
-                                            signal_valid,
-                                            noise_valid,
-                                            alternative_target,
-                                            cvt=use_cvt,
-                                            plot=0,
-                                            quiet=True,
-                                            wvt=True,
-                                        )
+                                    # UPDATED: Capture all 8 return values
+                                    binning_result = voronoi_2d_binning(
+                                        x_valid,
+                                        y_valid,
+                                        signal_valid,
+                                        noise_valid,
+                                        alternative_target,
+                                        cvt=use_cvt,
+                                        plot=0,
+                                        quiet=True,
+                                        wvt=True,
                                     )
+                                    
+                                    # Check number of outputs and unpack appropriately
+                                    if isinstance(binning_result, tuple):
+                                        if len(binning_result) >= 8:
+                                            # Full result with 8 parameters
+                                            bin_num, x_gen, y_gen, x_bar, y_bar, sn, n_pixels, scale = binning_result
+                                        elif len(binning_result) >= 6:
+                                            # Partial result with 6 parameters - create dummy x_bar, y_bar
+                                            bin_num, x_gen, y_gen, sn, n_pixels, scale = binning_result
+                                            x_bar, y_bar = x_gen.copy(), y_gen.copy()  # Use generators as centroids
+                                        else:
+                                            raise ValueError(f"Unexpected number of return values: {len(binning_result)}")
+                                    else:
+                                        raise ValueError("Unexpected return format from voronoi_2d_binning")
                                     
                                     # Check if we got valid results
                                     if len(x_gen) > 0:
@@ -987,13 +1020,21 @@ def run_voronoi_binning(
                 )
 
                 if bin_result is not None:
+                    # Grid binning returns 6 parameters, need to create dummy x_bar, y_bar
                     bin_num, x_gen, y_gen, sn, n_pixels, scale = bin_result
+                    x_bar, y_bar = x_gen.copy(), y_gen.copy()  # Use generators as centroids
                     success = True
                     if not quiet:
                         logger.info(f"Created {len(x_gen)} grid bins as fallback")
                 else:
                     # Fall back to _create_fallback_binning
-                    return _create_fallback_binning(x, y)
+                    fallback_result = _create_fallback_binning(x, y)
+                    if len(fallback_result) == 6:
+                        bin_num, x_gen, y_gen, sn, n_pixels, scale = fallback_result
+                        x_bar, y_bar = x_gen.copy(), y_gen.copy()  # Use generators as centroids
+                    else:
+                        # Handle unexpected return value format
+                        raise ValueError("Unexpected format from fallback binning")
 
             # Map bin numbers back to the original arrays
             full_bin_num = np.full_like(x, -1, dtype=int)
@@ -1020,7 +1061,8 @@ def run_voronoi_binning(
                             f"All bins have SNR < {min_snr}, but keeping them to avoid empty result"
                         )
 
-            return full_bin_num, x_gen, y_gen, sn, n_pixels, scale
+            # UPDATED: Return all 8 parameters
+            return full_bin_num, x_gen, y_gen, x_bar, y_bar, sn, n_pixels, scale
 
     except ImportError:
         logger.error(
@@ -1031,11 +1073,23 @@ def run_voronoi_binning(
         # For specific value errors, fall back to simple binning
         logger.error(f"Voronoi binning value error: {ve}")
         logger.info("Using simple radial binning as fallback")
-        return _create_fallback_binning(x, y)
+        fallback_result = _create_fallback_binning(x, y)
+        if len(fallback_result) == 6:
+            bin_num, x_gen, y_gen, sn, n_pixels, scale = fallback_result
+            x_bar, y_bar = x_gen.copy(), y_gen.copy()  # Use generators as centroids
+            return bin_num, x_gen, y_gen, x_bar, y_bar, sn, n_pixels, scale
+        else:
+            raise ValueError("Unexpected format from fallback binning")
     except Exception as e:
         logger.error(f"Error in Voronoi binning: {e}")
         logger.info("Using simple radial binning as fallback")
-        return _create_fallback_binning(x, y)
+        fallback_result = _create_fallback_binning(x, y)
+        if len(fallback_result) == 6:
+            bin_num, x_gen, y_gen, sn, n_pixels, scale = fallback_result
+            x_bar, y_bar = x_gen.copy(), y_gen.copy()  # Use generators as centroids
+            return bin_num, x_gen, y_gen, x_bar, y_bar, sn, n_pixels, scale
+        else:
+            raise ValueError("Unexpected format from fallback binning")
 
 
 def _create_fallback_binning(x, y, n_bins=5):
@@ -1055,6 +1109,7 @@ def _create_fallback_binning(x, y, n_bins=5):
     -------
     tuple
         Simple binning results compatible with Voronoi binning return
+        (bin_num, x_gen, y_gen, x_bar, y_bar, sn, n_pixels, scale)
     """
     # Calculate distance from center for each point
     x_center = np.median(x[np.isfinite(x)])
@@ -1065,12 +1120,14 @@ def _create_fallback_binning(x, y, n_bins=5):
     # Create simple radial bins
     valid_mask = np.isfinite(r)
     if np.sum(valid_mask) < 1:
-        # If no valid points, return a simple error state
+        # If no valid points, return a simple error state with 8 parameters
         bin_num = np.full_like(x, -1, dtype=int)
         return (
             bin_num,
             np.array([0]),
             np.array([0]),
+            np.array([0]),  # x_bar
+            np.array([0]),  # y_bar
             np.array([1.0]),
             np.array([1]),
             1.0,
@@ -1108,10 +1165,21 @@ def _create_fallback_binning(x, y, n_bins=5):
 
     logger.warning(f"Created simple fallback binning with {len(x_gen)} bins")
 
+    # Convert to numpy arrays
+    x_gen_arr = np.array(x_gen)
+    y_gen_arr = np.array(y_gen)
+    
+    # Use generators as centroids for fallback
+    x_bar = x_gen_arr.copy()
+    y_bar = y_gen_arr.copy()
+
+    # Return 8 parameters to match voronoi_2d_binning
     return (
         bin_num,
-        np.array(x_gen),
-        np.array(y_gen),
+        x_gen_arr,
+        y_gen_arr,
+        x_bar,  # Centroids (same as generators for fallback)
+        y_bar,
         np.array(sn),
         np.array(n_pixels),
         1.0,

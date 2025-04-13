@@ -55,15 +55,19 @@ def calculate_galaxy_radius(flux_2d, pixel_size_x=0.2, pixel_size_y=None):
         
         # Apply mask and calculate weighted mean
         total_weight = np.sum(flux_2d[high_flux_mask])
-        if total_weight > 0:
-            x_center = np.sum(x_indices[high_flux_mask] * flux_2d[high_flux_mask]) / total_weight
-            y_center = np.sum(y_indices[high_flux_mask] * flux_2d[high_flux_mask]) / total_weight
-        else:
-            # Fallback to geometric center if weighting fails
-            x_center = flux_2d.shape[1] / 2
-            y_center = flux_2d.shape[0] / 2
-            logger.warning("Flux weighting failed. Using geometric center instead.")
-            
+        # if total_weight > 0:
+        #     x_center = np.sum(x_indices[high_flux_mask] * flux_2d[high_flux_mask]) / total_weight
+        #     y_center = np.sum(y_indices[high_flux_mask] * flux_2d[high_flux_mask]) / total_weight
+        # else:
+        #     # Fallback to geometric center if weighting fails
+        #     x_center = flux_2d.shape[1] / 2
+        #     y_center = flux_2d.shape[0] / 2
+        #     logger.warning("Flux weighting failed. Using geometric center instead.")
+        
+        # Uniform center
+        x_center = flux_2d.shape[1] / 2
+        y_center = flux_2d.shape[0] / 2
+
         # Step 3: Calculate flux-weighted second moments
         dx = x_indices - x_center
         dy = y_indices - y_center

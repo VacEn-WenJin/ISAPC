@@ -195,7 +195,13 @@ def run_vnb_analysis(args, cube, p2p_results=None):
     from binning import run_voronoi_binning
     
     # Call the function with original coordinates - no transformation
-    bin_num, x_gen, y_gen, sn, n_pixels, scale = run_voronoi_binning(
+    # In run_vnb_analysis function in voronoi.py:
+
+    # Import the updated function
+    from binning import run_voronoi_binning
+
+    # Change the function call to unpack 8 parameters
+    bin_num, x_gen, y_gen, x_bar, y_bar, sn, n_pixels, scale = run_voronoi_binning(
         x, y, signal, noise, 
         target_snr=safe_target_snr,
         plot=0, 
@@ -203,6 +209,8 @@ def run_vnb_analysis(args, cube, p2p_results=None):
         cvt=use_cvt,
         min_snr=min_snr
     )
+
+    # The rest of the function stays the same, but using bin_num consistently
 
     # Create bin indices
     bin_indices = []
