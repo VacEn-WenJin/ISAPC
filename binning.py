@@ -3,9 +3,10 @@ Spectral Binning Tools - Support for Voronoi binning and radial binning
 """
 
 import logging
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Union
+from typing import Dict, List, Union, Optional, Tuple, Any
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -17,59 +18,6 @@ logger = logging.getLogger(__name__)
 
 # Speed of light in km/s
 C_KMS = 299792.458
-
-
-def to_p2p_compatible(self, original_cube=None):
-    """Convert binned data to p2p compatible format with proper velocity scale"""
-    # Get dimensions
-    n_wave = len(self.wavelength)
-    n_bins = len(self.bin_indices)
-
-    # Create pseudo-cube with shape [n_wave, 1, n_bins]
-    pseudo_cube = np.zeros((n_wave, 1, n_bins))
-    for i in range(n_bins):
-        pseudo_cube[:, 0, i] = self.spectra[:, i]
-
-    # Create variance cube (simple estimate)
-    pseudo_variance = np.ones_like(pseudo_cube) * 0.01
-
-    # Create x, y coordinates (just bin indices)
-    x = np.arange(n_bins)
-    y = np.zeros(n_bins)
-
-    # Properly calculate velocity scale (matching ppxf requirements)
-    c = 299792.458  # Speed of light in km/s
-    ln_lambda = np.log(self.wavelength)
-    dln_lambda = np.diff(ln_lambda)
-    if len(dln_lambda) > 0:
-        # Use median to be robust
-        velscale = c * np.median(dln_lambda)
-    else:
-        # Fallback
-        velscale = 50.0
-
-    # Create result dict with all necessary cube attributes
-    result = {
-        "cube": pseudo_cube,
-        "variance": pseudo_variance,
-        "wavelength": self.wavelength,
-        "bin_num": self.bin_num,
-        "bin_indices": self.bin_indices,
-        "x": x,
-        "y": y,
-        "metadata": self.metadata,
-        "velscale": velscale,  # Add the properly calculated velscale
-    }
-
-    # Add useful information from original cube if available
-    if original_cube is not None:
-        if hasattr(original_cube, "_redshift"):
-            result["redshift"] = original_cube._redshift
-        if hasattr(original_cube, "_pxl_size_x"):
-            result["pxl_size_x"] = original_cube._pxl_size_x
-            result["pxl_size_y"] = original_cube._pxl_size_y
-
-    return result
 
 
 @dataclass
@@ -137,6 +85,17 @@ class BinnedSpectra:
         x = np.arange(n_bins)
         y = np.zeros(n_bins)
 
+        # Properly calculate velocity scale (matching ppxf requirements)
+        c = 299792.458  # Speed of light in km/s
+        ln_lambda = np.log(self.wavelength)
+        dln_lambda = np.diff(ln_lambda)
+        if len(dln_lambda) > 0:
+            # Use median to be robust
+            velscale = c * np.median(dln_lambda)
+        else:
+            # Fallback
+            velscale = 50.0
+
         # Create result dict with all necessary cube attributes
         result = {
             "cube": pseudo_cube,
@@ -147,6 +106,7 @@ class BinnedSpectra:
             "x": x,
             "y": y,
             "metadata": self.metadata,
+            "velscale": velscale,  # Add the properly calculated velscale
         }
 
         # Add useful information from original cube if available
@@ -157,48 +117,6 @@ class BinnedSpectra:
                 result["pxl_size_x"] = original_cube._pxl_size_x
                 result["pxl_size_y"] = original_cube._pxl_size_y
 
-        # Create a proper cube object if the original cube has a constructor
-        if original_cube is not None and hasattr(original_cube, "__class__"):
-            try:
-                # Try to create a new cube of the same class
-                cube_class = original_cube.__class__
-                # Create a new instance and copy over attributes
-                new_cube = cube_class.__new__(cube_class)
-
-                # Copy over basic attributes
-                new_cube._lambda_gal = self.wavelength.copy()
-                new_cube._spectra = pseudo_cube.reshape(n_wave, n_bins)
-                new_cube._variance = pseudo_variance.reshape(n_wave, n_bins)
-                new_cube._n_y = 1
-                new_cube._n_x = n_bins
-
-                # Copy over key attributes from original cube
-                if hasattr(original_cube, "_redshift"):
-                    new_cube._redshift = original_cube._redshift
-                if hasattr(original_cube, "_pxl_size_x"):
-                    new_cube._pxl_size_x = original_cube._pxl_size_x
-                    new_cube._pxl_size_y = original_cube._pxl_size_y
-                if hasattr(original_cube, "_goodwavelength"):
-                    new_cube._goodwavelength = original_cube._goodwavelength
-
-                # Copy fit_spectra and other methods
-                new_cube.fit_spectra = original_cube.fit_spectra
-                new_cube.fit_emission_lines = original_cube.fit_emission_lines
-                new_cube.calculate_spectral_indices = (
-                    original_cube.calculate_spectral_indices
-                )
-
-                # Store the bin info for reference
-                new_cube._bin_num = self.bin_num
-                new_cube._bin_indices = self.bin_indices
-
-                return new_cube
-            except Exception as e:
-                logger.warning(
-                    f"Failed to create cube object: {e}. Using dict format instead."
-                )
-
-        # Fallback to the original format
         return result
 
     def create_visualization_plots(self, output_dir, galaxy_name):
@@ -506,46 +424,9 @@ class RadialBinnedData(BinnedSpectra):
                 plt.tight_layout()
                 plt.savefig(plots_dir / f"{galaxy_name}_radial_bin_map.png", dpi=150)
                 plt.close(fig)
-
-                # Plot radial bin profile with areas
-                try:
-                    # Calculate bin areas
-                    bin_areas = []
-                    for i, radius in enumerate(self.bin_radii):
-                        if i == 0:
-                            inner_edge = 0
-                        else:
-                            inner_edge = self.bin_radii[i - 1]
-
-                        # Area of annular region, accounting for ellipticity
-                        area = np.pi * (radius**2 - inner_edge**2)
-                        if ellipticity > 0 and ellipticity < 1:
-                            area *= 1 - ellipticity
-
-                        bin_areas.append(area)
-
-                    # Plot bin radius vs. area
-                    fig, ax = plt.subplots(figsize=(8, 6))
-                    ax.plot(self.bin_radii, bin_areas, "o-")
-                    ax.set_xlabel("Radius (arcsec)")
-                    ax.set_ylabel("Bin Area (arcsec²)")
-                    ax.set_title(f"{galaxy_name} - Radial Bin Areas")
-                    ax.grid(True, alpha=0.3)
-
-                    # Save
-                    plt.tight_layout()
-                    plt.savefig(
-                        plots_dir / f"{galaxy_name}_radial_bin_areas.png", dpi=150
-                    )
-                    plt.close(fig)
-                except Exception as e:
-                    logger.warning(f"Error creating bin area plot: {e}")
-                    plt.close("all")
-
             except Exception as e:
                 logger.warning(f"Failed to create radial bin map: {e}")
                 plt.close("all")
-
         except Exception as e:
             logger.warning(f"Failed to create radial visualization: {e}")
             plt.close("all")
@@ -854,163 +735,6 @@ def combine_spectra_efficiently(
     return bin_spectra
 
 
-def create_grid_binning(
-    x, y, signal, noise, nx=3, ny=3, xmin=None, xmax=None, ymin=None, ymax=None
-):
-    """
-    Create a grid-based binning as a reliable fallback
-
-    Parameters
-    ----------
-    x, y : ndarray
-        Coordinate arrays
-    signal, noise : ndarray
-        Signal and noise arrays
-    nx, ny : int
-        Number of bins in x and y directions
-    xmin, xmax, ymin, ymax : float, optional
-        Coordinate bounds
-
-    Returns
-    -------
-    tuple or None
-        (bin_num, x_gen, y_gen, sn, n_pixels, scale) or None if failed
-    """
-    try:
-        # Ensure at least one bin
-        nx = max(1, nx)
-        ny = max(1, ny)
-
-        # Get bounds if not provided
-        if xmin is None:
-            xmin = np.min(x)
-        if xmax is None:
-            xmax = np.max(x)
-        if ymin is None:
-            ymin = np.min(y)
-        if ymax is None:
-            ymax = np.max(y)
-
-        # Add small margin to avoid edge issues
-        eps = 1e-6
-        xmin -= eps
-        xmax += eps
-        ymin -= eps
-        ymax += eps
-
-        # Create bin edges
-        x_edges = np.linspace(xmin, xmax, nx + 1)
-        y_edges = np.linspace(ymin, ymax, ny + 1)
-
-        # Initialize arrays
-        bin_num = np.full(len(x), -1, dtype=int)
-        x_gen = []
-        y_gen = []
-        sn_values = []
-        n_pixels = []
-
-        # Assign bins
-        bin_id = 0
-        for i in range(nx):
-            for j in range(ny):
-                # Get bin boundaries
-                x_min, x_max = x_edges[i], x_edges[i + 1]
-                y_min, y_max = y_edges[j], y_edges[j + 1]
-
-                # Select points in this bin
-                mask = (x >= x_min) & (x < x_max) & (y >= y_min) & (y < y_max)
-
-                # Only create bin if it has data points
-                if np.any(mask):
-                    bin_num[mask] = bin_id
-                    x_gen.append(np.mean(x[mask]))
-                    y_gen.append(np.mean(y[mask]))
-
-                    # Calculate SNR
-                    s = np.mean(signal[mask])
-                    n = np.mean(noise[mask])
-                    sn = s / n if n > 0 else 1.0
-
-                    sn_values.append(sn)
-                    n_pixels.append(np.sum(mask))
-                    bin_id += 1
-
-        # Check if we created any bins
-        if bin_id == 0:
-            return None
-
-        return (
-            bin_num,
-            np.array(x_gen),
-            np.array(y_gen),
-            np.array(sn_values),
-            np.array(n_pixels),
-            1.0,
-        )
-
-    except Exception as e:
-        logger.error(f"Error in grid binning: {e}")
-        return None
-
-
-def calculate_snr(flux, template=None, observed=None, continuum_mask=None):
-    """
-    Calculate signal-to-noise ratio using template fitting residuals
-
-    Parameters
-    ----------
-    flux : ndarray
-        Flux values
-    template : ndarray, optional
-        Template (model) spectrum
-    observed : ndarray, optional
-        Observed spectrum
-    continuum_mask : ndarray, optional
-        Boolean mask for continuum regions without emission lines
-
-    Returns
-    -------
-    float
-        Signal-to-noise ratio
-    """
-    # If template and observed are available, use residuals
-    if template is not None and observed is not None:
-        # Apply continuum mask if provided
-        if continuum_mask is not None:
-            template_cont = template[continuum_mask]
-            observed_cont = observed[continuum_mask]
-        else:
-            template_cont = template
-            observed_cont = observed
-
-        # Remove NaN values
-        valid = np.isfinite(template_cont) & np.isfinite(observed_cont)
-        if np.sum(valid) < 5:  # Need at least a few points
-            return 1.0  # Default minimum SNR
-
-        # Calculate SNR using template and residuals
-        # SNR = mean(template) / std(template - observed)
-        signal = np.mean(template_cont[valid])
-        noise = np.std(template_cont[valid] - observed_cont[valid])
-
-        if noise > 0:
-            return signal / noise
-        return 1.0
-
-    # If only flux is available, use simple estimation
-    valid = np.isfinite(flux)
-    if not np.any(valid):
-        return 1.0
-
-    # Use simple SNR estimation
-    signal = np.mean(flux[valid])
-    noise = np.std(flux[valid])
-
-    if noise > 0:
-        return signal / noise
-    return 1.0
-
-
 def run_voronoi_binning(
     x, y, signal, noise, target_snr, plot=0, quiet=False, cvt=True, min_snr=0.0
 ):
@@ -1090,7 +814,7 @@ def run_voronoi_binning(
 
             # Check if the target SNR is reasonable based on data quality
             # Recommended range: 1.5× to 50× maximum pixel SNR
-            min_recommended = max_pixel_snr * 1.5
+            min_recommended = median_snr * 1.5
             max_recommended = max_pixel_snr * 50.0
 
             if target_snr < min_recommended:
@@ -1166,54 +890,75 @@ def run_voronoi_binning(
             except Exception as e:
                 error_message = str(e)
 
-            # If the specified target failed, try an alternative value within recommended range
+            # If the specified target failed, try a systematic approach with multiple SNR values
             if not success:
                 if not quiet:
                     logger.warning(
                         f"Failed with target SNR = {target_snr:.1f}: {error_message}"
                     )
-
-                # Choose a moderate value within the recommended range
-                alternative_target = min(
-                    max(max_pixel_snr * 3.0, min_recommended), max_recommended * 0.5
-                )
-
-                if not quiet:
-                    logger.info(
-                        f"Trying alternative target SNR = {alternative_target:.1f}"
+                
+                # Create a logarithmically spaced array of SNR values to try
+                # Start from max_recommended down to min_recommended with 100 steps
+                num_steps = 100
+                
+                # Ensure we have valid values for the range
+                max_search = max_recommended * 0.99  # Slightly below max to avoid boundary issues
+                min_search = max(min_recommended * 1.01, max_pixel_snr * 1.1)  # Ensure we're above min
+                
+                # Create log-spaced values from high to low
+                if max_search > min_search:
+                    snr_values_to_try = np.logspace(
+                        np.log10(max_search), 
+                        np.log10(min_search), 
+                        num_steps
                     )
-
-                try:
-                    for use_cvt in [cvt, False]:
-                        try:
-                            with warnings.catch_warnings():
-                                warnings.simplefilter("ignore")
-
-                                bin_num, x_gen, y_gen, sn, n_pixels, scale = (
-                                    voronoi_2d_binning(
-                                        x_valid,
-                                        y_valid,
-                                        signal_valid,
-                                        noise_valid,
-                                        alternative_target,
-                                        cvt=use_cvt,
-                                        plot=0,
-                                        quiet=True,
-                                        wvt=True,
-                                    )
-                                )
-
-                                if len(x_gen) > 0:
-                                    success = True
-                                    if not quiet:
-                                        logger.warning(
-                                            f"Using alternative SNR = {alternative_target:.1f}, CVT={use_cvt}"
+                    
+                    if not quiet:
+                        logger.info(f"Trying {num_steps} SNR values from {max_search:.1f} to {min_search:.1f}")
+                    
+                    # Try each SNR value until one works
+                    for alternative_target in snr_values_to_try:
+                        if not quiet and (num_steps > 10):
+                            # Only log occasionally to avoid flooding the logs
+                            if np.random.random() < 0.1:  # Log approximately 10% of attempts
+                                logger.info(f"Trying SNR = {alternative_target:.1f}")
+                        
+                        # Try with both CVT options
+                        for use_cvt in [cvt, False]:
+                            try:
+                                with warnings.catch_warnings():
+                                    warnings.simplefilter("ignore")
+                                    
+                                    bin_num, x_gen, y_gen, sn, n_pixels, scale = (
+                                        voronoi_2d_binning(
+                                            x_valid,
+                                            y_valid,
+                                            signal_valid,
+                                            noise_valid,
+                                            alternative_target,
+                                            cvt=use_cvt,
+                                            plot=0,
+                                            quiet=True,
+                                            wvt=True,
                                         )
-                                    break
-                        except Exception as e:
-                            continue
-                except Exception as e:
-                    pass
+                                    )
+                                    
+                                    # Check if we got valid results
+                                    if len(x_gen) > 0:
+                                        success = True
+                                        if not quiet:
+                                            logger.warning(
+                                                f"Success with SNR = {alternative_target:.1f}, CVT={use_cvt}"
+                                            )
+                                        break  # Break out of CVT loop
+                            except Exception as e:
+                                # Just continue to the next attempt
+                                continue
+                            
+                        if success:
+                            break  # Break out of SNR loop if we found a working value
+                else:
+                    logger.warning(f"Invalid search range: max={max_search:.1f}, min={min_search:.1f}")
 
             # If still no success, use create_grid_binning as a more reliable fallback
             if not success:
@@ -1577,202 +1322,100 @@ def calculate_radial_bins(
         return bin_num, bin_edges, bin_radii
 
 
-def plot_binned_map(
-    x,
-    y,
-    bin_num,
-    values=None,
-    title=None,
-    cmap="tab20",
-    vmin=None,
-    vmax=None,
-    equal_aspect=True,
-    savefile=None,
+def create_grid_binning(
+    x, y, signal, noise, nx=3, ny=3, xmin=None, xmax=None, ymin=None, ymax=None
 ):
     """
-    Plot binned map
+    Create a grid-based binning as a reliable fallback
 
     Parameters
     ----------
-    x : ndarray
-        x coordinates
-    y : ndarray
-        y coordinates
-    bin_num : ndarray
-        Bin numbers
-    values : ndarray, optional
-        Values to plot
-    title : str, optional
-        Plot title
-    cmap : str, default='tab20'
-        Colormap
-    vmin : float, optional
-        Minimum value for colormap
-    vmax : float, optional
-        Maximum value for colormap
-    equal_aspect : bool, default=True
-        Equal aspect ratio
-    savefile : str, optional
-        File to save plot
+    x, y : ndarray
+        Coordinate arrays
+    signal, noise : ndarray
+        Signal and noise arrays
+    nx, ny : int
+        Number of bins in x and y directions
+    xmin, xmax, ymin, ymax : float, optional
+        Coordinate bounds
 
     Returns
     -------
-    matplotlib.figure.Figure
-        Figure object
+    tuple or None
+        (bin_num, x_gen, y_gen, sn, n_pixels, scale) or None if failed
     """
-    fig, ax = plt.subplots(figsize=(10, 8))
+    try:
+        # Ensure at least one bin
+        nx = max(1, nx)
+        ny = max(1, ny)
 
-    # Create scatter plot with bins
-    if values is None:
-        # Show bin numbers
-        valid_mask = bin_num >= 0
-        scatter = ax.scatter(
-            x[valid_mask],
-            y[valid_mask],
-            c=bin_num[valid_mask],
-            cmap=cmap,
-            s=10,
-            vmin=vmin,
-            vmax=vmax,
+        # Get bounds if not provided
+        if xmin is None:
+            xmin = np.min(x)
+        if xmax is None:
+            xmax = np.max(x)
+        if ymin is None:
+            ymin = np.min(y)
+        if ymax is None:
+            ymax = np.max(y)
+
+        # Add small margin to avoid edge issues
+        eps = 1e-6
+        xmin -= eps
+        xmax += eps
+        ymin -= eps
+        ymax += eps
+
+        # Create bin edges
+        x_edges = np.linspace(xmin, xmax, nx + 1)
+        y_edges = np.linspace(ymin, ymax, ny + 1)
+
+        # Initialize arrays
+        bin_num = np.full(len(x), -1, dtype=int)
+        x_gen = []
+        y_gen = []
+        sn_values = []
+        n_pixels = []
+
+        # Assign bins
+        bin_id = 0
+        for i in range(nx):
+            for j in range(ny):
+                # Get bin boundaries
+                x_min, x_max = x_edges[i], x_edges[i + 1]
+                y_min, y_max = y_edges[j], y_edges[j + 1]
+
+                # Select points in this bin
+                mask = (x >= x_min) & (x < x_max) & (y >= y_min) & (y < y_max)
+
+                # Only create bin if it has data points
+                if np.any(mask):
+                    bin_num[mask] = bin_id
+                    x_gen.append(np.mean(x[mask]))
+                    y_gen.append(np.mean(y[mask]))
+
+                    # Calculate SNR
+                    s = np.mean(signal[mask])
+                    n = np.mean(noise[mask])
+                    sn = s / n if n > 0 else 1.0
+
+                    sn_values.append(sn)
+                    n_pixels.append(np.sum(mask))
+                    bin_id += 1
+
+        # Check if we created any bins
+        if bin_id == 0:
+            return None
+
+        return (
+            bin_num,
+            np.array(x_gen),
+            np.array(y_gen),
+            np.array(sn_values),
+            np.array(n_pixels),
+            1.0,
         )
-        plt.colorbar(scatter, ax=ax, label="Bin")
-    else:
-        # Show values
-        valid_mask = (bin_num >= 0) & np.isfinite(values)
 
-        # Fix array size mismatch (x, y, bin_num may be 2D arrays while values is 1D)
-        if np.sum(valid_mask) > 0:
-            # Ensure proper mapping even if array shapes differ
-            values_fixed = np.zeros_like(bin_num, dtype=float)
-            values_fixed.fill(np.nan)
-
-            # Map values to bin numbers
-            unique_bins = np.unique(bin_num[bin_num >= 0])
-            for i, bin_id in enumerate(unique_bins):
-                if i < len(values):
-                    bin_mask = bin_num == bin_id
-                    value = values[i]
-                    # Handle scalar and array values
-                    if np.isscalar(value) or (
-                        hasattr(value, "size") and value.size == 1
-                    ):
-                        values_fixed[bin_mask] = value
-                    elif hasattr(value, "__len__") and len(value) > 0:
-                        values_fixed[bin_mask] = value[0]
-
-            scatter = ax.scatter(
-                x[valid_mask],
-                y[valid_mask],
-                c=values_fixed[valid_mask],
-                cmap=cmap,
-                s=10,
-                vmin=vmin,
-                vmax=vmax,
-            )
-            plt.colorbar(scatter, ax=ax)
-        else:
-            ax.scatter(x, y, c="gray", s=5, alpha=0.5)
-            ax.text(
-                0.5,
-                0.5,
-                "No valid data to plot",
-                transform=ax.transAxes,
-                ha="center",
-                va="center",
-            )
-
-    # Set title
-    if title:
-        ax.set_title(title)
-
-    # Set axes parameters
-    ax.set_xlabel("X")
-    ax.set_ylabel("Y")
-
-    if equal_aspect:
-        ax.set_aspect("equal")
-
-    # Save figure if requested
-    if savefile:
-        plt.savefig(savefile, dpi=150, bbox_inches="tight")
-
-    return fig
-
-
-def plot_radial_profile(
-    radius, values, errors=None, title=None, xlabel="Radius", ylabel=None, savefile=None
-):
-    """
-    Plot radial profile
-
-    Parameters
-    ----------
-    radius : ndarray
-        Radial distance
-    values : ndarray
-        Values to plot
-    errors : ndarray, optional
-        Error values
-    title : str, optional
-        Plot title
-    xlabel : str, default='Radius'
-        X-axis label
-    ylabel : str, optional
-        Y-axis label
-    savefile : str, optional
-        File to save plot
-
-    Returns
-    -------
-    matplotlib.figure.Figure
-        Figure object
-    """
-    fig, ax = plt.subplots(figsize=(10, 6))
-
-    # Convert to arrays and ensure compatibility
-    radius = np.asarray(radius)
-    values = np.asarray(values)
-
-    # Check if data is valid
-    valid_mask = np.isfinite(radius) & np.isfinite(values)
-    if not np.any(valid_mask):
-        ax.text(
-            0.5,
-            0.5,
-            "No valid data to plot",
-            transform=ax.transAxes,
-            ha="center",
-            va="center",
-        )
-    else:
-        # Plot data
-        if errors is not None:
-            errors = np.asarray(errors)
-            valid_mask = valid_mask & np.isfinite(errors)
-            ax.errorbar(
-                radius[valid_mask],
-                values[valid_mask],
-                yerr=errors[valid_mask],
-                fmt="o-",
-                capsize=3,
-            )
-        else:
-            ax.plot(radius[valid_mask], values[valid_mask], "o-")
-
-    # Add grid
-    ax.grid(True, alpha=0.3)
-
-    # Set labels
-    ax.set_xlabel(xlabel)
-    if ylabel:
-        ax.set_ylabel(ylabel)
-
-    # Set title
-    if title:
-        ax.set_title(title)
-
-    # Save figure if requested
-    if savefile:
-        plt.savefig(savefile, dpi=150, bbox_inches="tight")
-
-    return fig
+    except Exception as e:
+        logger.error(f"Error in grid binning: {e}")
+        return None

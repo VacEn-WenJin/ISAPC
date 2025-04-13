@@ -3168,7 +3168,7 @@ def plot_real_pixels(data, wcs, ax=None, title=None, cmap='viridis', vmin=None, 
 def plot_with_wcs_grid(data, wcs, ax=None, title=None, cmap='viridis', vmin=None, vmax=None, 
                       colorbar_label=None, show_grid=True, pixel_size=None):
     """
-    Plot 2D data with proper WCS-based pixel grid
+    Plot 2D data with proper WCS-based pixel grid to show RA/DEC coordinates
     
     Parameters
     ----------
@@ -3181,9 +3181,9 @@ def plot_with_wcs_grid(data, wcs, ax=None, title=None, cmap='viridis', vmin=None
     title : str, optional
         Plot title
     cmap : str, default='viridis'
-        Colormap
+        Colormap name
     vmin, vmax : float, optional
-        Color scale limits
+        Minimum and maximum values for colorbar
     colorbar_label : str, optional
         Label for colorbar
     show_grid : bool, default=True
@@ -3209,82 +3209,85 @@ def plot_with_wcs_grid(data, wcs, ax=None, title=None, cmap='viridis', vmin=None
         vmax = np.ma.max(masked_data)
     
     try:
-        # Try to use WCS for plotting
-        from astropy.visualization.wcsaxes import WCSAxes
-        from astropy.coordinates import SkyCoord
-        import astropy.units as u
-        
-        # Create new axis with WCS projection if needed
-        if wcs is not None and not isinstance(ax, WCSAxes):
-            fig = ax.figure
-            ax.remove()
-            ax = fig.add_subplot(111, projection=wcs)
-        
+        # Use WCS for plotting
         if wcs is not None:
-            # Plot with WCS coordinates
+            # Import astropy's WCSAxes for coordinate transformation
+            from astropy.visualization.wcsaxes import WCSAxes
+            
+            # Create new axis with WCS projection if needed
+            if not isinstance(ax, WCSAxes):
+                fig = ax.figure
+                ax.remove()
+                ax = fig.add_subplot(111, projection=wcs)
+            
+            # Plot data in WCS coordinates
             im = ax.imshow(masked_data, origin='lower', cmap=cmap, vmin=vmin, vmax=vmax)
             
             # Add coordinate grid
             if show_grid:
                 ax.grid(color='white', ls='solid', alpha=0.3)
                 
-            # Set axis labels
+            # Set axis labels to RA/DEC
             ax.set_xlabel('RA')
             ax.set_ylabel('Dec')
             
-            # Try to add pixel grid (showing actual pixel boundaries)
-            try:
-                ny, nx = data.shape
-                y, x = np.indices((ny+1, nx+1)) - 0.5  # +1 for corners, -0.5 to get pixel edges
-                
-                # Convert pixel corners to world coordinates
-                ra, dec = wcs.wcs_pix2world(x, y, 0)
-                
-                # Plot pixel grid with very thin lines
-                for i in range(nx+1):
-                    ax.plot(ra[i,:], dec[i,:], 'gray', lw=0.2, alpha=0.3, transform=ax.get_transform('world'))
-                
-                for j in range(ny+1):
-                    ax.plot(ra[:,j], dec[:,j], 'gray', lw=0.2, alpha=0.3, transform=ax.get_transform('world'))
-            except Exception as e:
-                logger.warning(f"Could not draw pixel grid: {e}")
+            # Let WCSAxes handle coordinate display automatically
         else:
-            # Fall back to regular imshow if WCS isn't available
+            # Fallback to physical scaling without WCS
             if pixel_size is not None:
-                # Use physical coordinates
+                # Use physical coordinates based on pixel size
                 ny, nx = data.shape
                 pixel_size_x, pixel_size_y = pixel_size if isinstance(pixel_size, tuple) else (pixel_size, pixel_size)
                 
-                extent = [-nx/2 * pixel_size_x, nx/2 * pixel_size_x, 
-                         -ny/2 * pixel_size_y, ny/2 * pixel_size_y]
-                im = ax.imshow(masked_data, origin='lower', cmap=cmap, vmin=vmin, vmax=vmax,
-                              extent=extent, aspect='equal')
+                # Create physical coordinate grid centered on IFU center
+                extent = [
+                    -nx/2 * pixel_size_x, 
+                    nx/2 * pixel_size_x, 
+                    -ny/2 * pixel_size_y, 
+                    ny/2 * pixel_size_y
+                ]
                 
-                # Add grid
-                if show_grid:
-                    # Create grid lines
-                    grid_x = np.arange(-nx/2, nx/2+1) * pixel_size_x
-                    grid_y = np.arange(-ny/2, ny/2+1) * pixel_size_y
-                    
-                    for x in grid_x:
-                        ax.axvline(x, color='gray', lw=0.2, alpha=0.3)
-                    
-                    for y in grid_y:
-                        ax.axhline(y, color='gray', lw=0.2, alpha=0.3)
+                im = ax.imshow(
+                    masked_data,
+                    origin='lower',
+                    cmap=cmap,
+                    vmin=vmin,
+                    vmax=vmax,
+                    extent=extent,
+                    aspect='equal'
+                )
                 
                 # Set axis labels
                 ax.set_xlabel('Δ RA (arcsec)')
                 ax.set_ylabel('Δ Dec (arcsec)')
+                
+                # Add grid if requested
+                if show_grid:
+                    ax.grid(alpha=0.3)
             else:
-                # Simplest case - just plot in pixel coordinates
-                im = ax.imshow(masked_data, origin='lower', cmap=cmap, vmin=vmin, vmax=vmax)
+                # Simple pixel coordinates if no WCS or pixel size
+                im = ax.imshow(
+                    masked_data,
+                    origin='lower',
+                    cmap=cmap,
+                    vmin=vmin,
+                    vmax=vmax
+                )
+                
                 ax.set_xlabel('Pixels')
                 ax.set_ylabel('Pixels')
     
     except Exception as e:
-        logger.warning(f"Error using WCS for plotting: {e}")
-        # Simplest fallback - just plot the data
-        im = ax.imshow(masked_data, origin='lower', cmap=cmap, vmin=vmin, vmax=vmax)
+        logger.warning(f"Error in WCS plotting: {e}")
+        # Fallback to simple imshow
+        im = ax.imshow(
+            masked_data,
+            origin='lower',
+            cmap=cmap,
+            vmin=vmin,
+            vmax=vmax
+        )
+        
         ax.set_xlabel('Pixels')
         ax.set_ylabel('Pixels')
     
@@ -3298,7 +3301,6 @@ def plot_with_wcs_grid(data, wcs, ax=None, title=None, cmap='viridis', vmin=None
         ax.set_title(title)
     
     return ax
-
 
 def plot_flux_with_radial_bins(
     flux_map,

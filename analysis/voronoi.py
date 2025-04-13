@@ -29,8 +29,8 @@ C_KMS = 299792.458
 
 def run_vnb_analysis(args, cube, p2p_results=None):
     """
-    Run Voronoi binning analysis on MUSE data cube with improved SNR targeting
-
+    Run Voronoi binning analysis on MUSE data cube with improved coordinate handling
+    
     Parameters
     ----------
     args : argparse.Namespace
@@ -39,7 +39,7 @@ def run_vnb_analysis(args, cube, p2p_results=None):
         MUSE data cube object
     p2p_results : dict, optional
         P2P analysis results to use for binning
-
+        
     Returns
     -------
     dict
@@ -81,48 +81,34 @@ def run_vnb_analysis(args, cube, p2p_results=None):
             logger.warning(f"Error loading P2P results: {e}")
             p2p_results = None
 
-    # Set up target SNR and other binning parameters
-    # Base target SNR from arguments, but will be adjusted if binning fails
+    # Set up binning parameters
     target_snr = args.target_snr if hasattr(args, "target_snr") else 30
     min_snr = args.min_snr if hasattr(args, "min_snr") else 1
     use_cvt = args.cvt if hasattr(args, "cvt") else True
-    
-    # New parameter for high-SNR mode
     high_snr_mode = args.high_snr_mode if hasattr(args, "high_snr_mode") else False
-    
-    # Check if we should use physical radius calculation
     use_physical_radius = args.physical_radius if hasattr(args, "physical_radius") else False
 
-    # Extract coordinates, signal, and noise for VNB
-    # Use wavelength-integrated signal-to-noise
-    x = cube.x
-    y = cube.y
+    # Extract coordinates, signal, and noise for binning
+    # IMPORTANT: Use original coordinates from the cube
+    x = cube.x  # These are the original x coordinates from the cube
+    y = cube.y  # These are the original y coordinates from the cube
 
-    # Following the notebook's approach, use a specific wavelength range for SNR calculation
-    # This range (5075-5125 Å) is often used for continuum SNR assessment
+    # Calculate SNR using a specific wavelength range for continuum
     wave_mask = (cube._lambda_gal >= 5075) & (cube._lambda_gal <= 5125)
     if np.sum(wave_mask) > 0:
-        # Calculate SNR using this specific range
         signal = np.nanmedian(cube._spectra[wave_mask], axis=0)
         noise = np.nanstd(cube._spectra[wave_mask], axis=0)
         logger.info("Using wavelength range 5075-5125 Å for SNR calculation")
     else:
-        # Fallback to full spectrum if this range is not available
         signal = np.nanmedian(cube._spectra, axis=0)
         noise = np.nanmedian(np.sqrt(cube._log_variance), axis=0)
-        logger.info(
-            "Using full spectrum for SNR calculation (preferred range not available)"
-        )
+        logger.info("Using full spectrum for SNR calculation")
 
-    # Preprocess signal and noise to avoid problems with very low values
-    # Handle problematic pixels by setting minimum values
+    # Preprocess signal and noise
     min_threshold = 1.0
-
-    # Find pixels with problematic values (very low or NaN)
     low_signal_mask = (signal < min_threshold) | ~np.isfinite(signal)
     low_noise_mask = (noise < min_threshold) | ~np.isfinite(noise)
 
-    # Set minimum values for signal and noise consistently
     if np.any(low_signal_mask) or np.any(low_noise_mask):
         logger.warning(
             f"Found {np.sum(low_signal_mask)} pixels with signal < {min_threshold}"
@@ -131,14 +117,9 @@ def run_vnb_analysis(args, cube, p2p_results=None):
             f"Found {np.sum(low_noise_mask)} pixels with noise < {min_threshold}"
         )
 
-        # Apply minimum value to signal
         signal[low_signal_mask] = min_threshold
-
-        # Apply minimum value to noise
         noise[low_noise_mask] = min_threshold
 
-        # For pixels where SNR < 1, set both signal and noise to the same value (=1)
-        # This effectively sets SNR = 1 for these pixels
         low_snr_mask = (signal / noise) < 1.0
         if np.any(low_snr_mask):
             logger.warning(
@@ -147,44 +128,40 @@ def run_vnb_analysis(args, cube, p2p_results=None):
             signal[low_snr_mask] = min_threshold
             noise[low_snr_mask] = min_threshold
 
-    # Additional safety check - ensure no zeros or NaNs
+    # Ensure no zeros or NaNs
     signal = np.nan_to_num(signal, nan=min_threshold)
     noise = np.nan_to_num(noise, nan=min_threshold)
 
     # Calculate per-pixel SNR values
-    pixel_snr = signal / noise  # Element-wise division for each pixel
-    valid_snr = pixel_snr  # All pixels should be valid now due to our preprocessing
-    max_pixel_snr = np.nanmax(valid_snr)
-    median_snr = np.nanmedian(valid_snr)
+    pixel_snr = signal / noise
+    max_pixel_snr = np.nanmax(pixel_snr)
+    median_snr = np.nanmedian(pixel_snr)
 
     logger.info(
         f"Maximum pixel SNR: {max_pixel_snr:.1f}, Median pixel SNR: {median_snr:.1f}"
     )
 
-    # Determine recommended SNR range with wider bounds as suggested
-    min_recommended_snr = min(2, median_snr * .5)
+    # Determine recommended SNR range
+    min_recommended_snr = min(2, median_snr * 0.5)
     max_recommended_snr = max(max_pixel_snr * 1.2, median_snr * 10)
 
-    # # Ensure min and max are in a reasonable range
-    min_recommended_snr = max(2, min_recommended_snr)  # At least 2
-    max_recommended_snr = max(50, max_recommended_snr)  # At least 15
+    # Ensure reasonable range
+    min_recommended_snr = max(2, min_recommended_snr)
+    max_recommended_snr = max(50, max_recommended_snr)
 
-    # If user-specified target_snr is outside the recommended range, adjust
+    # Adjust target_snr if needed
     if target_snr < min_recommended_snr or target_snr > max_recommended_snr:
         logger.warning(
             f"Specified target SNR {target_snr} is outside recommended range "
             f"({min_recommended_snr:.1f} - {max_recommended_snr:.1f})"
         )
 
-        # Adjust target_snr to be within range
         safe_target_snr = max(min_recommended_snr, min(target_snr, max_recommended_snr))
         logger.info(f"Adjusting target SNR to {safe_target_snr:.1f}")
     else:
         safe_target_snr = target_snr
 
-    logger.info(f"Running Voronoi binning with target SNR = {safe_target_snr:.1f}")
-
-    # If requested to use physical radius, calculate it now for later use in binning
+    # Calculate physical radius if requested
     ellipse_params = None
     if use_physical_radius:
         try:
@@ -211,339 +188,29 @@ def run_vnb_analysis(args, cube, p2p_results=None):
             logger.warning(f"Error calculating physical radius: {e}")
             use_physical_radius = False
 
-    # Modified high-SNR mode for better binning
-    if high_snr_mode:
-        logger.info("Using high-SNR optimization mode for Voronoi binning")
-        
-        # Sort pixels by SNR in descending order
-        sorted_indices = np.argsort(-pixel_snr)  # Negative for descending order
-        
-        # Take the top X% of pixels with highest SNR as seeds
-        top_percent = 10  # Use top 10% as seeds
-        n_seed_pixels = max(1, int(len(sorted_indices) * top_percent / 100))
-        seed_indices = sorted_indices[:n_seed_pixels]
-        
-        logger.info(f"Using {n_seed_pixels} high-SNR seed pixels (top {top_percent}%)")
-        
-        # Extract seed pixels
-        seed_x = x[seed_indices]
-        seed_y = y[seed_indices]
-        seed_signal = signal[seed_indices]
-        seed_noise = noise[seed_indices]
-        
-        # Run a preliminary binning on just the seed pixels
-        # This ensures we have good initial bins with high SNR
-        try:
-            from vorbin.voronoi_2d_binning import voronoi_2d_binning
-            seed_bin_num, seed_x_gen, seed_y_gen, seed_sn, seed_n_pixels, seed_scale = voronoi_2d_binning(
-                seed_x, seed_y, seed_signal, seed_noise,
-                safe_target_snr, plot=0, quiet=True, cvt=use_cvt
-            )
-            
-            logger.info(f"Created {len(seed_x_gen)} high-SNR seed bins")
-            
-            # Now run the main binning using these seed bins as anchors
-            # We would need to implement a custom version of voronoi_2d_binning to use seed bins
-            # For now, we'll use a simpler approach of two-stage binning
-            
-            # Create a mask for remaining pixels
-            remaining_mask = np.ones(len(x), dtype=bool)
-            remaining_mask[seed_indices] = False
-            
-            # Initialize a bin map for all pixels, starting with seed bins
-            full_bin_num = np.full(len(x), -1, dtype=int)
-            for i, seed_idx in enumerate(seed_indices):
-                full_bin_num[seed_idx] = seed_bin_num[i]
-            
-            # Assign each remaining pixel to the nearest seed bin
-            from scipy.spatial import cKDTree
-            seed_points = np.column_stack([seed_x_gen, seed_y_gen])
-            tree = cKDTree(seed_points)
-            
-            # Get remaining points
-            remaining_x = x[remaining_mask]
-            remaining_y = y[remaining_mask]
-            remaining_indices = np.where(remaining_mask)[0]
-            
-            # Find nearest seed bin for each remaining point
-            query_points = np.column_stack([remaining_x, remaining_y])
-            distances, nearest_bins = tree.query(query_points)
-            
-            # Assign each remaining pixel to nearest bin
-            for i, bin_idx in enumerate(nearest_bins):
-                full_bin_num[remaining_indices[i]] = bin_idx
-                
-            # Generate bin metadata for compatibility
-            from collections import defaultdict
-            bin_indices_dict = defaultdict(list)
-            for i, bin_id in enumerate(full_bin_num):
-                if bin_id >= 0:
-                    bin_indices_dict[bin_id].append(i)
-            
-            bin_indices_list = [bin_indices_dict.get(i, []) for i in range(max(bin_indices_dict.keys()) + 1)]
-            n_pixels = np.array([len(indices) for indices in bin_indices_list])
-            
-            # Calculate average position for each bin
-            x_gen = []
-            y_gen = []
-            sn = []
-            
-            for i, indices in enumerate(bin_indices_list):
-                if indices:
-                    x_gen.append(np.mean(x[indices]))
-                    y_gen.append(np.mean(y[indices]))
-                    
-                    # Calculate SNR for the bin
-                    bin_signal = np.mean(signal[indices])
-                    bin_noise = np.mean(noise[indices]) / np.sqrt(len(indices))
-                    sn.append(bin_signal / bin_noise)
-                else:
-                    x_gen.append(0)
-                    y_gen.append(0)
-                    sn.append(0)
-            
-            x_gen = np.array(x_gen)
-            y_gen = np.array(y_gen)
-            sn = np.array(sn)
-            
-            success = True
-            best_result = (full_bin_num, x_gen, y_gen, sn, n_pixels, 1.0)
-            logger.info(f"High-SNR binning created {len(x_gen)} bins")
-            
-        except Exception as e:
-            logger.warning(f"High-SNR optimization failed: {str(e)}")
-            logger.info("Falling back to standard Voronoi binning")
-            success = False
-            high_snr_mode = False
-    else:
-        success = False  # Force standard binning if high-SNR mode is not requested
-
-    # Standard Voronoi binning if high-SNR mode is not used or failed
-    if not high_snr_mode or not success:
-        # First attempt with the selected target SNR
-        try:
-            success = True
-
-            # Use all valid pixels
-            x_valid = x
-            y_valid = y
-            signal_valid = signal
-            noise_valid = noise
-
-            logger.info(f"Running Voronoi binning with {len(x_valid)} valid pixels")
-
-            # If using physical radius, apply elliptical transformation to coordinates
-            if use_physical_radius and ellipse_params is not None:
-                # Extract parameters
-                center_x = ellipse_params['center_x']
-                center_y = ellipse_params['center_y']
-                PA_rad = np.radians(ellipse_params['PA_degrees'])
-                ellipticity = ellipse_params['ellipticity']
-                
-                # Apply transformation: centered, rotated, and stretched coordinates
-                dx = x_valid - center_x
-                dy = y_valid - center_y
-                
-                # Rotate coordinates
-                x_rot = dx * np.cos(PA_rad) + dy * np.sin(PA_rad)
-                y_rot = -dx * np.sin(PA_rad) + dy * np.cos(PA_rad)
-                
-                # Apply ellipticity stretch
-                y_rot_scaled = y_rot / (1 - ellipticity) if ellipticity < 1 else y_rot
-                
-                # Use transformed coordinates for binning
-                logger.info(f"Using elliptical coordinates for Voronoi binning (PA={ellipse_params['PA_degrees']:.1f}°, ε={ellipticity:.2f})")
-                x_for_binning = x_rot
-                y_for_binning = y_rot_scaled
-            else:
-                # Use original coordinates
-                x_for_binning = x_valid
-                y_for_binning = y_valid
-
-            # Handle return values more robustly to accommodate different version of vorbin
-            result = voronoi_2d_binning(
-                x_for_binning,
-                y_for_binning,
-                signal_valid,
-                noise_valid,
-                safe_target_snr,
-                plot=0,
-                quiet=True,
-                cvt=use_cvt,
-            )
-
-            # Robust handling of return values
-            if isinstance(result, tuple):
-                # Check length of returned tuple
-                if len(result) >= 6:
-                    # Extract the first 6 values we need
-                    bin_num = result[0]
-                    x_gen = result[1]
-                    y_gen = result[2]
-                    sn = result[3]
-                    n_pixels = result[4]
-                    scale = result[5]
-                    best_result = (bin_num, x_gen, y_gen, sn, n_pixels, scale)
-                    logger.info(
-                        f"Voronoi binning succeeded with target SNR = {safe_target_snr:.1f}"
-                    )
-                else:
-                    # Not enough values
-                    raise ValueError(
-                        f"Voronoi binning returned {len(result)} values, expected at least 6"
-                    )
-            else:
-                # Single return value (unlikely but handle anyway)
-                raise ValueError("Unexpected return format from Voronoi binning")
-
-        except Exception as e:
-            success = False
-            best_result = None
-            logger.warning(f"Initial Voronoi binning failed: {str(e)}")
-            logger.info("Trying alternative binning approach")
-
-            # Try a more comprehensive search through recommended SNR values
-            search_range = np.linspace(max_recommended_snr, min_recommended_snr, 20)
-
-            for snr_value in search_range:
-                # Skip the original value which already failed
-                if abs(snr_value - safe_target_snr) < 0.1:
-                    continue
-
-                # Try with CVT first
-                try:
-                    logger.info(
-                        f"Trying Voronoi binning with target SNR = {snr_value:.1f}, CVT=True"
-                    )
-                    with warnings.catch_warnings():
-                        warnings.simplefilter("ignore")
-                        result = voronoi_2d_binning(
-                            x_for_binning,
-                            y_for_binning,
-                            signal_valid,
-                            noise_valid,
-                            snr_value,
-                            plot=0,
-                            quiet=True,
-                            cvt=True,
-                        )
-
-                        # Extract the first 6 values
-                        if isinstance(result, tuple) and len(result) >= 6:
-                            bin_num = result[0]
-                            x_gen = result[1]
-                            y_gen = result[2]
-                            sn = result[3]
-                            n_pixels = result[4]
-                            scale = result[5]
-                            best_result = (bin_num, x_gen, y_gen, sn, n_pixels, scale)
-                            success = True
-                            logger.info(
-                                f"Voronoi binning succeeded with target SNR = {snr_value:.1f}"
-                            )
-                            break
-                        else:
-                            raise ValueError(
-                                "Unexpected return format from Voronoi binning"
-                            )
-                except Exception as e:
-                    # Now try without CVT
-                    try:
-                        logger.info(
-                            f"Trying Voronoi binning with target SNR = {snr_value:.1f}, CVT=False"
-                        )
-                        with warnings.catch_warnings():
-                            warnings.simplefilter("ignore")
-                            result = voronoi_2d_binning(
-                                x_for_binning,
-                                y_for_binning,
-                                signal_valid,
-                                noise_valid,
-                                snr_value,
-                                plot=0,
-                                quiet=True,
-                                cvt=False,
-                            )
-
-                            # Extract the first 6 values
-                            if isinstance(result, tuple) and len(result) >= 6:
-                                bin_num = result[0]
-                                x_gen = result[1]
-                                y_gen = result[2]
-                                sn = result[3]
-                                n_pixels = result[4]
-                                scale = result[5]
-                                best_result = (bin_num, x_gen, y_gen, sn, n_pixels, scale)
-                                success = True
-                                logger.info(
-                                    f"Voronoi binning succeeded with target SNR = {snr_value:.1f}"
-                                )
-                                break
-                            else:
-                                raise ValueError(
-                                    "Unexpected return format from Voronoi binning"
-                                )
-                    except Exception as e:
-                        continue
-
-    # Fallback to grid binning if all else fails
-    if not success or best_result is None:
-        logger.warning(
-            "All Voronoi binning attempts failed. Using fallback grid binning."
-        )
-
-        # Create a simple grid binning as fallback
-        from binning import create_grid_binning
-
-        grid_result = create_grid_binning(
-            x,
-            y,
-            signal,
-            noise,
-            nx=min(5, int(np.sqrt(len(x) / 20))),  # Adjust grid size based on data
-            ny=min(5, int(np.sqrt(len(x) / 20))),
-        )
-
-        if grid_result is not None:
-            best_result = grid_result
-            success = True
-            logger.info(f"Created grid binning with {len(best_result[1])} bins")
-        else:
-            logger.error("Failed to create bins. Cannot proceed with analysis.")
-            return {"status": "error", "message": "Failed to create bins"}
-
-    # Extract binning result
-    bin_num, x_gen, y_gen, sn, n_pixels, scale = best_result
-
-    # Map bin numbers back to the original arrays
-    full_bin_num = bin_num
-
-    # Filter out low SNR bins if requested, but don't filter ALL bins
-    if min_snr > 0:
-        # Find bins with SNR below minimum
-        bad_bins = np.where(sn < min_snr)[0]
-
-        # Don't filter all bins
-        if len(bad_bins) < len(sn):  # Only if some bins remain
-            # Mark these bins as unbinned (-1)
-            for bad_bin in bad_bins:
-                full_bin_num[full_bin_num == bad_bin] = -1
-
-            logger.info(f"Filtered out {len(bad_bins)} bins with SNR < {min_snr}")
-        else:
-            logger.warning(
-                f"All bins have SNR < {min_snr}, but keeping them to avoid empty result"
-            )
+    # Run Voronoi binning
+    logger.info(f"Running Voronoi binning with target SNR = {safe_target_snr:.1f}")
+    
+    # Import run_voronoi_binning from binning module - this is where the fix is applied
+    from binning import run_voronoi_binning
+    
+    # Call the function with original coordinates - no transformation
+    bin_num, x_gen, y_gen, sn, n_pixels, scale = run_voronoi_binning(
+        x, y, signal, noise, 
+        target_snr=safe_target_snr,
+        plot=0, 
+        quiet=False, 
+        cvt=use_cvt,
+        min_snr=min_snr
+    )
 
     # Create bin indices
     bin_indices = []
-    all_indices = np.arange(len(full_bin_num))
-
-    # Maximum bin number
-    max_bin = int(np.nanmax(full_bin_num))
+    all_indices = np.arange(len(bin_num))
+    max_bin = int(np.nanmax(bin_num))
 
     for i in range(max_bin + 1):
-        bin_indices.append(all_indices[full_bin_num == i])
+        bin_indices.append(all_indices[bin_num == i])
 
     # Get velocity field from P2P results if available, for velocity correction
     velocity_field = None
@@ -566,7 +233,9 @@ def run_vnb_analysis(args, cube, p2p_results=None):
         except Exception as e:
             logger.warning(f"Error extracting velocity field from P2P results: {e}")
 
-    # Calculate intersection of wavelength ranges accounting for velocity shifts
+    # Calculate wavelength intersection accounting for velocity shifts
+    from binning import calculate_wavelength_intersection
+    
     if velocity_field is not None:
         wave_mask, min_wave, max_wave = calculate_wavelength_intersection(
             cube._lambda_gal, velocity_field, cube._n_x
@@ -582,6 +251,8 @@ def run_vnb_analysis(args, cube, p2p_results=None):
     spectra = cube._spectra[wave_mask]
 
     # Combine spectra into bins with velocity correction
+    from binning import combine_spectra_efficiently
+    
     binned_spectra = combine_spectra_efficiently(
         spectra, wavelength, bin_indices, velocity_field, cube._n_x
     )
@@ -611,19 +282,20 @@ def run_vnb_analysis(args, cube, p2p_results=None):
         metadata["flux_map"] = np.nanmedian(cube._cube_data, axis=0)
 
     # Create VoronoiBinnedData object
+    from binning import VoronoiBinnedData
+    
     binned_data = VoronoiBinnedData(
-        bin_num=full_bin_num,
+        bin_num=bin_num,
         bin_indices=bin_indices,
         spectra=binned_spectra,
         wavelength=wavelength,
         metadata=metadata,
     )
 
-    # Set up binning in the cube
+    # Set up binning in the cube - this connects our binned data to the cube
     cube.setup_binning("VNB", binned_data)
 
-    # Run analysis using the enhanced MUSECube methods
-    # These will automatically use the binned data
+    # Run analysis using the binned data
     velocity_field, dispersion_field, bestfit_field, optimal_tmpls, poly_coeffs = (
         cube.fit_spectra(
             template_filename=args.template,
@@ -700,7 +372,7 @@ def run_vnb_analysis(args, cube, p2p_results=None):
             "pixelsize_y": cube._pxl_size_y,
         },
         "binning": {
-            "bin_num": full_bin_num,
+            "bin_num": bin_num,
             "bin_indices": bin_indices,
             "bin_x": x_gen,
             "bin_y": y_gen,

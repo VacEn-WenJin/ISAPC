@@ -357,8 +357,8 @@ def run_rdb_analysis(args, cube, p2p_results=None):
             indices = np.arange(len(x))
             bin_num, bin_edges, bin_radii = calculate_radial_bins(
                 x, y, 
-                center_x=center_x, 
-                center_y=center_y,
+                # center_x=center_x, 
+                # center_y=center_y,
                 pa=pa,
                 ellipticity=ellipticity,
                 n_rings=n_rings,
