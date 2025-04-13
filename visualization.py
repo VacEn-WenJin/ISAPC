@@ -3528,3 +3528,320 @@ def plot_flux_with_radial_bins(
     # standardize_figure_saving()
     plt.close(fig)
     return ax
+
+
+def plot_binning_on_flux(
+    flux_map, 
+    bin_num, 
+    bin_indices=None, 
+    bin_centers=None, 
+    bin_radii=None,
+    center_x=None, 
+    center_y=None, 
+    pa=0, 
+    ellipticity=0, 
+    title=None, 
+    cmap='inferno', 
+    save_path=None, 
+    binning_type='Voronoi',
+    wcs=None,
+    pixel_size=None,
+    show_numbers=True,
+    log_scale=True
+):
+    """
+    Plot binning boundaries overlaid on a flux map
+    
+    Parameters
+    ----------
+    flux_map : ndarray
+        2D array of flux values
+    bin_num : ndarray
+        2D array of bin numbers
+    bin_indices : list, optional
+        List of arrays with indices for each bin
+    bin_centers : tuple, optional
+        (x_centers, y_centers) coordinates of bin centers
+    bin_radii : ndarray, optional
+        Radii for radial bins (for RDB)
+    center_x, center_y : float, optional
+        Center coordinates for radial bins
+    pa : float, default=0
+        Position angle in degrees (for radial bins)
+    ellipticity : float, default=0
+        Ellipticity (0-1) (for radial bins)
+    title : str, optional
+        Plot title
+    cmap : str, default='inferno'
+        Colormap for flux map
+    save_path : str or Path, optional
+        Path to save figure
+    binning_type : str, default='Voronoi'
+        Type of binning: 'Voronoi' or 'Radial'
+    wcs : astropy.wcs.WCS, optional
+        WCS object for coordinate transformation
+    pixel_size : tuple, optional
+        (pixel_size_x, pixel_size_y) in arcsec
+    show_numbers : bool, default=True
+        Show bin numbers on plot
+    log_scale : bool, default=True
+        Use logarithmic scale for flux values
+        
+    Returns
+    -------
+    matplotlib.figure.Figure
+        Figure with the plot
+    """
+    import matplotlib.pyplot as plt
+    from matplotlib.colors import LogNorm, Normalize
+    from matplotlib.patches import Polygon, Ellipse
+    import numpy as np
+    
+    # Create figure and axis
+    fig, ax = plt.subplots(figsize=(10, 9))
+    
+    # Process flux map for plotting
+    if flux_map is None:
+        # Create dummy flux map if not provided
+        flux_map = np.ones_like(bin_num, dtype=float)
+    
+    # Handle NaN values and mask
+    masked_flux = np.ma.array(flux_map, mask=~np.isfinite(flux_map))
+    
+    # Determine color normalization
+    valid_flux = masked_flux.compressed()
+    if len(valid_flux) > 0:
+        if log_scale and np.any(valid_flux > 0):
+            # Logarithmic scale
+            min_positive = np.min(valid_flux[valid_flux > 0])
+            norm = LogNorm(vmin=min_positive, vmax=np.max(valid_flux))
+        else:
+            # Linear scale
+            vmin = np.percentile(valid_flux, 2)
+            vmax = np.percentile(valid_flux, 98)
+            norm = Normalize(vmin=vmin, vmax=vmax)
+    else:
+        # Fallback
+        norm = Normalize(vmin=0, vmax=1)
+    
+    # Plot flux map with physical coordinates if available
+    if wcs is not None:
+        try:
+            # Use astropy WCS for plotting
+            from astropy.visualization.wcsaxes import WCSAxes
+            
+            # Create new axis with WCS projection if needed
+            if not isinstance(ax, WCSAxes):
+                fig = ax.figure
+                ax.remove()
+                ax = fig.add_subplot(111, projection=wcs)
+            
+            # Plot flux map with WCS coordinates
+            im = ax.imshow(masked_flux, origin='lower', cmap=cmap, norm=norm)
+            
+            # Add coordinate grid
+            ax.grid(color='white', ls='solid', alpha=0.3)
+            ax.set_xlabel('RA')
+            ax.set_ylabel('Dec')
+        except Exception as e:
+            logger.warning(f"Error using WCS for plotting: {e}")
+            # Fall back to regular plotting
+            wcs = None
+            
+    if wcs is None:
+        # Standard plotting with physical coordinates if available
+        if pixel_size is not None:
+            ny, nx = flux_map.shape
+            pixel_size_x, pixel_size_y = pixel_size if isinstance(pixel_size, tuple) else (pixel_size, pixel_size)
+            
+            # Create coordinate grid centered on image
+            extent = [
+                -nx/2 * pixel_size_x, 
+                nx/2 * pixel_size_x, 
+                -ny/2 * pixel_size_y, 
+                ny/2 * pixel_size_y
+            ]
+            
+            im = ax.imshow(
+                masked_flux, 
+                origin='lower', 
+                cmap=cmap, 
+                norm=norm,
+                extent=extent, 
+                aspect='equal'
+            )
+            
+            # Set axis labels
+            ax.set_xlabel('Δ RA (arcsec)')
+            ax.set_ylabel('Δ Dec (arcsec)')
+        else:
+            # Simple pixel coordinates
+            im = ax.imshow(masked_flux, origin='lower', cmap=cmap, norm=norm)
+            ax.set_xlabel('Pixels')
+            ax.set_ylabel('Pixels')
+    
+    # Add colorbar
+    cbar = plt.colorbar(im, ax=ax)
+    cbar.set_label('Flux' + (' (log scale)' if log_scale else ''))
+    
+    # Overlay bin boundaries based on binning type
+    if binning_type.lower() == 'voronoi':
+        # For Voronoi binning, we need to find bin boundaries
+        ny, nx = bin_num.shape
+        
+        # Create edge map - detect edges between different bins
+        edge_map = np.zeros((ny, nx), dtype=bool)
+        
+        # Check horizontal edges
+        for j in range(ny):
+            for i in range(nx-1):
+                if bin_num[j, i] != bin_num[j, i+1] and bin_num[j, i] >= 0 and bin_num[j, i+1] >= 0:
+                    edge_map[j, i] = True
+                    edge_map[j, i+1] = True
+        
+        # Check vertical edges
+        for j in range(ny-1):
+            for i in range(nx):
+                if bin_num[j, i] != bin_num[j+1, i] and bin_num[j, i] >= 0 and bin_num[j+1, i] >= 0:
+                    edge_map[j, i] = True
+                    edge_map[j+1, i] = True
+        
+        # Plot edges
+        y_edge, x_edge = np.where(edge_map)
+        
+        # Convert to physical coordinates if needed
+        if pixel_size is not None:
+            x_edge_phys = (x_edge - nx/2) * pixel_size_x
+            y_edge_phys = (y_edge - ny/2) * pixel_size_y
+            ax.scatter(x_edge_phys, y_edge_phys, s=1, color='white', alpha=0.7)
+        else:
+            ax.scatter(x_edge, y_edge, s=1, color='white', alpha=0.7)
+        
+        # Plot bin centers and numbers if requested
+        if bin_centers is not None and show_numbers:
+            x_centers, y_centers = bin_centers
+            
+            # Convert to physical coordinates if needed
+            if pixel_size is not None:
+                x_centers_phys = (x_centers - nx/2) * pixel_size_x
+                y_centers_phys = (y_centers - ny/2) * pixel_size_y
+                
+                for i, (x, y) in enumerate(zip(x_centers_phys, y_centers_phys)):
+                    ax.text(x, y, str(i), color='white', fontsize=8, 
+                           ha='center', va='center', 
+                           bbox=dict(facecolor='black', alpha=0.5, boxstyle='round,pad=0.2'))
+            else:
+                for i, (x, y) in enumerate(zip(x_centers, y_centers)):
+                    ax.text(x, y, str(i), color='white', fontsize=8, 
+                           ha='center', va='center', 
+                           bbox=dict(facecolor='black', alpha=0.5, boxstyle='round,pad=0.2'))
+    
+    elif binning_type.lower() == 'radial':
+        # For radial binning, overlay ellipses
+        if bin_radii is not None and center_x is not None and center_y is not None:
+            ny, nx = bin_num.shape
+            
+            # Convert center to physical coordinates if needed
+            if pixel_size is not None:
+                center_x_phys = (center_x - nx/2) * pixel_size_x
+                center_y_phys = (center_y - ny/2) * pixel_size_y
+            else:
+                center_x_phys, center_y_phys = center_x, center_y
+            
+            # Draw ellipses for each bin radius
+            for i, radius in enumerate(bin_radii):
+                if pixel_size is not None:
+                    # Scale radius to physical units for plotting
+                    # For radial binning, radius should already be in arcsec
+                    
+                    # Create ellipse based on PA and ellipticity
+                    if ellipticity == 0 or not np.isfinite(ellipticity):
+                        # Draw circle
+                        ellipse = Ellipse(
+                            (center_x_phys, center_y_phys),
+                            2 * radius,  # Diameter
+                            2 * radius,
+                            angle=0,
+                            fill=False,
+                            edgecolor='white',
+                            linestyle='-',
+                            linewidth=1,
+                            alpha=0.7
+                        )
+                    else:
+                        # Draw ellipse
+                        ellipse = Ellipse(
+                            (center_x_phys, center_y_phys),
+                            2 * radius,  # Major axis (diameter)
+                            2 * radius * (1 - ellipticity),  # Minor axis
+                            angle=pa,
+                            fill=False,
+                            edgecolor='white',
+                            linestyle='-',
+                            linewidth=1,
+                            alpha=0.7
+                        )
+                    
+                    ax.add_patch(ellipse)
+                    
+                    # Add bin number at specific angle
+                    if show_numbers:
+                        label_angle = np.radians(45)  # Place labels at 45 degrees
+                        label_x = center_x_phys + radius * np.cos(label_angle)
+                        label_y = center_y_phys + radius * np.sin(label_angle)
+                        
+                        ax.text(
+                            label_x, 
+                            label_y, 
+                            str(i), 
+                            color='white', 
+                            fontsize=8,
+                            ha='center', 
+                            va='center',
+                            bbox=dict(facecolor='black', alpha=0.5, boxstyle='round,pad=0.2')
+                        )
+                else:
+                    # Draw in pixel coordinates
+                    if ellipticity == 0 or not np.isfinite(ellipticity):
+                        # Draw circle in pixel units
+                        ellipse = Ellipse(
+                            (center_x, center_y),
+                            2 * radius / pixel_size_x if pixel_size is not None else 2 * radius,
+                            2 * radius / pixel_size_y if pixel_size is not None else 2 * radius,
+                            angle=0,
+                            fill=False,
+                            edgecolor='white',
+                            linestyle='-',
+                            linewidth=1,
+                            alpha=0.7
+                        )
+                    else:
+                        # Draw ellipse in pixel units
+                        ellipse = Ellipse(
+                            (center_x, center_y),
+                            2 * radius / pixel_size_x if pixel_size is not None else 2 * radius,
+                            2 * radius / pixel_size_y * (1 - ellipticity) if pixel_size is not None else 2 * radius * (1 - ellipticity),
+                            angle=pa,
+                            fill=False,
+                            edgecolor='white',
+                            linestyle='-',
+                            linewidth=1,
+                            alpha=0.7
+                        )
+                    
+                    ax.add_patch(ellipse)
+    
+    # Set title
+    if title:
+        ax.set_title(title)
+    else:
+        ax.set_title(f"{binning_type} Binning on Flux Map")
+    
+    # Save figure if requested
+    if save_path:
+        plt.tight_layout()
+        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+    
+    return fig, ax
+
+

@@ -433,6 +433,60 @@ def run_vnb_analysis(args, cube, p2p_results=None):
 
     # Add this after spectral indices calculation in both voronoi.py and radial.py:
 
+
+    try:
+        import visualization
+        
+        # First create the standard plots as before
+        # [existing plotting code...]
+        
+        # Create a new bin overlay plot
+        try:
+            # Get flux map from cube - use median flux along wavelength
+            flux_map = np.nanmedian(cube._cube_data, axis=0)
+            
+            # Get binning information
+            bin_num = vnb_results["binning"]["bin_num"]
+            
+            # If bin_num is 1D, reshape to match the cube dimensions
+            if isinstance(bin_num, np.ndarray) and bin_num.ndim == 1:
+                bin_num_2d = bin_num.reshape(cube._n_y, cube._n_x)
+            else:
+                bin_num_2d = bin_num
+            
+            # Get bin centers if available
+            bin_centers = None
+            if "bin_x" in vnb_results["binning"] and "bin_y" in vnb_results["binning"]:
+                bin_centers = (vnb_results["binning"]["bin_x"], vnb_results["binning"]["bin_y"])
+            
+            # Create and save binning overlay plot
+            fig, ax = visualization.plot_binning_on_flux(
+                flux_map=flux_map,
+                bin_num=bin_num_2d,
+                bin_centers=bin_centers,
+                title=f"{galaxy_name} - Voronoi Binning",
+                cmap="inferno",
+                save_path=plots_dir / f"{galaxy_name}_VNB_binning_overlay.png",
+                binning_type="Voronoi",
+                wcs=cube._wcs if hasattr(cube, "_wcs") else None,
+                pixel_size=(cube._pxl_size_x, cube._pxl_size_y),
+                log_scale=True
+            )
+            plt.close(fig)
+            
+            logger.info(f"Created VNB binning overlay plot")
+            
+        except Exception as e:
+            logger.warning(f"Error creating VNB binning overlay plot: {e}")
+            import traceback
+            logger.debug(traceback.format_exc())
+            plt.close("all")
+                
+    except Exception as e:
+        logger.error(f"Error in create_vnb_plots: {str(e)}")
+        logger.error(traceback.format_exc())
+        plt.close("all")
+
     # Create spectral index visualizations if requested
     if indices_result is not None and not args.no_plots:
         try:

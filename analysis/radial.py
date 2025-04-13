@@ -471,6 +471,63 @@ def run_rdb_analysis(args, cube, p2p_results=None):
 
         # Add this after the binning but before the spectral fitting in run_rdb_analysis
 
+        try:
+            import visualization
+            
+            # First create the standard plots as before
+            # [existing plotting code...]
+            
+            # Create a new radial bin overlay plot
+            try:
+                # Get flux map from cube - use median flux along wavelength
+                flux_map = np.nanmedian(cube._cube_data, axis=0)
+                
+                # Get binning information
+                bin_num = rdb_results["binning"]["bin_num"]
+                bin_radii = rdb_results["binning"]["bin_radii"]
+                center_x = rdb_results["binning"]["center_x"]
+                center_y = rdb_results["binning"]["center_y"]
+                pa = rdb_results["binning"]["pa"]
+                ellipticity = rdb_results["binning"]["ellipticity"]
+                
+                # If bin_num is 1D, reshape to match the cube dimensions
+                if isinstance(bin_num, np.ndarray) and bin_num.ndim == 1:
+                    bin_num_2d = bin_num.reshape(cube._n_y, cube._n_x)
+                else:
+                    bin_num_2d = bin_num
+                
+                # Create and save binning overlay plot
+                fig, ax = visualization.plot_binning_on_flux(
+                    flux_map=flux_map,
+                    bin_num=bin_num_2d,
+                    bin_radii=bin_radii,
+                    center_x=center_x,
+                    center_y=center_y,
+                    pa=pa,
+                    ellipticity=ellipticity,
+                    title=f"{galaxy_name} - Radial Binning",
+                    cmap="inferno",
+                    save_path=plots_dir / f"{galaxy_name}_RDB_binning_overlay.png",
+                    binning_type="Radial",
+                    wcs=cube._wcs if hasattr(cube, "_wcs") else None,
+                    pixel_size=(cube._pxl_size_x, cube._pxl_size_y),
+                    log_scale=True
+                )
+                plt.close(fig)
+                
+                logger.info(f"Created RDB binning overlay plot")
+                
+            except Exception as e:
+                logger.warning(f"Error creating RDB binning overlay plot: {e}")
+                import traceback
+                logger.debug(traceback.format_exc())
+                plt.close("all")
+                    
+        except Exception as e:
+            logger.error(f"Error in create_rdb_plots: {str(e)}")
+            logger.error(traceback.format_exc())
+            plt.close("all")
+
         # Create flux map visualization with radial bins
         try:
             # Create flux map
