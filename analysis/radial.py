@@ -912,13 +912,24 @@ def create_rdb_plots(cube, rdb_results, galaxy_name, plots_dir, args):
     """
     Create visualization plots for RDB analysis
     
-    [existing docstring]
+    Parameters
+    ----------
+    cube : MUSECube
+        MUSE cube with binned data
+    rdb_results : dict
+        RDB analysis results
+    galaxy_name : str
+        Galaxy name
+    plots_dir : Path
+        Directory to save plots
+    args : argparse.Namespace
+        Command line arguments
     """
     try:
         import visualization
-
-        # Create radial profiles of key parameters
-
+        import matplotlib.pyplot as plt
+        import numpy as np
+        
         # Create kinematics radial profile
         if "stellar_kinematics" in rdb_results and "bin_distances" in rdb_results.get(
             "distance", {}
@@ -1123,7 +1134,7 @@ def create_rdb_plots(cube, rdb_results, galaxy_name, plots_dir, args):
                 logger.warning(f"Error creating emission line plots: {e}")
                 plt.close("all")
 
-        # Create spectral indices plots if available - with physical scaling
+        # Create spectral indices plots
         if "indices" in rdb_results and "bin_distances" in rdb_results.get(
             "distance", {}
         ):
@@ -1187,103 +1198,241 @@ def create_rdb_plots(cube, rdb_results, galaxy_name, plots_dir, args):
                                 logger.warning(
                                     f"Skipping {idx_name} plot - dimension mismatch: bin_radii shape {bin_radii.shape}, index shape {idx_values.shape}"
                                 )
-
-                # If no bin indices, try indices
-                if not indices_found and isinstance(rdb_results["indices"], dict):
-                    for idx_name, idx_values in rdb_results["indices"].items():
-                        # For map plots, we need to extract values for each bin
-                        if (
-                            hasattr(cube, "_bin_indices_result")
-                            and idx_name in cube._bin_indices_result
-                        ):
-                            bin_idx_values = cube._bin_indices_result[idx_name]
-
-                            # Check if dimensions match
-                            if len(bin_idx_values) == len(bin_radii):
-                                # Create radial profile
-                                fig, ax = plt.subplots(figsize=(10, 6))
-                                ax.plot(bin_radii, bin_idx_values, "o-", label=idx_name)
-                                ax.set_xlabel("Radius (arcsec)")
-                                ax.set_ylabel("Index Value")
-                                ax.set_title(
-                                    f"{galaxy_name} - {idx_name} Radial Profile"
-                                )
-                                ax.grid(True, alpha=0.3)
-                                visualization.standardize_figure_saving(
-                                    fig,
-                                    plots_dir / f"{galaxy_name}_RDB_{idx_name}_profile.png",
-                                )
-                                plt.close(fig)
-
-                                # Create 2D map with physical scaling
-                                fig, ax = plt.subplots(figsize=(10, 8))
-                                visualization.plot_bin_map(
-                                    bin_num_2d,
-                                    bin_idx_values,
-                                    ax=ax,
-                                    cmap="plasma",
-                                    title=f"{galaxy_name} - RDB {idx_name}",
-                                    colorbar_label="Index Value",
-                                    physical_scale=True,
-                                    pixel_size=(cube._pxl_size_x, cube._pxl_size_y),
-                                )
-                                visualization.standardize_figure_saving(
-                                    fig, plots_dir / f"{galaxy_name}_RDB_{idx_name}_map.png"
-                                )
-                                plt.close(fig)
-                            else:
-                                logger.warning(
-                                    f"Skipping {idx_name} plot - dimension mismatch: bin_radii shape {bin_radii.shape}, index shape {bin_idx_values.shape}"
-                                )
             except Exception as e:
                 logger.warning(f"Error creating spectral indices plots: {e}")
                 plt.close("all")
-
-            # Add spectral indices visualization
-            if "indices" in rdb_results and "bin_indices" in rdb_results:
-                try:
-                    bin_indices = rdb_results["bin_indices"]
-                    if bin_indices and isinstance(bin_indices, dict):
-                        for idx_name, idx_values in bin_indices.items():
-                            if (
-                                isinstance(idx_values, np.ndarray)
-                                and len(idx_values) > 0
-                            ):
-                                # Check if dimensions match
-                                if len(idx_values) == len(bin_radii):
-                                    # Create 2D index map with physical scaling
-                                    fig, ax = plt.subplots(figsize=(10, 8))
-
-                                    # Use safe_plot_array for robust plotting with physical scaling
-                                    visualization.plot_bin_map(
-                                        bin_num_2d,
-                                        idx_values,
-                                        ax=ax,
-                                        title=f"{galaxy_name} - {idx_name}",
-                                        cmap="plasma",
-                                        colorbar_label="Index Value",
-                                        physical_scale=True,
-                                        pixel_size=(cube._pxl_size_x, cube._pxl_size_y),
-                                    )
-
-                                    visualization.standardize_figure_saving(
-                                        fig,
-                                        plots_dir / f"{galaxy_name}_RDB_{idx_name}.png",
-                                    )
-                                    plt.close(fig)
-                                else:
-                                    logger.warning(
-                                        f"Skipping {idx_name} map - dimension mismatch: bin_radii shape {bin_radii.shape}, index shape {idx_values.shape}"
-                                    )
-                except Exception as e:
-                    logger.warning(f"Error creating spectral indices maps: {e}")
-                    plt.close("all")
-
+        
+        # Create a new bin overlay plot showing binning on flux map
+        try:
+            # Get flux map from cube - use median flux along wavelength
+            flux_map = np.nanmedian(cube._cube_data, axis=0)
+            
+            # Get binning information
+            bin_num = rdb_results["binning"]["bin_num"]
+            bin_radii = rdb_results["binning"]["bin_radii"]
+            center_x = rdb_results["binning"]["center_x"]
+            center_y = rdb_results["binning"]["center_y"]
+            pa = rdb_results["binning"]["pa"]
+            ellipticity = rdb_results["binning"]["ellipticity"]
+            
+            # If bin_num is 1D, reshape to match the cube dimensions
+            if isinstance(bin_num, np.ndarray) and bin_num.ndim == 1:
+                bin_num_2d = bin_num.reshape(cube._n_y, cube._n_x)
+            else:
+                bin_num_2d = bin_num
+            
+            # Process WCS for proper handling
+            wcs_obj = None
+            if hasattr(cube, "_wcs") and cube._wcs is not None:
+                wcs_obj = cube._wcs
+                # Handle WCS with more than 2 dimensions by slicing
+                if wcs_obj.naxis > 2:
+                    try:
+                        from astropy.wcs import WCS
+                        # Create a new 2D WCS from the spatial dimensions
+                        if hasattr(wcs_obj, 'wcs'):
+                            # For newer astropy versions
+                            celestial = wcs_obj.wcs.get_axis_types()
+                            spatial_axes = [i for i, ax in enumerate(celestial) 
+                                          if ax['coordinate_type'] == 'celestial']
+                            if len(spatial_axes) >= 2:
+                                # Create a new 2D WCS with just the spatial dimensions
+                                wcs_obj = wcs_obj.celestial
+                            else:
+                                # Fallback: slice the first two dimensions
+                                wcs_obj = wcs_obj.slice(slice(None, None), slice(None, None))
+                        else:
+                            # Simple slice of the first two dimensions
+                            wcs_obj = wcs_obj.slice(slice(None, None), slice(None, None))
+                    except Exception as e:
+                        logger.warning(f"Error processing WCS: {e}")
+                        wcs_obj = None
+            
+            # Create a dedicated new figure for the overlay plot
+            plt.figure(figsize=(10, 9))
+            
+            # Define save path
+            overlay_path = plots_dir / f"{galaxy_name}_RDB_binning_overlay.png"
+            
+            # Utility function to create the overlay plot
+            def create_overlay_plot():
+                from matplotlib.colors import LogNorm, Normalize
+                from matplotlib.patches import Ellipse
+                
+                # Get current figure and axis
+                fig = plt.gcf()
+                ax = plt.gca()
+                
+                # Clear any previous content
+                ax.clear()
+                
+                # Handle NaN values and mask
+                masked_flux = np.ma.array(flux_map, mask=~np.isfinite(flux_map))
+                
+                # Determine color normalization
+                valid_flux = masked_flux.compressed()
+                if len(valid_flux) > 0 and np.any(valid_flux > 0):
+                    # Logarithmic scale
+                    min_positive = np.min(valid_flux[valid_flux > 0])
+                    norm = LogNorm(vmin=min_positive, vmax=np.max(valid_flux))
+                else:
+                    # Linear scale
+                    norm = Normalize(vmin=0, vmax=1)
+                
+                # Plot flux map
+                im = ax.imshow(masked_flux, origin='lower', cmap='inferno', norm=norm)
+                
+                # Add colorbar
+                cbar = plt.colorbar(im, ax=ax)
+                cbar.set_label('Flux (log scale)')
+                
+                # Get dimensions
+                ny, nx = flux_map.shape
+                
+                # Convert center to physical coordinates if needed
+                if hasattr(cube, "_pxl_size_x") and hasattr(cube, "_pxl_size_y"):
+                    pixel_size_x = cube._pxl_size_x
+                    pixel_size_y = cube._pxl_size_y
+                    
+                    center_x_phys = (center_x - nx/2) * pixel_size_x
+                    center_y_phys = (center_y - ny/2) * pixel_size_y
+                    
+                    # Draw ellipses for each bin radius
+                    for i, radius in enumerate(bin_radii):
+                        # Create ellipse based on PA and ellipticity
+                        if ellipticity == 0 or not np.isfinite(ellipticity):
+                            # Draw circle
+                            ellipse = Ellipse(
+                                (center_x_phys, center_y_phys),
+                                2 * radius,  # Diameter
+                                2 * radius,
+                                angle=0,
+                                fill=False,
+                                edgecolor='white',
+                                linestyle='-',
+                                linewidth=1,
+                                alpha=0.7
+                            )
+                        else:
+                            # Draw ellipse
+                            ellipse = Ellipse(
+                                (center_x_phys, center_y_phys),
+                                2 * radius,  # Major axis
+                                2 * radius * (1 - ellipticity),  # Minor axis
+                                angle=pa,
+                                fill=False,
+                                edgecolor='white',
+                                linestyle='-',
+                                linewidth=1,
+                                alpha=0.7
+                            )
+                        
+                        ax.add_patch(ellipse)
+                        
+                        # Add bin number at specific angle
+                        label_angle = np.radians(45)  # Place labels at 45 degrees
+                        label_x = center_x_phys + radius * np.cos(label_angle)
+                        label_y = center_y_phys + radius * np.sin(label_angle)
+                        
+                        ax.text(
+                            label_x, 
+                            label_y, 
+                            str(i), 
+                            color='white', 
+                            fontsize=8,
+                            ha='center', 
+                            va='center',
+                            bbox=dict(facecolor='black', alpha=0.5, boxstyle='round,pad=0.2')
+                        )
+                    
+                    # Set axis labels
+                    ax.set_xlabel('Δ RA (arcsec)')
+                    ax.set_ylabel('Δ Dec (arcsec)')
+                else:
+                    # No physical coordinates - draw in pixel units
+                    for i, radius in enumerate(bin_radii):
+                        # Create ellipse based on PA and ellipticity in pixel units
+                        radius_pixels = radius / cube._pxl_size_x if hasattr(cube, "_pxl_size_x") else radius
+                        
+                        if ellipticity == 0 or not np.isfinite(ellipticity):
+                            # Draw circle
+                            ellipse = Ellipse(
+                                (center_x, center_y),
+                                2 * radius_pixels,  # Diameter
+                                2 * radius_pixels,
+                                angle=0,
+                                fill=False,
+                                edgecolor='white',
+                                linestyle='-',
+                                linewidth=1,
+                                alpha=0.7
+                            )
+                        else:
+                            # Draw ellipse
+                            ellipse = Ellipse(
+                                (center_x, center_y),
+                                2 * radius_pixels,  # Major axis
+                                2 * radius_pixels * (1 - ellipticity),  # Minor axis
+                                angle=pa,
+                                fill=False,
+                                edgecolor='white',
+                                linestyle='-',
+                                linewidth=1,
+                                alpha=0.7
+                            )
+                        
+                        ax.add_patch(ellipse)
+                        
+                        # Add bin number at specific angle
+                        label_angle = np.radians(45)  # Place labels at 45 degrees
+                        label_x = center_x + radius_pixels * np.cos(label_angle)
+                        label_y = center_y + radius_pixels * np.sin(label_angle)
+                        
+                        ax.text(
+                            label_x, 
+                            label_y, 
+                            str(i), 
+                            color='white', 
+                            fontsize=8,
+                            ha='center', 
+                            va='center',
+                            bbox=dict(facecolor='black', alpha=0.5, boxstyle='round,pad=0.2')
+                        )
+                    
+                    # Set axis labels
+                    ax.set_xlabel('Pixels')
+                    ax.set_ylabel('Pixels')
+                
+                # Set title
+                ax.set_title(f"{galaxy_name} - Radial Binning")
+                
+                # Save figure
+                plt.tight_layout()
+                plt.savefig(overlay_path, dpi=150, bbox_inches='tight')
+                
+                return fig
+            
+            # Create the overlay plot
+            overlay_fig = create_overlay_plot()
+            
+            # Make sure to close the figure to avoid memory leaks
+            if overlay_fig is not None:
+                plt.close(overlay_fig)
+            else:
+                plt.close()  # Close the current figure anyway
+            
+            logger.info(f"Created RDB binning overlay plot")
+            
+        except Exception as e:
+            logger.warning(f"Error creating RDB binning overlay plot: {e}")
+            import traceback
+            logger.debug(traceback.format_exc())
+            plt.close("all")  # Close all figures in case of error
+                
     except Exception as e:
         logger.error(f"Error in create_rdb_plots: {str(e)}")
         logger.error(traceback.format_exc())
-        plt.close("all")
-
+        plt.close("all")  # Close all figures in case of error
 
 def create_visualization_plots(self, output_dir, galaxy_name):
     """Create radial specific visualization plots with physical coordinates"""

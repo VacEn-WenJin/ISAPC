@@ -599,6 +599,8 @@ def create_vnb_plots(cube, vnb_results, galaxy_name, plots_dir, args):
     """
     try:
         import visualization
+        import matplotlib.pyplot as plt
+        import numpy as np
         
         # Create bin map plot with physical scaling
         if "binning" in vnb_results and "bin_num" in vnb_results["binning"]:
@@ -799,8 +801,183 @@ def create_vnb_plots(cube, vnb_results, galaxy_name, plots_dir, args):
             except Exception as e:
                 logger.warning(f"Error creating spectral indices plots: {e}")
                 plt.close("all")
+        
+        # Create a new bin overlay plot showing binning on flux map
+        try:
+            # Get flux map from cube - use median flux along wavelength
+            flux_map = np.nanmedian(cube._cube_data, axis=0)
+            
+            # Get binning information
+            bin_num = vnb_results["binning"]["bin_num"]
+            
+            # If bin_num is 1D, reshape to match the cube dimensions
+            if isinstance(bin_num, np.ndarray) and bin_num.ndim == 1:
+                bin_num_2d = bin_num.reshape(cube._n_y, cube._n_x)
+            else:
+                bin_num_2d = bin_num
+            
+            # Get bin centers if available
+            bin_centers = None
+            if "bin_x" in vnb_results["binning"] and "bin_y" in vnb_results["binning"]:
+                bin_centers = (vnb_results["binning"]["bin_x"], vnb_results["binning"]["bin_y"])
+            
+            # Process WCS for proper handling
+            wcs_obj = None
+            if hasattr(cube, "_wcs") and cube._wcs is not None:
+                wcs_obj = cube._wcs
+                # Handle WCS with more than 2 dimensions by slicing
+                if wcs_obj.naxis > 2:
+                    try:
+                        from astropy.wcs import WCS
+                        # Create a new 2D WCS from the spatial dimensions
+                        if hasattr(wcs_obj, 'wcs'):
+                            # For newer astropy versions
+                            celestial = wcs_obj.wcs.get_axis_types()
+                            spatial_axes = [i for i, ax in enumerate(celestial) 
+                                          if ax['coordinate_type'] == 'celestial']
+                            if len(spatial_axes) >= 2:
+                                # Create a new 2D WCS with just the spatial dimensions
+                                wcs_obj = wcs_obj.celestial
+                            else:
+                                # Fallback: slice the first two dimensions
+                                wcs_obj = wcs_obj.slice(slice(None, None), slice(None, None))
+                        else:
+                            # Simple slice of the first two dimensions
+                            wcs_obj = wcs_obj.slice(slice(None, None), slice(None, None))
+                    except Exception as e:
+                        logger.warning(f"Error processing WCS: {e}")
+                        wcs_obj = None
+            
+            # Create a dedicated new figure for the overlay plot
+            plt.figure(figsize=(10, 9))
+            
+            # Define save path
+            overlay_path = plots_dir / f"{galaxy_name}_VNB_binning_overlay.png"
+            
+            # Utility function to create the overlay plot
+            def create_overlay_plot():
+                from matplotlib.colors import LogNorm, Normalize
+                from matplotlib.patches import Polygon, Ellipse
+                
+                # Get current figure and axis
+                fig = plt.gcf()
+                ax = plt.gca()
+                
+                # Clear any previous content
+                ax.clear()
+                
+                # Handle NaN values and mask
+                masked_flux = np.ma.array(flux_map, mask=~np.isfinite(flux_map))
+                
+                # Determine color normalization
+                valid_flux = masked_flux.compressed()
+                if len(valid_flux) > 0 and np.any(valid_flux > 0):
+                    # Logarithmic scale
+                    min_positive = np.min(valid_flux[valid_flux > 0])
+                    norm = LogNorm(vmin=min_positive, vmax=np.max(valid_flux))
+                else:
+                    # Linear scale
+                    norm = Normalize(vmin=0, vmax=1)
+                
+                # Plot flux map
+                im = ax.imshow(masked_flux, origin='lower', cmap='inferno', norm=norm)
+                
+                # Add colorbar
+                cbar = plt.colorbar(im, ax=ax)
+                cbar.set_label('Flux (log scale)')
+                
+                # Create edge map - detect edges between different bins
+                ny, nx = bin_num_2d.shape
+                edge_map = np.zeros((ny, nx), dtype=bool)
+                
+                # Check horizontal edges
+                for j in range(ny):
+                    for i in range(nx-1):
+                        if bin_num_2d[j, i] != bin_num_2d[j, i+1] and bin_num_2d[j, i] >= 0 and bin_num_2d[j, i+1] >= 0:
+                            edge_map[j, i] = True
+                            edge_map[j, i+1] = True
+                
+                # Check vertical edges
+                for j in range(ny-1):
+                    for i in range(nx):
+                        if bin_num_2d[j, i] != bin_num_2d[j+1, i] and bin_num_2d[j, i] >= 0 and bin_num_2d[j+1, i] >= 0:
+                            edge_map[j, i] = True
+                            edge_map[j+1, i] = True
+                
+                # Plot edges
+                y_edge, x_edge = np.where(edge_map)
+                
+                # Convert to physical coordinates if needed
+                if hasattr(cube, "_pxl_size_x") and hasattr(cube, "_pxl_size_y"):
+                    pixel_size_x = cube._pxl_size_x
+                    pixel_size_y = cube._pxl_size_y
+                    x_edge_phys = (x_edge - nx/2) * pixel_size_x
+                    y_edge_phys = (y_edge - ny/2) * pixel_size_y
+                    ax.scatter(x_edge_phys, y_edge_phys, s=1, color='white', alpha=0.7)
+                    
+                    # Set axis labels
+                    ax.set_xlabel('Δ RA (arcsec)')
+                    ax.set_ylabel('Δ Dec (arcsec)')
+                else:
+                    ax.scatter(x_edge, y_edge, s=1, color='white', alpha=0.7)
+                    
+                    # Set axis labels
+                    ax.set_xlabel('Pixels')
+                    ax.set_ylabel('Pixels')
+                
+                # Plot bin centers if available
+                if bin_centers is not None:
+                    x_centers, y_centers = bin_centers
+                    
+                    # Show only a subset of bin labels to avoid clutter
+                    max_labels = min(20, len(x_centers))
+                    step = max(1, len(x_centers) // max_labels)
+                    
+                    # Convert to physical coordinates if needed
+                    if hasattr(cube, "_pxl_size_x") and hasattr(cube, "_pxl_size_y"):
+                        pixel_size_x = cube._pxl_size_x
+                        pixel_size_y = cube._pxl_size_y
+                        
+                        for i in range(0, len(x_centers), step):
+                            x = (x_centers[i] - nx/2) * pixel_size_x
+                            y = (y_centers[i] - ny/2) * pixel_size_y
+                            ax.text(x, y, str(i), color='white', fontsize=8, 
+                                  ha='center', va='center', 
+                                  bbox=dict(facecolor='black', alpha=0.5, boxstyle='round,pad=0.2'))
+                    else:
+                        for i in range(0, len(x_centers), step):
+                            ax.text(x_centers[i], y_centers[i], str(i), color='white', fontsize=8, 
+                                  ha='center', va='center', 
+                                  bbox=dict(facecolor='black', alpha=0.5, boxstyle='round,pad=0.2'))
+                
+                # Set title
+                ax.set_title(f"{galaxy_name} - Voronoi Binning")
+                
+                # Save figure
+                plt.tight_layout()
+                plt.savefig(overlay_path, dpi=150, bbox_inches='tight')
+                
+                return fig
+            
+            # Create the overlay plot
+            overlay_fig = create_overlay_plot()
+            
+            # Make sure to close the figure to avoid memory leaks
+            if overlay_fig is not None:
+                plt.close(overlay_fig)
+            else:
+                plt.close()  # Close the current figure anyway
+            
+            logger.info(f"Created VNB binning overlay plot")
+            
+        except Exception as e:
+            logger.warning(f"Error creating VNB binning overlay plot: {e}")
+            import traceback
+            logger.debug(traceback.format_exc())
+            plt.close("all")  # Close all figures in case of error
                 
     except Exception as e:
         logger.error(f"Error in create_vnb_plots: {str(e)}")
         logger.error(traceback.format_exc())
-        plt.close("all")
+        plt.close("all")  # Close all figures in case of error
+

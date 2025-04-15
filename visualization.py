@@ -3624,17 +3624,42 @@ def plot_binning_on_flux(
         # Fallback
         norm = Normalize(vmin=0, vmax=1)
     
-    # Plot flux map with physical coordinates if available
+
+
+
     if wcs is not None:
         try:
+            # *** FIX: Handle WCS with more than 2 dimensions by slicing ***
+            from astropy.wcs import WCS
+            
+            if wcs.naxis > 2:
+                # Create a new 2D WCS from the spatial dimensions
+                # Get the celestial axes indices (usually 0,1 for 2D images)
+                if hasattr(wcs, 'wcs'):  # For newer astropy versions
+                    celestial = wcs.wcs.get_axis_types()
+                    spatial_axes = [i for i, ax in enumerate(celestial) 
+                                   if ax['coordinate_type'] == 'celestial']
+                    if len(spatial_axes) >= 2:
+                        # Create a new 2D WCS with just the spatial dimensions
+                        wcs_2d = wcs.celestial
+                    else:
+                        # Fallback: slice the first two dimensions
+                        wcs_2d = wcs.slice([0, 1])
+                else:
+                    # Simple slice of the first two dimensions
+                    wcs_2d = wcs.slice([0, 1])
+            else:
+                wcs_2d = wcs
+                
             # Use astropy WCS for plotting
             from astropy.visualization.wcsaxes import WCSAxes
             
             # Create new axis with WCS projection if needed
             if not isinstance(ax, WCSAxes):
-                fig = ax.figure
+                old_pos = ax.get_position()
                 ax.remove()
-                ax = fig.add_subplot(111, projection=wcs)
+                ax = fig.add_subplot(111, projection=wcs_2d)
+                ax.set_position(old_pos)  # Maintain position
             
             # Plot flux map with WCS coordinates
             im = ax.imshow(masked_flux, origin='lower', cmap=cmap, norm=norm)
@@ -3839,6 +3864,10 @@ def plot_binning_on_flux(
     
     # Save figure if requested
     if save_path:
+        # Make sure the directory exists
+        import os
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        
         plt.tight_layout()
         plt.savefig(save_path, dpi=150, bbox_inches='tight')
     
