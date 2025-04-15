@@ -929,6 +929,7 @@ def create_rdb_plots(cube, rdb_results, galaxy_name, plots_dir, args):
         import visualization
         import matplotlib.pyplot as plt
         import numpy as np
+        import os
         
         # Create kinematics radial profile
         if "stellar_kinematics" in rdb_results and "bin_distances" in rdb_results.get(
@@ -941,7 +942,7 @@ def create_rdb_plots(cube, rdb_results, galaxy_name, plots_dir, args):
 
                 # Create radial velocity profile
                 fig, ax = plt.subplots(figsize=(10, 6))
-                ax.plot(bin_radii, velocity, "o-", label="Velocity")
+                ax.plot(bin_radii, velocity, "o-", linewidth=2, markersize=6, label="Velocity")
                 ax.set_xlabel("Radius (arcsec)")
                 ax.set_ylabel("Velocity (km/s)")
                 ax.set_title(f"{galaxy_name} - Radial Velocity Profile")
@@ -953,7 +954,7 @@ def create_rdb_plots(cube, rdb_results, galaxy_name, plots_dir, args):
 
                 # Create radial dispersion profile
                 fig, ax = plt.subplots(figsize=(10, 6))
-                ax.plot(bin_radii, dispersion, "o-", label="Dispersion")
+                ax.plot(bin_radii, dispersion, "o-", linewidth=2, markersize=6, label="Dispersion")
                 ax.set_xlabel("Radius (arcsec)")
                 ax.set_ylabel("Dispersion (km/s)")
                 ax.set_title(f"{galaxy_name} - Radial Dispersion Profile")
@@ -967,14 +968,14 @@ def create_rdb_plots(cube, rdb_results, galaxy_name, plots_dir, args):
                 fig, axes = plt.subplots(1, 2, figsize=(12, 5))
 
                 # Plot velocity profile
-                axes[0].plot(bin_radii, velocity, "o-", label="Velocity")
+                axes[0].plot(bin_radii, velocity, "o-", linewidth=2, markersize=6, label="Velocity")
                 axes[0].set_xlabel("Radius (arcsec)")
                 axes[0].set_ylabel("Velocity (km/s)")
                 axes[0].set_title("Stellar Velocity Profile")
                 axes[0].grid(True, alpha=0.3)
 
                 # Plot dispersion profile
-                axes[1].plot(bin_radii, dispersion, "o-", label="Dispersion")
+                axes[1].plot(bin_radii, dispersion, "o-", linewidth=2, markersize=6, label="Dispersion")
                 axes[1].set_xlabel("Radius (arcsec)")
                 axes[1].set_ylabel("Dispersion (km/s)")
                 axes[1].set_title("Stellar Dispersion Profile")
@@ -1093,7 +1094,7 @@ def create_rdb_plots(cube, rdb_results, galaxy_name, plots_dir, args):
                             # Replace NaN with zeros for plotting
                             flux_plot = np.nan_to_num(flux, nan=0.0)
 
-                            ax.plot(bin_radii, flux_plot, "o-", label=line_name)
+                            ax.plot(bin_radii, flux_plot, "o-", linewidth=2, markersize=6, label=line_name)
                             ax.set_xlabel("Radius (arcsec)")
                             ax.set_ylabel("Flux")
                             ax.set_title(f"{galaxy_name} - {line_name} Radial Profile")
@@ -1165,7 +1166,7 @@ def create_rdb_plots(cube, rdb_results, galaxy_name, plots_dir, args):
 
                                 # Create radial profile
                                 fig, ax = plt.subplots(figsize=(10, 6))
-                                ax.plot(bin_radii, idx_values, "o-", label=idx_name)
+                                ax.plot(bin_radii, idx_values, "o-", linewidth=2, markersize=6, label=idx_name)
                                 ax.set_xlabel("Radius (arcsec)")
                                 ax.set_ylabel("Index Value")
                                 ax.set_title(
@@ -1229,21 +1230,28 @@ def create_rdb_plots(cube, rdb_results, galaxy_name, plots_dir, args):
                 if wcs_obj.naxis > 2:
                     try:
                         from astropy.wcs import WCS
-                        # Create a new 2D WCS from the spatial dimensions
-                        if hasattr(wcs_obj, 'wcs'):
-                            # For newer astropy versions
-                            celestial = wcs_obj.wcs.get_axis_types()
-                            spatial_axes = [i for i, ax in enumerate(celestial) 
-                                          if ax['coordinate_type'] == 'celestial']
-                            if len(spatial_axes) >= 2:
-                                # Create a new 2D WCS with just the spatial dimensions
+                        
+                        # Try different approaches based on the astropy version
+                        try:
+                            # Newer astropy versions
+                            if hasattr(wcs_obj, 'celestial'):
                                 wcs_obj = wcs_obj.celestial
+                            # Older astropy versions
+                            elif hasattr(wcs_obj, 'sub'):
+                                wcs_obj = wcs_obj.sub([1, 2])
+                            # Really old versions
                             else:
-                                # Fallback: slice the first two dimensions
-                                wcs_obj = wcs_obj.slice(slice(None, None), slice(None, None))
-                        else:
-                            # Simple slice of the first two dimensions
-                            wcs_obj = wcs_obj.slice(slice(None, None), slice(None, None))
+                                # Just grab the spatial part manually
+                                header = wcs_obj.to_header()
+                                new_header = {}
+                                for key in header:
+                                    if '1' in key or '2' in key:  # Keep only 1st and 2nd axes
+                                        new_header[key] = header[key]
+                                wcs_obj = WCS(new_header)
+                        except Exception as e1:
+                            logger.warning(f"Error creating 2D WCS: {e1}")
+                            wcs_obj = None
+                            
                     except Exception as e:
                         logger.warning(f"Error processing WCS: {e}")
                         wcs_obj = None
@@ -1256,7 +1264,9 @@ def create_rdb_plots(cube, rdb_results, galaxy_name, plots_dir, args):
             
             # Utility function to create the overlay plot
             def create_overlay_plot():
+                """Create a high-quality bin overlay plot for radial binning"""
                 from matplotlib.colors import LogNorm, Normalize
+                import matplotlib.colors as mcolors
                 from matplotlib.patches import Ellipse
                 
                 # Get current figure and axis
@@ -1266,17 +1276,20 @@ def create_rdb_plots(cube, rdb_results, galaxy_name, plots_dir, args):
                 # Clear any previous content
                 ax.clear()
                 
+                # Get dimensions
+                ny, nx = flux_map.shape
+                
                 # Handle NaN values and mask
                 masked_flux = np.ma.array(flux_map, mask=~np.isfinite(flux_map))
                 
                 # Determine color normalization
                 valid_flux = masked_flux.compressed()
                 if len(valid_flux) > 0 and np.any(valid_flux > 0):
-                    # Logarithmic scale
-                    min_positive = np.min(valid_flux[valid_flux > 0])
-                    norm = LogNorm(vmin=min_positive, vmax=np.max(valid_flux))
+                    # Logarithmic scale with safety
+                    min_positive = np.nanmax([np.min(valid_flux[valid_flux > 0]), 1e-10])
+                    norm = LogNorm(vmin=min_positive, vmax=np.nanmax(valid_flux))
                 else:
-                    # Linear scale
+                    # Linear scale fallback
                     norm = Normalize(vmin=0, vmax=1)
                 
                 # Plot flux map
@@ -1286,14 +1299,12 @@ def create_rdb_plots(cube, rdb_results, galaxy_name, plots_dir, args):
                 cbar = plt.colorbar(im, ax=ax)
                 cbar.set_label('Flux (log scale)')
                 
-                # Get dimensions
-                ny, nx = flux_map.shape
-                
-                # Convert center to physical coordinates if needed
+                # Handle physical coordinates
                 if hasattr(cube, "_pxl_size_x") and hasattr(cube, "_pxl_size_y"):
                     pixel_size_x = cube._pxl_size_x
                     pixel_size_y = cube._pxl_size_y
                     
+                    # Convert center to physical coordinates 
                     center_x_phys = (center_x - nx/2) * pixel_size_x
                     center_y_phys = (center_y - ny/2) * pixel_size_y
                     
@@ -1310,8 +1321,9 @@ def create_rdb_plots(cube, rdb_results, galaxy_name, plots_dir, args):
                                 fill=False,
                                 edgecolor='white',
                                 linestyle='-',
-                                linewidth=1,
-                                alpha=0.7
+                                linewidth=1.5,  # Thicker lines
+                                alpha=0.8,
+                                zorder=10  # Ensure lines are on top
                             )
                         else:
                             # Draw ellipse
@@ -1323,8 +1335,9 @@ def create_rdb_plots(cube, rdb_results, galaxy_name, plots_dir, args):
                                 fill=False,
                                 edgecolor='white',
                                 linestyle='-',
-                                linewidth=1,
-                                alpha=0.7
+                                linewidth=1.5,  # Thicker lines
+                                alpha=0.8,
+                                zorder=10
                             )
                         
                         ax.add_patch(ellipse)
@@ -1339,15 +1352,17 @@ def create_rdb_plots(cube, rdb_results, galaxy_name, plots_dir, args):
                             label_y, 
                             str(i), 
                             color='white', 
-                            fontsize=8,
+                            fontsize=9,  # Slightly larger font
                             ha='center', 
                             va='center',
-                            bbox=dict(facecolor='black', alpha=0.5, boxstyle='round,pad=0.2')
+                            bbox=dict(facecolor='black', alpha=0.6, boxstyle='round,pad=0.2'),
+                            zorder=11  # On top of everything
                         )
                     
                     # Set axis labels
                     ax.set_xlabel('Δ RA (arcsec)')
                     ax.set_ylabel('Δ Dec (arcsec)')
+                    ax.set_aspect('equal')  # Ensure physical scale aspect ratio
                 else:
                     # No physical coordinates - draw in pixel units
                     for i, radius in enumerate(bin_radii):
@@ -1364,8 +1379,9 @@ def create_rdb_plots(cube, rdb_results, galaxy_name, plots_dir, args):
                                 fill=False,
                                 edgecolor='white',
                                 linestyle='-',
-                                linewidth=1,
-                                alpha=0.7
+                                linewidth=1.5,
+                                alpha=0.8,
+                                zorder=10
                             )
                         else:
                             # Draw ellipse
@@ -1377,8 +1393,9 @@ def create_rdb_plots(cube, rdb_results, galaxy_name, plots_dir, args):
                                 fill=False,
                                 edgecolor='white',
                                 linestyle='-',
-                                linewidth=1,
-                                alpha=0.7
+                                linewidth=1.5,
+                                alpha=0.8,
+                                zorder=10
                             )
                         
                         ax.add_patch(ellipse)
@@ -1393,10 +1410,11 @@ def create_rdb_plots(cube, rdb_results, galaxy_name, plots_dir, args):
                             label_y, 
                             str(i), 
                             color='white', 
-                            fontsize=8,
+                            fontsize=9,
                             ha='center', 
                             va='center',
-                            bbox=dict(facecolor='black', alpha=0.5, boxstyle='round,pad=0.2')
+                            bbox=dict(facecolor='black', alpha=0.6, boxstyle='round,pad=0.2'),
+                            zorder=11
                         )
                     
                     # Set axis labels
@@ -1406,8 +1424,11 @@ def create_rdb_plots(cube, rdb_results, galaxy_name, plots_dir, args):
                 # Set title
                 ax.set_title(f"{galaxy_name} - Radial Binning")
                 
-                # Save figure
+                # Make sure the figure is properly sized
                 plt.tight_layout()
+                
+                # Save with high resolution
+                os.makedirs(os.path.dirname(overlay_path), exist_ok=True)
                 plt.savefig(overlay_path, dpi=150, bbox_inches='tight')
                 
                 return fig

@@ -601,6 +601,7 @@ def create_vnb_plots(cube, vnb_results, galaxy_name, plots_dir, args):
         import visualization
         import matplotlib.pyplot as plt
         import numpy as np
+        import os
         
         # Create bin map plot with physical scaling
         if "binning" in vnb_results and "bin_num" in vnb_results["binning"]:
@@ -829,21 +830,28 @@ def create_vnb_plots(cube, vnb_results, galaxy_name, plots_dir, args):
                 if wcs_obj.naxis > 2:
                     try:
                         from astropy.wcs import WCS
-                        # Create a new 2D WCS from the spatial dimensions
-                        if hasattr(wcs_obj, 'wcs'):
-                            # For newer astropy versions
-                            celestial = wcs_obj.wcs.get_axis_types()
-                            spatial_axes = [i for i, ax in enumerate(celestial) 
-                                          if ax['coordinate_type'] == 'celestial']
-                            if len(spatial_axes) >= 2:
-                                # Create a new 2D WCS with just the spatial dimensions
+                        
+                        # Try different approaches based on the astropy version
+                        try:
+                            # Newer astropy versions
+                            if hasattr(wcs_obj, 'celestial'):
                                 wcs_obj = wcs_obj.celestial
+                            # Older astropy versions
+                            elif hasattr(wcs_obj, 'sub'):
+                                wcs_obj = wcs_obj.sub([1, 2])
+                            # Really old versions
                             else:
-                                # Fallback: slice the first two dimensions
-                                wcs_obj = wcs_obj.slice(slice(None, None), slice(None, None))
-                        else:
-                            # Simple slice of the first two dimensions
-                            wcs_obj = wcs_obj.slice(slice(None, None), slice(None, None))
+                                # Just grab the spatial part manually
+                                header = wcs_obj.to_header()
+                                new_header = {}
+                                for key in header:
+                                    if '1' in key or '2' in key:  # Keep only 1st and 2nd axes
+                                        new_header[key] = header[key]
+                                wcs_obj = WCS(new_header)
+                        except Exception as e1:
+                            logger.warning(f"Error creating 2D WCS: {e1}")
+                            wcs_obj = None
+                            
                     except Exception as e:
                         logger.warning(f"Error processing WCS: {e}")
                         wcs_obj = None
@@ -856,8 +864,10 @@ def create_vnb_plots(cube, vnb_results, galaxy_name, plots_dir, args):
             
             # Utility function to create the overlay plot
             def create_overlay_plot():
+                """Create a high-quality bin overlay plot"""
                 from matplotlib.colors import LogNorm, Normalize
-                from matplotlib.patches import Polygon, Ellipse
+                import matplotlib.colors as mcolors
+                from matplotlib.collections import LineCollection
                 
                 # Get current figure and axis
                 fig = plt.gcf()
@@ -866,17 +876,20 @@ def create_vnb_plots(cube, vnb_results, galaxy_name, plots_dir, args):
                 # Clear any previous content
                 ax.clear()
                 
+                # Get dimensions
+                ny, nx = flux_map.shape
+                
                 # Handle NaN values and mask
                 masked_flux = np.ma.array(flux_map, mask=~np.isfinite(flux_map))
                 
                 # Determine color normalization
                 valid_flux = masked_flux.compressed()
                 if len(valid_flux) > 0 and np.any(valid_flux > 0):
-                    # Logarithmic scale
-                    min_positive = np.min(valid_flux[valid_flux > 0])
-                    norm = LogNorm(vmin=min_positive, vmax=np.max(valid_flux))
+                    # Logarithmic scale with safety
+                    min_positive = np.nanmax([np.min(valid_flux[valid_flux > 0]), 1e-10])
+                    norm = LogNorm(vmin=min_positive, vmax=np.nanmax(valid_flux))
                 else:
-                    # Linear scale
+                    # Linear scale fallback
                     norm = Normalize(vmin=0, vmax=1)
                 
                 # Plot flux map
@@ -886,51 +899,70 @@ def create_vnb_plots(cube, vnb_results, galaxy_name, plots_dir, args):
                 cbar = plt.colorbar(im, ax=ax)
                 cbar.set_label('Flux (log scale)')
                 
-                # Create edge map - detect edges between different bins
-                ny, nx = bin_num_2d.shape
-                edge_map = np.zeros((ny, nx), dtype=bool)
+                # Better method to detect bin edges - work with the bin number array directly
+                bin_edges = []
                 
-                # Check horizontal edges
+                # Check for horizontal edges (better algorithm)
                 for j in range(ny):
                     for i in range(nx-1):
-                        if bin_num_2d[j, i] != bin_num_2d[j, i+1] and bin_num_2d[j, i] >= 0 and bin_num_2d[j, i+1] >= 0:
-                            edge_map[j, i] = True
-                            edge_map[j, i+1] = True
+                        if (bin_num_2d[j, i] != bin_num_2d[j, i+1] and 
+                            bin_num_2d[j, i] >= 0 and bin_num_2d[j, i+1] >= 0):
+                            # Found an edge - store segment endpoints
+                            if hasattr(cube, "_pxl_size_x") and hasattr(cube, "_pxl_size_y"):
+                                # Use physical coordinates
+                                pixel_size_x = cube._pxl_size_x
+                                pixel_size_y = cube._pxl_size_y
+                                
+                                # Convert to physical units with center at (0,0)
+                                x1 = (i - nx/2) * pixel_size_x
+                                x2 = (i+1 - nx/2) * pixel_size_x
+                                y1 = (j - ny/2) * pixel_size_y
+                                y2 = y1  # Same y-coordinate
+                                
+                                bin_edges.append([(x1, y1), (x2, y2)])
+                            else:
+                                # Use pixel coordinates
+                                bin_edges.append([(i, j), (i+1, j)])
                 
-                # Check vertical edges
-                for j in range(ny-1):
-                    for i in range(nx):
-                        if bin_num_2d[j, i] != bin_num_2d[j+1, i] and bin_num_2d[j, i] >= 0 and bin_num_2d[j+1, i] >= 0:
-                            edge_map[j, i] = True
-                            edge_map[j+1, i] = True
+                # Check for vertical edges
+                for i in range(nx):
+                    for j in range(ny-1):
+                        if (bin_num_2d[j, i] != bin_num_2d[j+1, i] and 
+                            bin_num_2d[j, i] >= 0 and bin_num_2d[j+1, i] >= 0):
+                            # Found an edge - store segment endpoints
+                            if hasattr(cube, "_pxl_size_x") and hasattr(cube, "_pxl_size_y"):
+                                # Use physical coordinates
+                                pixel_size_x = cube._pxl_size_x
+                                pixel_size_y = cube._pxl_size_y
+                                
+                                # Convert to physical units with center at (0,0)
+                                x1 = (i - nx/2) * pixel_size_x
+                                x2 = x1  # Same x-coordinate
+                                y1 = (j - ny/2) * pixel_size_y
+                                y2 = (j+1 - ny/2) * pixel_size_y
+                                
+                                bin_edges.append([(x1, y1), (x2, y2)])
+                            else:
+                                # Use pixel coordinates
+                                bin_edges.append([(i, j), (i, j+1)])
                 
-                # Plot edges
-                y_edge, x_edge = np.where(edge_map)
-                
-                # Convert to physical coordinates if needed
-                if hasattr(cube, "_pxl_size_x") and hasattr(cube, "_pxl_size_y"):
-                    pixel_size_x = cube._pxl_size_x
-                    pixel_size_y = cube._pxl_size_y
-                    x_edge_phys = (x_edge - nx/2) * pixel_size_x
-                    y_edge_phys = (y_edge - ny/2) * pixel_size_y
-                    ax.scatter(x_edge_phys, y_edge_phys, s=1, color='white', alpha=0.7)
-                    
-                    # Set axis labels
-                    ax.set_xlabel('Δ RA (arcsec)')
-                    ax.set_ylabel('Δ Dec (arcsec)')
-                else:
-                    ax.scatter(x_edge, y_edge, s=1, color='white', alpha=0.7)
-                    
-                    # Set axis labels
-                    ax.set_xlabel('Pixels')
-                    ax.set_ylabel('Pixels')
+                # Add edges as a LineCollection for better rendering
+                if bin_edges:
+                    line_segments = LineCollection(
+                        bin_edges, 
+                        colors='white',
+                        linewidths=0.5,
+                        alpha=0.7,
+                        zorder=10  # Ensure lines are drawn on top of the image
+                    )
+                    ax.add_collection(line_segments)
                 
                 # Plot bin centers if available
                 if bin_centers is not None:
                     x_centers, y_centers = bin_centers
                     
                     # Show only a subset of bin labels to avoid clutter
-                    max_labels = min(20, len(x_centers))
+                    max_labels = min(30, len(x_centers))
                     step = max(1, len(x_centers) // max_labels)
                     
                     # Convert to physical coordinates if needed
@@ -941,20 +973,45 @@ def create_vnb_plots(cube, vnb_results, galaxy_name, plots_dir, args):
                         for i in range(0, len(x_centers), step):
                             x = (x_centers[i] - nx/2) * pixel_size_x
                             y = (y_centers[i] - ny/2) * pixel_size_y
-                            ax.text(x, y, str(i), color='white', fontsize=8, 
-                                  ha='center', va='center', 
-                                  bbox=dict(facecolor='black', alpha=0.5, boxstyle='round,pad=0.2'))
+                            ax.text(
+                                x, y, str(i), 
+                                color='white', 
+                                fontsize=8, 
+                                ha='center', 
+                                va='center', 
+                                bbox=dict(facecolor='black', alpha=0.5, boxstyle='round,pad=0.2'),
+                                zorder=11  # On top of everything
+                            )
                     else:
                         for i in range(0, len(x_centers), step):
-                            ax.text(x_centers[i], y_centers[i], str(i), color='white', fontsize=8, 
-                                  ha='center', va='center', 
-                                  bbox=dict(facecolor='black', alpha=0.5, boxstyle='round,pad=0.2'))
+                            ax.text(
+                                x_centers[i], y_centers[i], 
+                                str(i), 
+                                color='white', 
+                                fontsize=8, 
+                                ha='center', 
+                                va='center', 
+                                bbox=dict(facecolor='black', alpha=0.5, boxstyle='round,pad=0.2'),
+                                zorder=11
+                            )
+                
+                # Set axis labels
+                if hasattr(cube, "_pxl_size_x") and hasattr(cube, "_pxl_size_y"):
+                    ax.set_xlabel('Δ RA (arcsec)')
+                    ax.set_ylabel('Δ Dec (arcsec)')
+                    ax.set_aspect('equal')  # Ensure physical units are shown with correct aspect ratio
+                else:
+                    ax.set_xlabel('Pixels')
+                    ax.set_ylabel('Pixels')
                 
                 # Set title
                 ax.set_title(f"{galaxy_name} - Voronoi Binning")
                 
-                # Save figure
+                # Make sure the figure is properly sized
                 plt.tight_layout()
+                
+                # Save with high resolution
+                os.makedirs(os.path.dirname(overlay_path), exist_ok=True)
                 plt.savefig(overlay_path, dpi=150, bbox_inches='tight')
                 
                 return fig
@@ -980,4 +1037,3 @@ def create_vnb_plots(cube, vnb_results, galaxy_name, plots_dir, args):
         logger.error(f"Error in create_vnb_plots: {str(e)}")
         logger.error(traceback.format_exc())
         plt.close("all")  # Close all figures in case of error
-

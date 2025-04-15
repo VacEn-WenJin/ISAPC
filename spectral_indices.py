@@ -26,6 +26,30 @@ logger = logging.getLogger(__name__)
 SHOW_WARNINGS = False
 
 
+def safe_tight_layout(fig=None):
+    """
+    Apply tight_layout with error handling to avoid warnings
+    
+    Parameters
+    ----------
+    fig : matplotlib.figure.Figure, optional
+        Figure to adjust. If None, uses current figure.
+    """
+    import warnings
+    import matplotlib.pyplot as plt
+    
+    if fig is None:
+        fig = plt.gcf()
+        
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        try:
+            fig.tight_layout()
+        except Exception:
+            # Skip tight_layout if it fails
+            pass
+
+
 def set_warnings(show=True):
     """
     控制是否显示警告消息
@@ -1022,7 +1046,7 @@ class LineIndexCalculator:
 
         # Apply a safer approach to tight_layout
         try:
-            plt.tight_layout()
+            safe_tight_layout(fig)
         except Warning:
             # Ignore warnings about tight_layout
             pass

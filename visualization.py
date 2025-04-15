@@ -20,6 +20,29 @@ logger = logging.getLogger(__name__)
 # Add this to visualization.py at the top of the file after imports
 import contextlib
 
+def safe_tight_layout(fig=None):
+    """
+    Apply tight_layout with error handling to avoid warnings
+    
+    Parameters
+    ----------
+    fig : matplotlib.figure.Figure, optional
+        Figure to adjust. If None, uses current figure.
+    """
+    import warnings
+    import matplotlib.pyplot as plt
+    
+    if fig is None:
+        fig = plt.gcf()
+        
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        try:
+            fig.tight_layout()
+        except Exception:
+            # Skip tight_layout if it fails
+            pass
+
 
 @contextlib.contextmanager
 def figure_context(*args, **kwargs):
