@@ -251,9 +251,46 @@ def get_physical_extent(cube):
         return None
 
 
+def get_figure_size_for_cube(cube, base_size=8):
+    """
+    Calculate figure size based on cube dimensions and pixel scale
+    
+    Parameters
+    ----------
+    cube : MUSECube
+        Data cube
+    base_size : float, default=8
+        Base figure size
+        
+    Returns
+    -------
+    tuple
+        (width, height) figure size
+    """
+    # Default square figure
+    figsize = (base_size, base_size)
+    
+    # Adjust for physical scale if available
+    if hasattr(cube, "_pxl_size_x") and hasattr(cube, "_pxl_size_y") and \
+       hasattr(cube, "_n_x") and hasattr(cube, "_n_y"):
+        # Get pixel aspect ratio
+        pixel_ratio = cube._pxl_size_x / cube._pxl_size_y
+        
+        # Get image aspect ratio (width/height)
+        image_ratio = (cube._n_x * cube._pxl_size_x) / (cube._n_y * cube._pxl_size_y)
+        
+        # Calculate figsize to maintain physical scale
+        if image_ratio >= 1:  # Wider than tall
+            figsize = (base_size, base_size / image_ratio)
+        else:  # Taller than wide
+            figsize = (base_size * image_ratio, base_size)
+    
+    return figsize
+
+
 def plot_bin_map(bin_num, values=None, ax=None, cmap='viridis', title=None, 
                 colorbar_label=None, physical_scale=True, pixel_size=None, 
-                wcs=None, vmin=None, vmax=None, log_scale=False):
+                wcs=None, vmin=None, vmax=None, log_scale=False, cube=None):
     """
     Plot a map of binned data with consistent physical scaling
     
@@ -281,6 +318,8 @@ def plot_bin_map(bin_num, values=None, ax=None, cmap='viridis', title=None,
         Value range for colormap
     log_scale : bool, default=False
         Use logarithmic scale for values
+    cube : MUSECube, optional
+        MUSE cube object, used to determine figure size
         
     Returns
     -------
@@ -289,10 +328,21 @@ def plot_bin_map(bin_num, values=None, ax=None, cmap='viridis', title=None,
     """
     # Create axis if needed
     if ax is None:
-        fig, ax = plt.subplots(figsize=(10, 9))
+        # Get appropriate figure size if cube is provided
+        if cube is not None:
+            figsize = get_figure_size_for_cube(cube)
+        else:
+            figsize = (8, 8)
+            
+        fig, ax = plt.subplots(figsize=figsize)
     
     # Get dimensions
     ny, nx = bin_num.shape
+    
+    # If pixel_size not provided but cube is, use cube's pixel size
+    if pixel_size is None and cube is not None:
+        if hasattr(cube, "_pxl_size_x") and hasattr(cube, "_pxl_size_y"):
+            pixel_size = (cube._pxl_size_x, cube._pxl_size_y)
     
     # Process pixel size if provided as a single value
     if isinstance(pixel_size, (int, float)):
@@ -392,26 +442,19 @@ def plot_bin_map(bin_num, values=None, ax=None, cmap='viridis', title=None,
                 ny/2 * pixel_size_y
             ]
             
-            # Plot with proper non-square pixels
+            # Plot with physical coordinates
             im = ax.imshow(masked_data, origin='lower', cmap=cmap, norm=norm, 
-                         extent=extent, aspect='auto')
+                         extent=extent, aspect=1.0)  # aspect=1.0 for equal physical scaling
             
-            # Explicitly set the aspect ratio to match physical scale
-            ax.set_aspect(pixel_size_y / pixel_size_x)
-            
-            # Set axis labels
             ax.set_xlabel('Δ RA (arcsec)')
             ax.set_ylabel('Δ Dec (arcsec)')
         else:
             # Plot with pixel coordinates
             im = ax.imshow(masked_data, origin='lower', cmap=cmap, norm=norm)
+            ax.set_aspect('equal')  # Equal aspect ratio for pixels
             
-            # Set axis labels
             ax.set_xlabel('Pixels')
             ax.set_ylabel('Pixels')
-            
-            # Use equal aspect ratio for pixel coordinates
-            ax.set_aspect('equal')
     
     # Add colorbar if we have values
     if values is not None:
@@ -428,7 +471,7 @@ def plot_bin_map(bin_num, values=None, ax=None, cmap='viridis', title=None,
 
 def plot_flux_with_radial_bins(flux_map, bin_radii, center_x, center_y, pa=0, ellipticity=0,
                              wcs=None, pixel_size=None, ax=None, title=None, cmap='inferno',
-                             log_scale=True):
+                             log_scale=True, cube=None):
     """
     Plot flux map with radial bins overlay
     
@@ -456,6 +499,8 @@ def plot_flux_with_radial_bins(flux_map, bin_radii, center_x, center_y, pa=0, el
         Colormap
     log_scale : bool, default=True
         Use logarithmic scale for flux
+    cube : MUSECube, optional
+        MUSE cube object for determining figure size
         
     Returns
     -------
@@ -464,12 +509,23 @@ def plot_flux_with_radial_bins(flux_map, bin_radii, center_x, center_y, pa=0, el
     """
     # Create figure and axis if needed
     if ax is None:
-        fig, ax = plt.subplots(figsize=(10, 8))
+        # Get appropriate figure size if cube is provided
+        if cube is not None:
+            figsize = get_figure_size_for_cube(cube)
+        else:
+            figsize = (8, 8)
+            
+        fig, ax = plt.subplots(figsize=figsize)
     else:
         fig = ax.figure
     
     # Get dimensions
     ny, nx = flux_map.shape
+    
+    # If pixel_size not provided but cube is, use cube's pixel size
+    if pixel_size is None and cube is not None:
+        if hasattr(cube, "_pxl_size_x") and hasattr(cube, "_pxl_size_y"):
+            pixel_size = (cube._pxl_size_x, cube._pxl_size_y)
     
     # Handle NaN values and mask
     masked_flux = np.ma.array(flux_map, mask=~np.isfinite(flux_map))
@@ -548,12 +604,9 @@ def plot_flux_with_radial_bins(flux_map, bin_radii, center_x, center_y, pa=0, el
                 ny/2 * pixel_size_y
             ]
             
-            # Plot flux map with proper non-square pixels
+            # Plot flux map with physical coordinates
             im = ax.imshow(masked_flux, origin='lower', cmap=cmap, norm=norm, 
-                         extent=extent, aspect='auto')
-            
-            # Explicitly set the aspect ratio to match physical scale
-            ax.set_aspect(pixel_size_y / pixel_size_x)
+                         extent=extent, aspect=1.0)  # aspect=1.0 for equal physical scaling
             
             # Draw radial bins
             center_x_phys = (center_x - nx/2) * pixel_size_x
@@ -593,9 +646,7 @@ def plot_flux_with_radial_bins(flux_map, bin_radii, center_x, center_y, pa=0, el
         else:
             # Plot in pixel coordinates
             im = ax.imshow(masked_flux, origin='lower', cmap=cmap, norm=norm)
-            
-            # Use equal aspect ratio for pixel coordinates
-            ax.set_aspect('equal')
+            ax.set_aspect('equal')  # Equal aspect ratio for pixels
             
             for radius in bin_radii:
                 if ellipticity == 0 or not np.isfinite(ellipticity):
@@ -730,8 +781,9 @@ def plot_bin_boundaries_on_flux(bin_num, flux_map, cube, galaxy_name=None, binni
     fig, ax : tuple
         Figure and axis objects
     """
-    # Create figure with rectangular aspect ratio
-    fig, ax = plt.subplots(figsize=(10, 9))
+    # Create figure with appropriate size
+    figsize = get_figure_size_for_cube(cube)
+    fig, ax = plt.subplots(figsize=figsize)
     
     # Get dimensions
     ny, nx = flux_map.shape
@@ -780,13 +832,10 @@ def plot_bin_boundaries_on_flux(bin_num, flux_map, cube, galaxy_name=None, binni
     
     # Always use physical coordinates if available
     if extent is not None:
-        # Plot with proper non-square pixels
+        # Plot with physical coordinates
         im = ax.imshow(flux_map_clean, origin='lower', cmap='inferno', 
                      norm=LogNorm(vmin=vmin, vmax=vmax), 
-                     extent=extent, aspect='auto')
-        
-        # Explicitly set the aspect ratio to match physical scale
-        ax.set_aspect(pixel_size_y / pixel_size_x)
+                     extent=extent, aspect=1.0)  # aspect=1.0 for equal physical scaling
         
         ax.set_xlabel('Δ RA (arcsec)')
         ax.set_ylabel('Δ Dec (arcsec)')
@@ -794,9 +843,7 @@ def plot_bin_boundaries_on_flux(bin_num, flux_map, cube, galaxy_name=None, binni
         # Fallback to pixel coordinates
         im = ax.imshow(flux_map_clean, origin='lower', cmap='inferno',
                      norm=LogNorm(vmin=vmin, vmax=vmax))
-                     
-        # Use equal aspect ratio for pixel coordinates
-        ax.set_aspect('equal')
+        ax.set_aspect('equal')  # Equal aspect ratio for pixels
         
         ax.set_xlabel('Pixels')
         ax.set_ylabel('Pixels')
@@ -984,7 +1031,7 @@ def plot_bin_boundaries_on_flux(bin_num, flux_map, cube, galaxy_name=None, binni
 
 def plot_kinematics_summary(velocity_field, dispersion_field, rotation_curve=None, params=None,
                           equal_aspect=True, physical_scale=True, pixel_size=None, wcs=None,
-                          rotation_axis=True):
+                          rotation_axis=True, cube=None):
     """
     Plot kinematics summary with physical scaling
     
@@ -1008,14 +1055,23 @@ def plot_kinematics_summary(velocity_field, dispersion_field, rotation_curve=Non
         WCS object
     rotation_axis : bool, default=True
         Show rotation axis
+    cube : MUSECube, optional
+        MUSE cube for determining figure size
         
     Returns
     -------
     fig : matplotlib.figure.Figure
         Figure with plots
     """
-    # Create figure
-    fig = plt.figure(figsize=(15, 10))
+    # Create figure with appropriate size
+    if cube is not None:
+        map_figsize = get_figure_size_for_cube(cube)
+        fig_width = max(15, map_figsize[0] * 2)  # Ensure enough width for two panels
+        fig_height = map_figsize[1] + 4  # Add height for rotation curve
+    else:
+        fig_width, fig_height = 15, 10
+        
+    fig = plt.figure(figsize=(fig_width, fig_height))
     
     # Create separate upper and lower rows
     gs = fig.add_gridspec(nrows=2, ncols=2, height_ratios=[2, 1.5], hspace=0.3, wspace=0.3)
@@ -1025,6 +1081,11 @@ def plot_kinematics_summary(velocity_field, dispersion_field, rotation_curve=Non
     
     # Get dimensions
     ny, nx = velocity_field.shape
+    
+    # If pixel_size not provided but cube is, use cube's pixel size
+    if pixel_size is None and cube is not None:
+        if hasattr(cube, "_pxl_size_x") and hasattr(cube, "_pxl_size_y"):
+            pixel_size = (cube._pxl_size_x, cube._pxl_size_y)
     
     # Calculate physical extent if needed
     extent = None
@@ -1078,19 +1139,14 @@ def plot_kinematics_summary(velocity_field, dispersion_field, rotation_curve=Non
             
             if extent is not None:
                 im_vel = ax_vel.imshow(velocity_field, origin='lower', cmap='coolwarm',
-                                     vmin=vmin, vmax=vmax, extent=extent, aspect='auto')
-                
-                # Explicitly set the aspect ratio to match physical scale
-                ax_vel.set_aspect(pixel_size_y / pixel_size_x)
+                                     vmin=vmin, vmax=vmax, extent=extent, aspect=1.0)
                 
                 ax_vel.set_xlabel('Δ RA (arcsec)')
                 ax_vel.set_ylabel('Δ Dec (arcsec)')
             else:
                 im_vel = ax_vel.imshow(velocity_field, origin='lower', cmap='coolwarm',
                                      vmin=vmin, vmax=vmax)
-                                     
-                # Use equal aspect ratio for pixel coordinates
-                ax_vel.set_aspect('equal')
+                ax_vel.set_aspect('equal')  # Equal aspect ratio for pixels
                 
                 ax_vel.set_xlabel('Pixels')
                 ax_vel.set_ylabel('Pixels')
@@ -1098,19 +1154,14 @@ def plot_kinematics_summary(velocity_field, dispersion_field, rotation_curve=Non
         # Standard plotting for velocity field with physical scaling if available
         if extent is not None:
             im_vel = ax_vel.imshow(velocity_field, origin='lower', cmap='coolwarm',
-                                 vmin=vmin, vmax=vmax, extent=extent, aspect='auto')
-            
-            # Explicitly set the aspect ratio to match physical scale
-            ax_vel.set_aspect(pixel_size_y / pixel_size_x)
+                                 vmin=vmin, vmax=vmax, extent=extent, aspect=1.0)
             
             ax_vel.set_xlabel('Δ RA (arcsec)')
             ax_vel.set_ylabel('Δ Dec (arcsec)')
         else:
             im_vel = ax_vel.imshow(velocity_field, origin='lower', cmap='coolwarm',
                                  vmin=vmin, vmax=vmax)
-                                 
-            # Use equal aspect ratio for pixel coordinates
-            ax_vel.set_aspect('equal')
+            ax_vel.set_aspect('equal')  # Equal aspect ratio for pixels
             
             ax_vel.set_xlabel('Pixels')
             ax_vel.set_ylabel('Pixels')
@@ -1171,19 +1222,14 @@ def plot_kinematics_summary(velocity_field, dispersion_field, rotation_curve=Non
             
             if extent is not None:
                 im_disp = ax_disp.imshow(dispersion_field, origin='lower', cmap='viridis',
-                                       vmin=vmin_disp, vmax=vmax_disp, extent=extent, aspect='auto')
-                                       
-                # Explicitly set the aspect ratio to match physical scale
-                ax_disp.set_aspect(pixel_size_y / pixel_size_x)
+                                       vmin=vmin_disp, vmax=vmax_disp, extent=extent, aspect=1.0)
                 
                 ax_disp.set_xlabel('Δ RA (arcsec)')
                 ax_disp.set_ylabel('Δ Dec (arcsec)')
             else:
                 im_disp = ax_disp.imshow(dispersion_field, origin='lower', cmap='viridis',
                                        vmin=vmin_disp, vmax=vmax_disp)
-                                       
-                # Use equal aspect ratio for pixel coordinates
-                ax_disp.set_aspect('equal')
+                ax_disp.set_aspect('equal')  # Equal aspect ratio for pixels
                 
                 ax_disp.set_xlabel('Pixels')
                 ax_disp.set_ylabel('Pixels')
@@ -1191,19 +1237,14 @@ def plot_kinematics_summary(velocity_field, dispersion_field, rotation_curve=Non
         # Standard plotting for dispersion with physical scaling if available
         if extent is not None:
             im_disp = ax_disp.imshow(dispersion_field, origin='lower', cmap='viridis',
-                                   vmin=vmin_disp, vmax=vmax_disp, extent=extent, aspect='auto')
-                                   
-            # Explicitly set the aspect ratio to match physical scale
-            ax_disp.set_aspect(pixel_size_y / pixel_size_x)
+                                   vmin=vmin_disp, vmax=vmax_disp, extent=extent, aspect=1.0)
             
             ax_disp.set_xlabel('Δ RA (arcsec)')
             ax_disp.set_ylabel('Δ Dec (arcsec)')
         else:
             im_disp = ax_disp.imshow(dispersion_field, origin='lower', cmap='viridis',
                                    vmin=vmin_disp, vmax=vmax_disp)
-                                   
-            # Use equal aspect ratio for pixel coordinates
-            ax_disp.set_aspect('equal')
+            ax_disp.set_aspect('equal')  # Equal aspect ratio for pixels
             
             ax_disp.set_xlabel('Pixels')
             ax_disp.set_ylabel('Pixels')
@@ -1304,7 +1345,8 @@ def plot_kinematics_summary(velocity_field, dispersion_field, rotation_curve=Non
 
 
 def plot_gas_kinematics(velocity_field, dispersion_field, equal_aspect=True, 
-                      physical_scale=True, pixel_size=None, wcs=None, rot_angle=0.0):
+                      physical_scale=True, pixel_size=None, wcs=None, rot_angle=0.0,
+                      cube=None):
     """
     Plot gas kinematics maps
     
@@ -1324,20 +1366,34 @@ def plot_gas_kinematics(velocity_field, dispersion_field, equal_aspect=True,
         WCS object
     rot_angle : float, default=0.0
         Rotation angle in degrees for axes
+    cube : MUSECube, optional
+        MUSE cube for determining figure size
         
     Returns
     -------
     fig : matplotlib.figure.Figure
         Figure with plots
     """
-    # Create figure
-    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+    # Create figure with appropriate size
+    if cube is not None:
+        map_figsize = get_figure_size_for_cube(cube)
+        fig_width = max(12, map_figsize[0] * 2)  # Ensure enough width for two panels
+        fig_height = map_figsize[1]
+    else:
+        fig_width, fig_height = 12, 5
+        
+    fig, axes = plt.subplots(1, 2, figsize=(fig_width, fig_height))
     
     # Process WCS
     wcs_obj = process_wcs(wcs) if wcs is not None else None
     
     # Get dimensions
     ny, nx = velocity_field.shape
+    
+    # If pixel_size not provided but cube is, use cube's pixel size
+    if pixel_size is None and cube is not None:
+        if hasattr(cube, "_pxl_size_x") and hasattr(cube, "_pxl_size_y"):
+            pixel_size = (cube._pxl_size_x, cube._pxl_size_y)
     
     # Calculate physical extent if needed
     extent = None
@@ -1406,16 +1462,12 @@ def plot_gas_kinematics(velocity_field, dispersion_field, equal_aspect=True,
             axes = [fig.add_subplot(1, 2, 1), fig.add_subplot(1, 2, 2)]
         
         if extent is not None:
-            # Physical coordinates without WCS - use proper non-square pixels
+            # Physical coordinates without WCS
             im_vel = axes[0].imshow(velocity_field, origin='lower', cmap='coolwarm',
-                                 vmin=vmin, vmax=vmax, extent=extent, aspect='auto')
+                                 vmin=vmin, vmax=vmax, extent=extent, aspect=1.0)
                                  
             im_disp = axes[1].imshow(dispersion_field, origin='lower', cmap='viridis',
-                                   vmin=vmin_disp, vmax=vmax_disp, extent=extent, aspect='auto')
-            
-            # Set the correct aspect ratio for both plots
-            for ax in axes:
-                ax.set_aspect(pixel_size_y / pixel_size_x)
+                                   vmin=vmin_disp, vmax=vmax_disp, extent=extent, aspect=1.0)
             
             # Set labels with rotation angle if specified
             if rot_angle != 0:
@@ -1436,8 +1488,9 @@ def plot_gas_kinematics(velocity_field, dispersion_field, equal_aspect=True,
                                    vmin=vmin_disp, vmax=vmax_disp)
             
             # Use equal aspect ratio for pixel coordinates
-            for ax in axes:
-                ax.set_aspect('equal')
+            if equal_aspect:
+                axes[0].set_aspect('equal')
+                axes[1].set_aspect('equal')
             
             axes[0].set_xlabel('Pixels')
             axes[0].set_ylabel('Pixels')
@@ -1832,8 +1885,13 @@ def create_diagnostic_plot(cube, indices=None, title=None, output_dir=None):
     fig : matplotlib.figure.Figure
         Figure with plots
     """
+    # Get appropriate figure size based on cube dimensions
+    map_figsize = get_figure_size_for_cube(cube)
+    fig_width = max(16, map_figsize[0] * 3)  # Ensure enough width for three panels
+    fig_height = max(12, map_figsize[1] * 2)  # Ensure enough height for two rows
+    
     # Create a multi-panel diagnostic figure
-    fig = plt.figure(figsize=(16, 12))
+    fig = plt.figure(figsize=(fig_width, fig_height))
     
     # Set up the GridSpec - 2 rows, 3 columns
     gs = fig.add_gridspec(2, 3, height_ratios=[1, 1.2], hspace=0.3, wspace=0.3)
@@ -1880,18 +1938,15 @@ def create_diagnostic_plot(cube, indices=None, title=None, output_dir=None):
         ax1.text(0.5, 0.5, 'Wavelength data not available', 
                 ha='center', va='center', transform=ax1.transAxes)
     
-    # 2. Flux map (top middle)
+    # 2. Flux map - use the prepare_flux_map function (top middle)
     ax2 = fig.add_subplot(gs[0, 1])
     try:
         flux_map = prepare_flux_map(cube)
         
-        # Use proper non-square pixels if physical scaling is available
+        # Use proper non-square pixels with physical scale
         if hasattr(cube, '_pxl_size_x') and hasattr(cube, '_pxl_size_y'):
             pixel_size_x = cube._pxl_size_x
             pixel_size_y = cube._pxl_size_y
-            
-            # Calculate the aspect ratio
-            aspect_ratio = pixel_size_y / pixel_size_x
             
             # Calculate extent
             extent = [
@@ -1908,11 +1963,8 @@ def create_diagnostic_plot(cube, indices=None, title=None, output_dir=None):
                 norm=LogNorm(vmin=np.nanpercentile(flux_map[flux_map > 0], 1),
                             vmax=np.nanpercentile(flux_map, 99)),
                 extent=extent,
-                aspect='auto'  # Use 'auto' to allow non-square pixels
+                aspect=1.0  # aspect=1.0 for equal physical scaling
             )
-            
-            # Explicitly set the aspect ratio
-            ax2.set_aspect(aspect_ratio)
             
             ax2.set_xlabel('Δ RA (arcsec)')
             ax2.set_ylabel('Δ Dec (arcsec)')
@@ -1924,9 +1976,7 @@ def create_diagnostic_plot(cube, indices=None, title=None, output_dir=None):
                 norm=LogNorm(vmin=np.nanpercentile(flux_map[flux_map > 0], 1),
                             vmax=np.nanpercentile(flux_map, 99))
             )
-            
-            # Use equal aspect ratio for pixel coordinates
-            ax2.set_aspect('equal')
+            ax2.set_aspect('equal')  # Equal aspect ratio for pixel coordinates
             
             ax2.set_xlabel('Pixels')
             ax2.set_ylabel('Pixels')
@@ -1998,13 +2048,10 @@ def create_diagnostic_plot(cube, indices=None, title=None, output_dir=None):
             else:
                 vmin, vmax = -100, 100
             
-            # Use proper non-square pixels if physical scaling is available
+            # Use proper non-square pixels with physical scale
             if hasattr(cube, '_pxl_size_x') and hasattr(cube, '_pxl_size_y'):
                 pixel_size_x = cube._pxl_size_x
                 pixel_size_y = cube._pxl_size_y
-                
-                # Calculate the aspect ratio
-                aspect_ratio = pixel_size_y / pixel_size_x
                 
                 # Calculate extent
                 extent = [
@@ -2020,11 +2067,8 @@ def create_diagnostic_plot(cube, indices=None, title=None, output_dir=None):
                     cmap='coolwarm',
                     vmin=vmin, vmax=vmax,
                     extent=extent,
-                    aspect='auto'  # Use 'auto' to allow non-square pixels
+                    aspect=1.0  # aspect=1.0 for equal physical scaling
                 )
-                
-                # Explicitly set the aspect ratio
-                ax4.set_aspect(aspect_ratio)
                 
                 ax4.set_xlabel('Δ RA (arcsec)')
                 ax4.set_ylabel('Δ Dec (arcsec)')
@@ -2035,9 +2079,7 @@ def create_diagnostic_plot(cube, indices=None, title=None, output_dir=None):
                     cmap='coolwarm',
                     vmin=vmin, vmax=vmax
                 )
-                
-                # Use equal aspect ratio for pixel coordinates
-                ax4.set_aspect('equal')
+                ax4.set_aspect('equal')  # Equal aspect ratio for pixel coordinates
                 
                 ax4.set_xlabel('Pixels')
                 ax4.set_ylabel('Pixels')
@@ -2070,13 +2112,10 @@ def create_diagnostic_plot(cube, indices=None, title=None, output_dir=None):
                 if i < len(dispersion):
                     disp_map[bin_num_2d == i] = dispersion[i]
             
-            # Plot with proper non-square pixels if physical scaling is available
+            # Use proper non-square pixels with physical scale
             if hasattr(cube, '_pxl_size_x') and hasattr(cube, '_pxl_size_y'):
                 pixel_size_x = cube._pxl_size_x
                 pixel_size_y = cube._pxl_size_y
-                
-                # Calculate the aspect ratio
-                aspect_ratio = pixel_size_y / pixel_size_x
                 
                 # Calculate extent
                 extent = [
@@ -2100,11 +2139,8 @@ def create_diagnostic_plot(cube, indices=None, title=None, output_dir=None):
                     cmap='viridis',
                     vmin=vmin, vmax=vmax,
                     extent=extent,
-                    aspect='auto'  # Use 'auto' to allow non-square pixels
+                    aspect=1.0  # aspect=1.0 for equal physical scaling
                 )
-                
-                # Explicitly set the aspect ratio
-                ax5.set_aspect(aspect_ratio)
                 
                 ax5.set_xlabel('Δ RA (arcsec)')
                 ax5.set_ylabel('Δ Dec (arcsec)')
@@ -2123,9 +2159,7 @@ def create_diagnostic_plot(cube, indices=None, title=None, output_dir=None):
                     cmap='viridis',
                     vmin=vmin, vmax=vmax
                 )
-                
-                # Use equal aspect ratio for pixel coordinates
-                ax5.set_aspect('equal')
+                ax5.set_aspect('equal')  # Equal aspect ratio for pixel coordinates
                 
                 ax5.set_xlabel('Pixels')
                 ax5.set_ylabel('Pixels')
@@ -2215,7 +2249,7 @@ def create_diagnostic_plot(cube, indices=None, title=None, output_dir=None):
 
 def plot_spatial_map(data, ax=None, title=None, cmap='viridis', physical_scale=True, 
                    pixel_size=None, wcs=None, colorbar_label=None, vmin=None, vmax=None, 
-                   log_scale=False):
+                   log_scale=False, cube=None):
     """
     General purpose function to plot spatial data with proper physical scaling
     
@@ -2241,6 +2275,8 @@ def plot_spatial_map(data, ax=None, title=None, cmap='viridis', physical_scale=T
         Value range for colormap
     log_scale : bool, default=False
         Use logarithmic scale for values
+    cube : MUSECube, optional
+        MUSE cube object for determining figure size
         
     Returns
     -------
@@ -2249,12 +2285,23 @@ def plot_spatial_map(data, ax=None, title=None, cmap='viridis', physical_scale=T
     """
     # Create axis if needed
     if ax is None:
-        fig, ax = plt.subplots(figsize=(9, 8))
+        # Get appropriate figure size if cube is provided
+        if cube is not None:
+            figsize = get_figure_size_for_cube(cube)
+        else:
+            figsize = (8, 8)
+            
+        fig, ax = plt.subplots(figsize=figsize)
     else:
         fig = ax.figure
         
     # Get dimensions
     ny, nx = data.shape
+    
+    # If pixel_size not provided but cube is, use cube's pixel size
+    if pixel_size is None and cube is not None:
+        if hasattr(cube, "_pxl_size_x") and hasattr(cube, "_pxl_size_y"):
+            pixel_size = (cube._pxl_size_x, cube._pxl_size_y)
     
     # Process pixel size if provided as a single value
     if isinstance(pixel_size, (int, float)):
@@ -2321,12 +2368,9 @@ def plot_spatial_map(data, ax=None, title=None, cmap='viridis', physical_scale=T
                 ny/2 * pixel_size_y
             ]
             
-            # Display the data with non-square pixels
+            # Plot with physical coordinates
             im = ax.imshow(masked_data, origin='lower', cmap=cmap, norm=norm, 
-                         extent=extent, aspect='auto')
-                         
-            # Explicitly set the aspect ratio to match physical scale
-            ax.set_aspect(pixel_size_y / pixel_size_x)
+                         extent=extent, aspect=1.0)  # aspect=1.0 for equal physical scaling
             
             # Set axis labels
             ax.set_xlabel('Δ RA (arcsec)')
@@ -2334,9 +2378,7 @@ def plot_spatial_map(data, ax=None, title=None, cmap='viridis', physical_scale=T
         else:
             # Plot with pixel coordinates
             im = ax.imshow(masked_data, origin='lower', cmap=cmap, norm=norm)
-            
-            # Use equal aspect ratio for pixel coordinates
-            ax.set_aspect('equal')
+            ax.set_aspect('equal')  # Equal aspect ratio for pixels
             
             # Set axis labels
             ax.set_xlabel('Pixels')
