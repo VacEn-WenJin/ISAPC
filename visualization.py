@@ -392,12 +392,12 @@ def plot_bin_map(bin_num, values=None, ax=None, cmap='viridis', title=None,
                 ny/2 * pixel_size_y
             ]
             
-            # Calculate aspect ratio for proper physical scaling
-            aspect_ratio = pixel_size_y / pixel_size_x
-            
-            # Plot data with physical scaling
+            # Plot with proper non-square pixels
             im = ax.imshow(masked_data, origin='lower', cmap=cmap, norm=norm, 
-                         extent=extent, aspect=aspect_ratio)
+                         extent=extent, aspect='auto')
+            
+            # Explicitly set the aspect ratio to match physical scale
+            ax.set_aspect(pixel_size_y / pixel_size_x)
             
             # Set axis labels
             ax.set_xlabel('Δ RA (arcsec)')
@@ -409,6 +409,9 @@ def plot_bin_map(bin_num, values=None, ax=None, cmap='viridis', title=None,
             # Set axis labels
             ax.set_xlabel('Pixels')
             ax.set_ylabel('Pixels')
+            
+            # Use equal aspect ratio for pixel coordinates
+            ax.set_aspect('equal')
     
     # Add colorbar if we have values
     if values is not None:
@@ -545,12 +548,12 @@ def plot_flux_with_radial_bins(flux_map, bin_radii, center_x, center_y, pa=0, el
                 ny/2 * pixel_size_y
             ]
             
-            # Calculate aspect ratio for proper physical scaling
-            aspect_ratio = pixel_size_y / pixel_size_x
-            
-            # Plot flux map
+            # Plot flux map with proper non-square pixels
             im = ax.imshow(masked_flux, origin='lower', cmap=cmap, norm=norm, 
-                         extent=extent, aspect=aspect_ratio)
+                         extent=extent, aspect='auto')
+            
+            # Explicitly set the aspect ratio to match physical scale
+            ax.set_aspect(pixel_size_y / pixel_size_x)
             
             # Draw radial bins
             center_x_phys = (center_x - nx/2) * pixel_size_x
@@ -590,6 +593,9 @@ def plot_flux_with_radial_bins(flux_map, bin_radii, center_x, center_y, pa=0, el
         else:
             # Plot in pixel coordinates
             im = ax.imshow(masked_flux, origin='lower', cmap=cmap, norm=norm)
+            
+            # Use equal aspect ratio for pixel coordinates
+            ax.set_aspect('equal')
             
             for radius in bin_radii:
                 if ellipticity == 0 or not np.isfinite(ellipticity):
@@ -774,18 +780,24 @@ def plot_bin_boundaries_on_flux(bin_num, flux_map, cube, galaxy_name=None, binni
     
     # Always use physical coordinates if available
     if extent is not None:
-        # Set aspect ratio to match the physical scale
-        aspect_ratio = pixel_size_y / pixel_size_x
-        
+        # Plot with proper non-square pixels
         im = ax.imshow(flux_map_clean, origin='lower', cmap='inferno', 
                      norm=LogNorm(vmin=vmin, vmax=vmax), 
-                     extent=extent, aspect=aspect_ratio)
+                     extent=extent, aspect='auto')
+        
+        # Explicitly set the aspect ratio to match physical scale
+        ax.set_aspect(pixel_size_y / pixel_size_x)
+        
         ax.set_xlabel('Δ RA (arcsec)')
         ax.set_ylabel('Δ Dec (arcsec)')
     else:
         # Fallback to pixel coordinates
         im = ax.imshow(flux_map_clean, origin='lower', cmap='inferno',
                      norm=LogNorm(vmin=vmin, vmax=vmax))
+                     
+        # Use equal aspect ratio for pixel coordinates
+        ax.set_aspect('equal')
+        
         ax.set_xlabel('Pixels')
         ax.set_ylabel('Pixels')
     
@@ -954,14 +966,6 @@ def plot_bin_boundaries_on_flux(bin_num, flux_map, cube, galaxy_name=None, binni
     else:
         ax.set_title(f"{binning_type} Binning on Flux")
     
-    # Set aspect ratio to match physical scale if available
-    if extent is not None:
-        # Explicitly set the aspect ratio to match the physical scale
-        ax.set_aspect(aspect_ratio)
-    else:
-        # Use equal aspect ratio for pixel coordinates
-        ax.set_aspect('equal')
-    
     # Make sure axis limits match the data range
     if extent is not None:
         ax.set_xlim(extent[0], extent[1])
@@ -1032,11 +1036,6 @@ def plot_kinematics_summary(velocity_field, dispersion_field, rotation_curve=Non
             -ny/2 * pixel_size_y, 
             ny/2 * pixel_size_y
         ]
-        
-        # Calculate aspect ratio for proper physical scaling
-        aspect_ratio = pixel_size_y / pixel_size_x
-    else:
-        aspect_ratio = 1.0  # Default to equal aspect ratio
     
     # Determine color limits for velocity
     valid_vel = velocity_field[np.isfinite(velocity_field)]
@@ -1079,33 +1078,45 @@ def plot_kinematics_summary(velocity_field, dispersion_field, rotation_curve=Non
             
             if extent is not None:
                 im_vel = ax_vel.imshow(velocity_field, origin='lower', cmap='coolwarm',
-                                     vmin=vmin, vmax=vmax, extent=extent, aspect=aspect_ratio)
+                                     vmin=vmin, vmax=vmax, extent=extent, aspect='auto')
+                
+                # Explicitly set the aspect ratio to match physical scale
+                ax_vel.set_aspect(pixel_size_y / pixel_size_x)
+                
                 ax_vel.set_xlabel('Δ RA (arcsec)')
                 ax_vel.set_ylabel('Δ Dec (arcsec)')
             else:
                 im_vel = ax_vel.imshow(velocity_field, origin='lower', cmap='coolwarm',
                                      vmin=vmin, vmax=vmax)
+                                     
+                # Use equal aspect ratio for pixel coordinates
+                ax_vel.set_aspect('equal')
+                
                 ax_vel.set_xlabel('Pixels')
                 ax_vel.set_ylabel('Pixels')
     else:
         # Standard plotting for velocity field with physical scaling if available
         if extent is not None:
             im_vel = ax_vel.imshow(velocity_field, origin='lower', cmap='coolwarm',
-                                 vmin=vmin, vmax=vmax, extent=extent, aspect=aspect_ratio)
+                                 vmin=vmin, vmax=vmax, extent=extent, aspect='auto')
+            
+            # Explicitly set the aspect ratio to match physical scale
+            ax_vel.set_aspect(pixel_size_y / pixel_size_x)
+            
             ax_vel.set_xlabel('Δ RA (arcsec)')
             ax_vel.set_ylabel('Δ Dec (arcsec)')
         else:
             im_vel = ax_vel.imshow(velocity_field, origin='lower', cmap='coolwarm',
                                  vmin=vmin, vmax=vmax)
+                                 
+            # Use equal aspect ratio for pixel coordinates
+            ax_vel.set_aspect('equal')
+            
             ax_vel.set_xlabel('Pixels')
             ax_vel.set_ylabel('Pixels')
     
     plt.colorbar(im_vel, ax=ax_vel, label='Velocity (km/s)')
     ax_vel.set_title('Velocity Field')
-    
-    # Set equal aspect ratio if requested
-    if equal_aspect and extent is None:
-        ax_vel.set_aspect('equal')
     
     # Add rotation axis if requested and parameters available
     if rotation_axis and params is not None:
@@ -1160,33 +1171,45 @@ def plot_kinematics_summary(velocity_field, dispersion_field, rotation_curve=Non
             
             if extent is not None:
                 im_disp = ax_disp.imshow(dispersion_field, origin='lower', cmap='viridis',
-                                       vmin=vmin_disp, vmax=vmax_disp, extent=extent, aspect=aspect_ratio)
+                                       vmin=vmin_disp, vmax=vmax_disp, extent=extent, aspect='auto')
+                                       
+                # Explicitly set the aspect ratio to match physical scale
+                ax_disp.set_aspect(pixel_size_y / pixel_size_x)
+                
                 ax_disp.set_xlabel('Δ RA (arcsec)')
                 ax_disp.set_ylabel('Δ Dec (arcsec)')
             else:
                 im_disp = ax_disp.imshow(dispersion_field, origin='lower', cmap='viridis',
                                        vmin=vmin_disp, vmax=vmax_disp)
+                                       
+                # Use equal aspect ratio for pixel coordinates
+                ax_disp.set_aspect('equal')
+                
                 ax_disp.set_xlabel('Pixels')
                 ax_disp.set_ylabel('Pixels')
     else:
         # Standard plotting for dispersion with physical scaling if available
         if extent is not None:
             im_disp = ax_disp.imshow(dispersion_field, origin='lower', cmap='viridis',
-                                   vmin=vmin_disp, vmax=vmax_disp, extent=extent, aspect=aspect_ratio)
+                                   vmin=vmin_disp, vmax=vmax_disp, extent=extent, aspect='auto')
+                                   
+            # Explicitly set the aspect ratio to match physical scale
+            ax_disp.set_aspect(pixel_size_y / pixel_size_x)
+            
             ax_disp.set_xlabel('Δ RA (arcsec)')
             ax_disp.set_ylabel('Δ Dec (arcsec)')
         else:
             im_disp = ax_disp.imshow(dispersion_field, origin='lower', cmap='viridis',
                                    vmin=vmin_disp, vmax=vmax_disp)
+                                   
+            # Use equal aspect ratio for pixel coordinates
+            ax_disp.set_aspect('equal')
+            
             ax_disp.set_xlabel('Pixels')
             ax_disp.set_ylabel('Pixels')
     
     plt.colorbar(im_disp, ax=ax_disp, label='Dispersion (km/s)')
     ax_disp.set_title('Velocity Dispersion')
-    
-    # Set equal aspect ratio if requested
-    if equal_aspect and extent is None:
-        ax_disp.set_aspect('equal')
     
     # Lower: Rotation curve if available
     if rotation_curve is not None and 'radius' in rotation_curve and 'velocity' in rotation_curve:
@@ -1326,11 +1349,6 @@ def plot_gas_kinematics(velocity_field, dispersion_field, equal_aspect=True,
             -ny/2 * pixel_size_y, 
             ny/2 * pixel_size_y
         ]
-        
-        # Calculate aspect ratio for proper physical scaling
-        aspect_ratio = pixel_size_y / pixel_size_x
-    else:
-        aspect_ratio = 1.0  # Default to equal aspect ratio
     
     # Determine color limits for velocity
     valid_vel = velocity_field[np.isfinite(velocity_field)]
@@ -1388,11 +1406,16 @@ def plot_gas_kinematics(velocity_field, dispersion_field, equal_aspect=True,
             axes = [fig.add_subplot(1, 2, 1), fig.add_subplot(1, 2, 2)]
         
         if extent is not None:
-            # Physical coordinates without WCS
+            # Physical coordinates without WCS - use proper non-square pixels
             im_vel = axes[0].imshow(velocity_field, origin='lower', cmap='coolwarm',
-                                 vmin=vmin, vmax=vmax, extent=extent, aspect=aspect_ratio)
+                                 vmin=vmin, vmax=vmax, extent=extent, aspect='auto')
+                                 
             im_disp = axes[1].imshow(dispersion_field, origin='lower', cmap='viridis',
-                                   vmin=vmin_disp, vmax=vmax_disp, extent=extent, aspect=aspect_ratio)
+                                   vmin=vmin_disp, vmax=vmax_disp, extent=extent, aspect='auto')
+            
+            # Set the correct aspect ratio for both plots
+            for ax in axes:
+                ax.set_aspect(pixel_size_y / pixel_size_x)
             
             # Set labels with rotation angle if specified
             if rot_angle != 0:
@@ -1412,6 +1435,10 @@ def plot_gas_kinematics(velocity_field, dispersion_field, equal_aspect=True,
             im_disp = axes[1].imshow(dispersion_field, origin='lower', cmap='viridis',
                                    vmin=vmin_disp, vmax=vmax_disp)
             
+            # Use equal aspect ratio for pixel coordinates
+            for ax in axes:
+                ax.set_aspect('equal')
+            
             axes[0].set_xlabel('Pixels')
             axes[0].set_ylabel('Pixels')
             axes[1].set_xlabel('Pixels')
@@ -1424,11 +1451,6 @@ def plot_gas_kinematics(velocity_field, dispersion_field, equal_aspect=True,
     # Set titles
     axes[0].set_title('Gas Velocity Field')
     axes[1].set_title('Gas Velocity Dispersion')
-    
-    # Set equal aspect ratio if requested
-    if equal_aspect and extent is None:
-        axes[0].set_aspect('equal')
-        axes[1].set_aspect('equal')
     
     # Add grid for reference
     for ax in axes:
@@ -1858,19 +1880,25 @@ def create_diagnostic_plot(cube, indices=None, title=None, output_dir=None):
         ax1.text(0.5, 0.5, 'Wavelength data not available', 
                 ha='center', va='center', transform=ax1.transAxes)
     
-    # 2. Flux map - use the prepare_flux_map function (top middle)
+    # 2. Flux map (top middle)
     ax2 = fig.add_subplot(gs[0, 1])
     try:
         flux_map = prepare_flux_map(cube)
         
-        # Use a proper aspect ratio if physical scaling is available
+        # Use proper non-square pixels if physical scaling is available
         if hasattr(cube, '_pxl_size_x') and hasattr(cube, '_pxl_size_y'):
-            aspect_ratio = cube._pxl_size_y / cube._pxl_size_x
+            pixel_size_x = cube._pxl_size_x
+            pixel_size_y = cube._pxl_size_y
+            
+            # Calculate the aspect ratio
+            aspect_ratio = pixel_size_y / pixel_size_x
+            
+            # Calculate extent
             extent = [
-                -cube._n_x/2 * cube._pxl_size_x, 
-                cube._n_x/2 * cube._pxl_size_x, 
-                -cube._n_y/2 * cube._pxl_size_y, 
-                cube._n_y/2 * cube._pxl_size_y
+                -cube._n_x/2 * pixel_size_x, 
+                cube._n_x/2 * pixel_size_x, 
+                -cube._n_y/2 * pixel_size_y, 
+                cube._n_y/2 * pixel_size_y
             ]
             
             im2 = ax2.imshow(
@@ -1880,8 +1908,12 @@ def create_diagnostic_plot(cube, indices=None, title=None, output_dir=None):
                 norm=LogNorm(vmin=np.nanpercentile(flux_map[flux_map > 0], 1),
                             vmax=np.nanpercentile(flux_map, 99)),
                 extent=extent,
-                aspect=aspect_ratio
+                aspect='auto'  # Use 'auto' to allow non-square pixels
             )
+            
+            # Explicitly set the aspect ratio
+            ax2.set_aspect(aspect_ratio)
+            
             ax2.set_xlabel('Δ RA (arcsec)')
             ax2.set_ylabel('Δ Dec (arcsec)')
         else:
@@ -1892,6 +1924,10 @@ def create_diagnostic_plot(cube, indices=None, title=None, output_dir=None):
                 norm=LogNorm(vmin=np.nanpercentile(flux_map[flux_map > 0], 1),
                             vmax=np.nanpercentile(flux_map, 99))
             )
+            
+            # Use equal aspect ratio for pixel coordinates
+            ax2.set_aspect('equal')
+            
             ax2.set_xlabel('Pixels')
             ax2.set_ylabel('Pixels')
             
@@ -1962,27 +1998,50 @@ def create_diagnostic_plot(cube, indices=None, title=None, output_dir=None):
             else:
                 vmin, vmax = -100, 100
             
-            # Use a proper aspect ratio if physical scaling is available
+            # Use proper non-square pixels if physical scaling is available
             if hasattr(cube, '_pxl_size_x') and hasattr(cube, '_pxl_size_y'):
-                aspect_ratio = cube._pxl_size_y / cube._pxl_size_x
+                pixel_size_x = cube._pxl_size_x
+                pixel_size_y = cube._pxl_size_y
+                
+                # Calculate the aspect ratio
+                aspect_ratio = pixel_size_y / pixel_size_x
+                
+                # Calculate extent
                 extent = [
-                    -cube._n_x/2 * cube._pxl_size_x, 
-                    cube._n_x/2 * cube._pxl_size_x, 
-                    -cube._n_y/2 * cube._pxl_size_y, 
-                    cube._n_y/2 * cube._pxl_size_y
+                    -cube._n_x/2 * pixel_size_x, 
+                    cube._n_x/2 * pixel_size_x, 
+                    -cube._n_y/2 * pixel_size_y, 
+                    cube._n_y/2 * pixel_size_y
                 ]
                 
-                im4 = ax4.imshow(vel_map, origin='lower', cmap='coolwarm', 
-                               vmin=vmin, vmax=vmax, 
-                               extent=extent, aspect=aspect_ratio)
+                im4 = ax4.imshow(
+                    vel_map, 
+                    origin='lower', 
+                    cmap='coolwarm',
+                    vmin=vmin, vmax=vmax,
+                    extent=extent,
+                    aspect='auto'  # Use 'auto' to allow non-square pixels
+                )
+                
+                # Explicitly set the aspect ratio
+                ax4.set_aspect(aspect_ratio)
+                
                 ax4.set_xlabel('Δ RA (arcsec)')
                 ax4.set_ylabel('Δ Dec (arcsec)')
             else:
-                im4 = ax4.imshow(vel_map, origin='lower', cmap='coolwarm', 
-                               vmin=vmin, vmax=vmax)
+                im4 = ax4.imshow(
+                    vel_map, 
+                    origin='lower', 
+                    cmap='coolwarm',
+                    vmin=vmin, vmax=vmax
+                )
+                
+                # Use equal aspect ratio for pixel coordinates
+                ax4.set_aspect('equal')
+                
                 ax4.set_xlabel('Pixels')
                 ax4.set_ylabel('Pixels')
-            
+                
             plt.colorbar(im4, ax=ax4, label='Velocity (km/s)')
             ax4.set_title('Velocity Field')
         except Exception as e:
@@ -2011,14 +2070,20 @@ def create_diagnostic_plot(cube, indices=None, title=None, output_dir=None):
                 if i < len(dispersion):
                     disp_map[bin_num_2d == i] = dispersion[i]
             
-            # Plot with proper aspect ratio if physical scaling is available
+            # Plot with proper non-square pixels if physical scaling is available
             if hasattr(cube, '_pxl_size_x') and hasattr(cube, '_pxl_size_y'):
-                aspect_ratio = cube._pxl_size_y / cube._pxl_size_x
+                pixel_size_x = cube._pxl_size_x
+                pixel_size_y = cube._pxl_size_y
+                
+                # Calculate the aspect ratio
+                aspect_ratio = pixel_size_y / pixel_size_x
+                
+                # Calculate extent
                 extent = [
-                    -cube._n_x/2 * cube._pxl_size_x, 
-                    cube._n_x/2 * cube._pxl_size_x, 
-                    -cube._n_y/2 * cube._pxl_size_y, 
-                    cube._n_y/2 * cube._pxl_size_y
+                    -cube._n_x/2 * pixel_size_x, 
+                    cube._n_x/2 * pixel_size_x, 
+                    -cube._n_y/2 * pixel_size_y, 
+                    cube._n_y/2 * pixel_size_y
                 ]
                 
                 # Plot
@@ -2029,9 +2094,18 @@ def create_diagnostic_plot(cube, indices=None, title=None, output_dir=None):
                 else:
                     vmin, vmax = 0, 100
                     
-                im5 = ax5.imshow(disp_map, origin='lower', cmap='viridis', 
-                               vmin=vmin, vmax=vmax,
-                               extent=extent, aspect=aspect_ratio)
+                im5 = ax5.imshow(
+                    disp_map, 
+                    origin='lower', 
+                    cmap='viridis',
+                    vmin=vmin, vmax=vmax,
+                    extent=extent,
+                    aspect='auto'  # Use 'auto' to allow non-square pixels
+                )
+                
+                # Explicitly set the aspect ratio
+                ax5.set_aspect(aspect_ratio)
+                
                 ax5.set_xlabel('Δ RA (arcsec)')
                 ax5.set_ylabel('Δ Dec (arcsec)')
             else:
@@ -2043,8 +2117,16 @@ def create_diagnostic_plot(cube, indices=None, title=None, output_dir=None):
                 else:
                     vmin, vmax = 0, 100
                     
-                im5 = ax5.imshow(disp_map, origin='lower', cmap='viridis', 
-                               vmin=vmin, vmax=vmax)
+                im5 = ax5.imshow(
+                    disp_map, 
+                    origin='lower', 
+                    cmap='viridis',
+                    vmin=vmin, vmax=vmax
+                )
+                
+                # Use equal aspect ratio for pixel coordinates
+                ax5.set_aspect('equal')
+                
                 ax5.set_xlabel('Pixels')
                 ax5.set_ylabel('Pixels')
                 
@@ -2239,12 +2321,12 @@ def plot_spatial_map(data, ax=None, title=None, cmap='viridis', physical_scale=T
                 ny/2 * pixel_size_y
             ]
             
-            # Calculate aspect ratio for proper physical scaling
-            aspect_ratio = pixel_size_y / pixel_size_x
-            
-            # Plot data with physical scaling
+            # Display the data with non-square pixels
             im = ax.imshow(masked_data, origin='lower', cmap=cmap, norm=norm, 
-                         extent=extent, aspect=aspect_ratio)
+                         extent=extent, aspect='auto')
+                         
+            # Explicitly set the aspect ratio to match physical scale
+            ax.set_aspect(pixel_size_y / pixel_size_x)
             
             # Set axis labels
             ax.set_xlabel('Δ RA (arcsec)')
@@ -2252,6 +2334,9 @@ def plot_spatial_map(data, ax=None, title=None, cmap='viridis', physical_scale=T
         else:
             # Plot with pixel coordinates
             im = ax.imshow(masked_data, origin='lower', cmap=cmap, norm=norm)
+            
+            # Use equal aspect ratio for pixel coordinates
+            ax.set_aspect('equal')
             
             # Set axis labels
             ax.set_xlabel('Pixels')
