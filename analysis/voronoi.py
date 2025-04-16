@@ -1,21 +1,20 @@
 """
 Voronoi binning analysis module for ISAPC
-Version 5.0.0 - Enhanced with improved SNR target selection
 """
 
 import logging
 import time
-import traceback
-import warnings
 from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
-from vorbin.voronoi_2d_binning import voronoi_2d_binning
+from matplotlib.colors import Normalize, LogNorm  # Required for color normalization
 
-import spectral_indices
+import galaxy_params
+import visualization
 from binning import (
     VoronoiBinnedData,
+    run_voronoi_binning,
     calculate_wavelength_intersection,
     combine_spectra_efficiently,
 )
@@ -23,13 +22,10 @@ from utils.io import save_standardized_results
 
 logger = logging.getLogger(__name__)
 
-# Speed of light in km/s
-C_KMS = 299792.458
-
 
 def run_vnb_analysis(args, cube, p2p_results=None):
     """
-    Run Voronoi binning analysis on MUSE data cube with improved coordinate handling
+    Run Voronoi binning analysis on MUSE data cube
     
     Parameters
     ----------
@@ -48,8 +44,12 @@ def run_vnb_analysis(args, cube, p2p_results=None):
     logger.info("Starting Voronoi binning analysis...")
     start_time = time.time()
 
-    # Disable warnings for spectral indices
-    spectral_indices.set_warnings(False)
+    # Set up warning handling for spectral indices
+    try:
+        import spectral_indices
+        spectral_indices.set_warnings(False)
+    except ImportError:
+        logger.warning("Could not import spectral_indices, indices may be limited")
 
     # Get galaxy name and create directories
     galaxy_name = Path(args.filename).stem
@@ -88,10 +88,9 @@ def run_vnb_analysis(args, cube, p2p_results=None):
     high_snr_mode = args.high_snr_mode if hasattr(args, "high_snr_mode") else False
     use_physical_radius = args.physical_radius if hasattr(args, "physical_radius") else False
 
-    # Extract coordinates, signal, and noise for binning
-    # IMPORTANT: Use original coordinates from the cube
-    x = cube.x  # These are the original x coordinates from the cube
-    y = cube.y  # These are the original y coordinates from the cube
+    # Get cube coordinates, ensuring we use the original x,y coordinates from the cube
+    x = cube.x if hasattr(cube, "x") else np.arange(cube._n_x * cube._n_y) % cube._n_x
+    y = cube.y if hasattr(cube, "y") else np.arange(cube._n_x * cube._n_y) // cube._n_x
 
     # Calculate SNR using a specific wavelength range for continuum
     wave_mask = (cube._lambda_gal >= 5075) & (cube._lambda_gal <= 5125)
@@ -101,7 +100,7 @@ def run_vnb_analysis(args, cube, p2p_results=None):
         logger.info("Using wavelength range 5075-5125 Å for SNR calculation")
     else:
         signal = np.nanmedian(cube._spectra, axis=0)
-        noise = np.nanmedian(np.sqrt(cube._log_variance), axis=0)
+        noise = np.nanmedian(np.sqrt(cube._variance), axis=0) if hasattr(cube, "_variance") else np.ones_like(signal) * 0.01
         logger.info("Using full spectrum for SNR calculation")
 
     # Preprocess signal and noise
@@ -142,21 +141,21 @@ def run_vnb_analysis(args, cube, p2p_results=None):
     )
 
     # Determine recommended SNR range
-    min_recommended_snr = min(2, median_snr * 0.5)
-    max_recommended_snr = max(max_pixel_snr * 1.2, median_snr * 10)
+    min_recommended = min(2, median_snr * 0.5)
+    max_recommended = max(max_pixel_snr * 1.2, median_snr * 10)
 
     # Ensure reasonable range
-    min_recommended_snr = max(2, min_recommended_snr)
-    max_recommended_snr = max(50, max_recommended_snr)
+    min_recommended = max(2, min_recommended)
+    max_recommended = max(50, max_recommended)
 
     # Adjust target_snr if needed
-    if target_snr < min_recommended_snr or target_snr > max_recommended_snr:
+    if target_snr < min_recommended or target_snr > max_recommended:
         logger.warning(
             f"Specified target SNR {target_snr} is outside recommended range "
-            f"({min_recommended_snr:.1f} - {max_recommended_snr:.1f})"
+            f"({min_recommended:.1f} - {max_recommended:.1f})"
         )
 
-        safe_target_snr = max(min_recommended_snr, min(target_snr, max_recommended_snr))
+        safe_target_snr = max(min_recommended, min(target_snr, max_recommended))
         logger.info(f"Adjusting target SNR to {safe_target_snr:.1f}")
     else:
         safe_target_snr = target_snr
@@ -188,19 +187,10 @@ def run_vnb_analysis(args, cube, p2p_results=None):
             logger.warning(f"Error calculating physical radius: {e}")
             use_physical_radius = False
 
-    # Run Voronoi binning
+    # Run Voronoi binning with the original coordinates
     logger.info(f"Running Voronoi binning with target SNR = {safe_target_snr:.1f}")
     
-    # Import run_voronoi_binning from binning module - this is where the fix is applied
-    from binning import run_voronoi_binning
-    
-    # Call the function with original coordinates - no transformation
-    # In run_vnb_analysis function in voronoi.py:
-
-    # Import the updated function
-    from binning import run_voronoi_binning
-
-    # Change the function call to unpack 8 parameters
+    # Run the binning algorithm
     bin_num, x_gen, y_gen, x_bar, y_bar, sn, n_pixels, scale = run_voronoi_binning(
         x, y, signal, noise, 
         target_snr=safe_target_snr,
@@ -209,8 +199,6 @@ def run_vnb_analysis(args, cube, p2p_results=None):
         cvt=use_cvt,
         min_snr=min_snr
     )
-
-    # The rest of the function stays the same, but using bin_num consistently
 
     # Create bin indices
     bin_indices = []
@@ -242,8 +230,6 @@ def run_vnb_analysis(args, cube, p2p_results=None):
             logger.warning(f"Error extracting velocity field from P2P results: {e}")
 
     # Calculate wavelength intersection accounting for velocity shifts
-    from binning import calculate_wavelength_intersection
-    
     if velocity_field is not None:
         wave_mask, min_wave, max_wave = calculate_wavelength_intersection(
             cube._lambda_gal, velocity_field, cube._n_x
@@ -259,10 +245,8 @@ def run_vnb_analysis(args, cube, p2p_results=None):
     spectra = cube._spectra[wave_mask]
 
     # Combine spectra into bins with velocity correction
-    from binning import combine_spectra_efficiently
-    
     binned_spectra = combine_spectra_efficiently(
-        spectra, wavelength, bin_indices, velocity_field, cube._n_x
+        spectra, wavelength, bin_indices, velocity_field, cube._n_x, cube._n_y
     )
 
     # Create metadata
@@ -279,6 +263,10 @@ def run_vnb_analysis(args, cube, p2p_results=None):
         "pixelsize_x": cube._pxl_size_x,
         "pixelsize_y": cube._pxl_size_y,
         "redshift": cube._redshift if hasattr(cube, "_redshift") else 0.0,
+        "bin_x": x_gen,
+        "bin_y": y_gen,
+        "bin_xbar": x_bar,
+        "bin_ybar": y_bar,
     }
     
     # Add physical radius information if used
@@ -287,11 +275,12 @@ def run_vnb_analysis(args, cube, p2p_results=None):
         metadata["ellipse_params"] = ellipse_params
         if hasattr(cube, "_physical_radius"):
             metadata["R_galaxy_map"] = cube._physical_radius
-        metadata["flux_map"] = np.nanmedian(cube._cube_data, axis=0)
+
+    # Add WCS if available
+    if hasattr(cube, "_wcs") and cube._wcs is not None:
+        metadata["has_wcs"] = True
 
     # Create VoronoiBinnedData object
-    from binning import VoronoiBinnedData
-    
     binned_data = VoronoiBinnedData(
         bin_num=bin_num,
         bin_indices=bin_indices,
@@ -301,282 +290,166 @@ def run_vnb_analysis(args, cube, p2p_results=None):
     )
 
     # Set up binning in the cube - this connects our binned data to the cube
-    cube.setup_binning("VNB", binned_data)
-
-    # Run analysis using the binned data
-    velocity_field, dispersion_field, bestfit_field, optimal_tmpls, poly_coeffs = (
-        cube.fit_spectra(
+    if hasattr(cube, "setup_binning"):
+        cube.setup_binning("VNB", binned_data)
+    
+    # Run stellar component analysis
+    logger.info("Fitting stellar kinematics for binned spectra...")
+    
+    try:
+        # Run ppxf or equivalent to get kinematics
+        stellar_result = cube.fit_spectra(
             template_filename=args.template,
             ppxf_vel_init=args.vel_init,
             ppxf_vel_disp_init=args.sigma_init,
             ppxf_deg=args.poly_degree if hasattr(args, "poly_degree") else 3,
             n_jobs=args.n_jobs,
         )
-    )
+
+        # Unpack results
+        stellar_velocity_field, stellar_dispersion_field, bestfit_field, optimal_tmpls, poly_coeffs = stellar_result
+    except Exception as e:
+        logger.error(f"Error fitting stellar kinematics: {e}")
+        # Create dummy values
+        stellar_velocity_field = np.zeros(len(bin_indices))
+        stellar_dispersion_field = np.zeros(len(bin_indices))
+        bestfit_field = np.zeros_like(binned_spectra)
+        optimal_tmpls = None
+        poly_coeffs = None
+
+    logger.info(f"Stellar kinematics completed in {time.time() - start_time:.1f} seconds")
 
     # Fit emission lines if requested
     emission_result = None
-    if not args.no_emission:
-        emission_result = cube.fit_emission_lines(
-            template_filename=args.template,
-            ppxf_vel_init=velocity_field,  # Use stellar velocity field as initial guess
-            ppxf_sig_init=args.sigma_init,
-            ppxf_deg=2,
-            n_jobs=args.n_jobs,
-        )
+    if not hasattr(args, "no_emission") or not args.no_emission:
+        try:
+            logger.info("Fitting emission lines for binned spectra...")
+            start_em_time = time.time()
+            
+            # Get configured emission lines
+            emission_lines = None
+            if hasattr(args, "configured_emission_lines"):
+                emission_lines = args.configured_emission_lines
 
-    # Before returning the results, add:
-    # Ensure emission lines are consistently processed
-    if emission_result is not None and hasattr(cube, "_post_process_emission_results"):
-        cube._post_process_emission_results()
+            # Run emission line fitting
+            emission_result = cube.fit_emission_lines(
+                template_filename=args.template,
+                line_names=emission_lines,
+                ppxf_vel_init=stellar_velocity_field,  # Use stellar velocity field as initial guess
+                ppxf_sig_init=args.sigma_init,
+                ppxf_deg=2,  # Simpler polynomial for emission lines
+                n_jobs=args.n_jobs,
+            )
+            
+            logger.info(f"Emission line fitting completed in {time.time() - start_em_time:.1f} seconds")
+        except Exception as e:
+            logger.error(f"Error fitting emission lines: {e}")
+            emission_result = None
 
     # Calculate spectral indices if requested
     indices_result = None
-    if not args.no_indices:
-        indices_result = cube.calculate_spectral_indices(n_jobs=args.n_jobs)
-
-    # In run_vnb_analysis/run_rdb_analysis:
-
-    # Calculate bin distances
-    bin_distances = np.zeros(len(bin_indices))
-    for i in range(len(bin_indices)):
-        # Get pixel indices for this bin
-        pixel_indices = bin_indices[i]
-
-        # Skip empty bins
-        if len(pixel_indices) == 0:
-            bin_distances[i] = np.nan
-            continue
-
-        # Calculate average distance for this bin
-        distances = []
-        for idx in pixel_indices:
-            row = idx // cube._n_x
-            col = idx % cube._n_x
-
-            # Calculate distance from center
-            center_y, center_x = cube._n_y // 2, cube._n_x // 2
-            distance = np.sqrt(
-                ((row - center_y) * cube._pxl_size_y) ** 2
-                + ((col - center_x) * cube._pxl_size_x) ** 2
+    if not hasattr(args, "no_indices") or not args.no_indices:
+        try:
+            logger.info("Calculating spectral indices for binned spectra...")
+            start_idx_time = time.time()
+            
+            # Get configured spectral indices
+            indices_list = None
+            if hasattr(args, "configured_indices"):
+                indices_list = args.configured_indices
+                
+            # Calculate indices
+            indices_result = cube.calculate_spectral_indices(
+                indices_list=indices_list,
+                n_jobs=args.n_jobs,
             )
-            distances.append(distance)
+            
+            logger.info(f"Spectral indices calculation completed in {time.time() - start_idx_time:.1f} seconds")
+        except Exception as e:
+            logger.error(f"Error calculating spectral indices: {e}")
+            indices_result = None
 
-        # Set average distance
-        bin_distances[i] = np.mean(distances)
+    # Save binned data for later reuse
+    try:
+        binned_data.save(data_dir / f"{galaxy_name}_VNB_binned.npz")
+    except Exception as e:
+        logger.warning(f"Error saving binned data: {e}")
 
-    # Prepare standardized output dictionary
+    # Calculate bin distances (in arcsec)
+    bin_distances = None
+    if "bin_x" in metadata and "bin_y" in metadata:
+        try:
+            # Get IFU center
+            center_x = cube._n_x // 2
+            center_y = cube._n_y // 2
+
+            # Calculate distances in pixels
+            dx = metadata["bin_x"] - center_x
+            dy = metadata["bin_y"] - center_y
+
+            # Convert to arcseconds
+            bin_distances = np.sqrt(
+                (dx * cube._pxl_size_x) ** 2 + (dy * cube._pxl_size_y) ** 2
+            )
+
+            logger.info(f"Calculated bin distances from center")
+        except Exception as e:
+            logger.warning(f"Error calculating bin distances: {e}")
+
+    # Create standardized results dictionary
     vnb_results = {
         "analysis_type": "VNB",
+        "binning": {
+            "bin_num": bin_num,
+            "bin_x": x_gen,
+            "bin_y": y_gen,
+            "bin_xbar": x_bar,
+            "bin_ybar": y_bar,
+            "snr": sn,
+            "n_pixels": n_pixels,
+            "scale": scale,
+            "target_snr": target_snr,
+        },
         "stellar_kinematics": {
-            "velocity": cube._bin_velocity,
-            "dispersion": cube._bin_dispersion,
-            "velocity_field": velocity_field,
-            "dispersion_field": dispersion_field,
+            "velocity": stellar_velocity_field,
+            "dispersion": stellar_dispersion_field,
         },
         "distance": {
             "bin_distances": bin_distances,
             "pixelsize_x": cube._pxl_size_x,
             "pixelsize_y": cube._pxl_size_y,
         },
-        "binning": {
-            "bin_num": bin_num,
-            "bin_indices": bin_indices,
-            "bin_x": x_gen,
-            "bin_y": y_gen,
-            "n_pixels": n_pixels,
-            "snr": sn,
-            "target_snr": target_snr,
-        },
     }
-    
-    # Add physical radius information if used
-    if use_physical_radius and ellipse_params is not None:
-        vnb_results["physical_radius"] = {
-            "center_x": ellipse_params["center_x"],
-            "center_y": ellipse_params["center_y"],
-            "pa": ellipse_params["PA_degrees"],
-            "ellipticity": ellipse_params["ellipticity"],
-        }
 
     # Add emission line results if available
     if emission_result is not None:
         vnb_results["emission"] = {}
-
-        # Copy emission line fields from cube if available
-        if hasattr(cube, "_bin_emission_flux"):
-            vnb_results["emission"]["flux"] = cube._bin_emission_flux
-        if hasattr(cube, "_bin_emission_vel"):
-            vnb_results["emission"]["velocity"] = cube._bin_emission_vel
-        if hasattr(cube, "_bin_emission_sig"):
-            vnb_results["emission"]["dispersion"] = cube._bin_emission_sig
-
-        # Copy emission fields from emission_result
-        for key in ["emission_flux", "emission_vel", "emission_sig"]:
-            if key in emission_result:
-                field_name = key.split("_")[1]  # extract 'flux', 'vel', 'sig'
-                vnb_results["emission"][field_name] = emission_result[key]
-
-        # Add emission line wavelengths if available
-        if "emission_wavelength" in emission_result:
-            vnb_results["emission"]["wavelengths"] = emission_result[
-                "emission_wavelength"
-            ]
-
-        # After calculating spectral indices
-    if indices_result is not None:
-        vnb_results["indices"] = indices_result  # This will be pixel-based
-
-        # Add bin-level indices if available
-        if hasattr(cube, "_bin_indices_result") and cube._bin_indices_result:
-            vnb_results["bin_indices"] = cube._bin_indices_result
-
-    # Add this after spectral indices calculation in both voronoi.py and radial.py:
-
-
-    try:
-        import visualization
         
-        # First create the standard plots as before
-        # [existing plotting code...]
-        
-        # Create a new bin overlay plot
-        try:
-            # Get flux map from cube - use median flux along wavelength
-            flux_map = np.nanmedian(cube._cube_data, axis=0)
-            
-            # Get binning information
-            bin_num = vnb_results["binning"]["bin_num"]
-            
-            # If bin_num is 1D, reshape to match the cube dimensions
-            if isinstance(bin_num, np.ndarray) and bin_num.ndim == 1:
-                bin_num_2d = bin_num.reshape(cube._n_y, cube._n_x)
-            else:
-                bin_num_2d = bin_num
-            
-            # Get bin centers if available
-            bin_centers = None
-            if "bin_x" in vnb_results["binning"] and "bin_y" in vnb_results["binning"]:
-                bin_centers = (vnb_results["binning"]["bin_x"], vnb_results["binning"]["bin_y"])
-            
-            # Create and save binning overlay plot
-            fig, ax = visualization.plot_binning_on_flux(
-                flux_map=flux_map,
-                bin_num=bin_num_2d,
-                bin_centers=bin_centers,
-                title=f"{galaxy_name} - Voronoi Binning",
-                cmap="inferno",
-                save_path=plots_dir / f"{galaxy_name}_VNB_binning_overlay.png",
-                binning_type="Voronoi",
-                wcs=cube._wcs if hasattr(cube, "_wcs") else None,
-                pixel_size=(cube._pxl_size_x, cube._pxl_size_y),
-                log_scale=True
-            )
-            plt.close(fig)
-            
-            logger.info(f"Created VNB binning overlay plot")
-            
-        except Exception as e:
-            logger.warning(f"Error creating VNB binning overlay plot: {e}")
-            import traceback
-            logger.debug(traceback.format_exc())
-            plt.close("all")
+        # Extract emission line information - flux, velocity, dispersion
+        for key in ["flux", "velocity", "dispersion"]:
+            if key in emission_result and emission_result[key]:
+                vnb_results["emission"][key] = emission_result[key]
                 
-    except Exception as e:
-        logger.error(f"Error in create_vnb_plots: {str(e)}")
-        logger.error(traceback.format_exc())
-        plt.close("all")
+        # Add signal/noise information
+        for key in ["signal", "noise", "snr"]:
+            if key in emission_result and emission_result[key] is not None:
+                vnb_results[key] = emission_result[key]
 
-    # Create spectral index visualizations if requested
-    if indices_result is not None and not args.no_plots:
-        try:
-            # Create directory for spectral index visualization
-            indices_plots_dir = plots_dir / "spectral_indices"
-            indices_plots_dir.mkdir(exist_ok=True, parents=True)
+    # Add spectral indices results if available
+    if indices_result is not None:
+        vnb_results["bin_indices"] = indices_result
 
-            # Plot indices for a few sample bins
-            n_bins_to_plot = min(5, cube._n_bins)
-            bin_indices_to_plot = []
+    # Save standardized results
+    should_save = not hasattr(args, "no_save") or not args.no_save
+    if should_save:
+        save_standardized_results(galaxy_name, "VNB", vnb_results, output_dir)
 
-            # Try to select bins with valid velocities
-            if hasattr(cube, "_bin_velocity"):
-                valid_bins = [
-                    i
-                    for i in range(len(cube._bin_velocity))
-                    if np.isfinite(cube._bin_velocity[i])
-                ]
-
-                if len(valid_bins) > 0:
-                    # Get evenly spaced bins
-                    step = max(1, len(valid_bins) // n_bins_to_plot)
-                    bin_indices_to_plot = valid_bins[::step][:n_bins_to_plot]
-
-            # If no valid bins found, just use the first few
-            if not bin_indices_to_plot:
-                bin_indices_to_plot = range(n_bins_to_plot)
-
-            # Plot each bin
-            for bin_idx in bin_indices_to_plot:
-                try:
-                    # Use the dedicated method to ensure consistency with calculation
-                    fig, axes = cube.plot_bin_index_calculation(
-                        bin_idx, save_dir=indices_plots_dir
-                    )
-                    if fig is not None:
-                        plt.close(fig)  # Close to avoid memory issues
-
-                except Exception as e:
-                    logger.warning(
-                        f"Error plotting spectral indices for bin {bin_idx}: {e}"
-                    )
-
-        except Exception as e:
-            logger.warning(f"Error creating spectral index visualizations: {e}")
-
-    # Save binned data object
-    binned_data_path = data_dir / f"{galaxy_name}_VNB_binned_data.npz"
-    binned_data.save(binned_data_path)
-    logger.info(f"Saved binned data to {binned_data_path}")
-
-    # Save results
-    save_standardized_results(galaxy_name, "VNB", vnb_results, output_dir)
-
-    # Create visualization plots if requested
-    if not hasattr(args, "no_plots") or not args.no_plots:
-        binned_data.create_visualization_plots(plots_dir, galaxy_name)
+    # Create visualization plots
+    should_plot = not hasattr(args, "no_plots") or not args.no_plots
+    if should_plot:
         create_vnb_plots(cube, vnb_results, galaxy_name, plots_dir, args)
 
-    # Add these lines near the end of the run_vnb_analysis function in voronoi.py
-    # Just before returning the results
-
-    # Create bin spectrum plots if requested
-    if not args.no_plots:
-        # Create directory for bin plots
-        bin_plots_dir = plots_dir / "bin_spectra"
-        bin_plots_dir.mkdir(exist_ok=True, parents=True)
-
-        # Plot a sample of bin spectra
-        try:
-            cube.plot_bin_fits(n_bins=min(5, cube._n_bins), save_dir=bin_plots_dir)
-        except Exception as e:
-            logger.warning(f"Error creating bin fitting plots: {e}")
-
-    # Create comprehensive visualization plots
-    if not args.no_plots:
-        try:
-            # Create visualization plots directory
-            viz_plots_dir = plots_dir / "visualizations"
-            viz_plots_dir.mkdir(exist_ok=True, parents=True)
-
-            # Generate all visualization plots
-            cube.plot_bin_analysis_results(output_dir=viz_plots_dir)
-
-            logger.info(f"Created visualization plots in {viz_plots_dir}")
-        except Exception as e:
-            logger.warning(f"Error creating visualization plots: {e}")
-
-    logger.info(f"VNB analysis completed in {time.time() - start_time:.1f} seconds")
-
+    logger.info("Voronoi binning analysis completed")
     return vnb_results
 
 
@@ -598,7 +471,6 @@ def create_vnb_plots(cube, vnb_results, galaxy_name, plots_dir, args):
         Command line arguments
     """
     try:
-        import visualization
         import matplotlib.pyplot as plt
         import numpy as np
         import os
@@ -608,9 +480,19 @@ def create_vnb_plots(cube, vnb_results, galaxy_name, plots_dir, args):
             try:
                 bin_num = vnb_results["binning"]["bin_num"]
                 
-                # Reshape to 2D for plotting
+                # Reshape to 2D for plotting if needed
                 if isinstance(bin_num, np.ndarray) and bin_num.ndim == 1:
-                    bin_num_2d = bin_num.reshape(cube._n_y, cube._n_x)
+                    # Make sure the dimensions match the cube
+                    if len(bin_num) == cube._n_x * cube._n_y:
+                        bin_num_2d = bin_num.reshape(cube._n_y, cube._n_x)
+                    else:
+                        # Handle case where bin_num length doesn't match cube dimensions
+                        logger.warning(f"bin_num length ({len(bin_num)}) doesn't match cube dimensions ({cube._n_y}x{cube._n_x})")
+                        # Create a dummy bin_num_2d with correct dimensions
+                        bin_num_2d = np.zeros((cube._n_y, cube._n_x), dtype=int)
+                        # Fill with what we can
+                        valid_len = min(len(bin_num), cube._n_y * cube._n_x)
+                        bin_num_2d.flat[:valid_len] = bin_num[:valid_len]
                 else:
                     bin_num_2d = bin_num
                     
@@ -624,6 +506,7 @@ def create_vnb_plots(cube, vnb_results, galaxy_name, plots_dir, args):
                     title=f"{galaxy_name} - Voronoi Bins",
                     physical_scale=True,
                     pixel_size=(cube._pxl_size_x, cube._pxl_size_y),
+                    wcs=cube._wcs if hasattr(cube, "_wcs") else None
                 )
                 visualization.standardize_figure_saving(
                     fig, plots_dir / f"{galaxy_name}_VNB_bin_map.png"
@@ -631,24 +514,61 @@ def create_vnb_plots(cube, vnb_results, galaxy_name, plots_dir, args):
                 plt.close(fig)
                 
                 # Create SNR map
-                if "binning" in vnb_results and "snr" in vnb_results["binning"]:
-                    snr = vnb_results["binning"]["snr"]
-                    
-                    fig, ax = plt.subplots(figsize=(10, 8))
-                    visualization.plot_bin_map(
-                        bin_num_2d,
-                        snr,
-                        ax=ax,
-                        cmap="viridis",
-                        title=f"{galaxy_name} - Bin SNR",
-                        colorbar_label="Signal-to-Noise Ratio",
-                        physical_scale=True,
-                        pixel_size=(cube._pxl_size_x, cube._pxl_size_y),
-                    )
-                    visualization.standardize_figure_saving(
-                        fig, plots_dir / f"{galaxy_name}_VNB_snr_map.png"
-                    )
-                    plt.close(fig)
+                if "snr" in vnb_results["binning"]:
+                    try:
+                        snr = vnb_results["binning"]["snr"]
+                        
+                        # Ensure snr is a numpy array of proper type
+                        snr = np.asarray(snr, dtype=float)
+                        
+                        fig, ax = plt.subplots(figsize=(10, 8))
+                        visualization.plot_bin_map(
+                            bin_num_2d,
+                            snr,
+                            ax=ax,
+                            cmap="viridis",
+                            title=f"{galaxy_name} - Bin SNR",
+                            colorbar_label="Signal-to-Noise Ratio",
+                            physical_scale=True,
+                            pixel_size=(cube._pxl_size_x, cube._pxl_size_y),
+                            wcs=cube._wcs if hasattr(cube, "_wcs") else None
+                        )
+                        visualization.standardize_figure_saving(
+                            fig, plots_dir / f"{galaxy_name}_VNB_snr_map.png"
+                        )
+                        plt.close(fig)
+                    except Exception as e:
+                        logger.warning(f"Error creating SNR map: {e}")
+                        plt.close('all')
+                
+                # Create pixels-per-bin map
+                if "n_pixels" in vnb_results["binning"]:
+                    try:
+                        n_pixels = vnb_results["binning"]["n_pixels"]
+                        
+                        # Ensure n_pixels is a numpy array of proper type
+                        n_pixels = np.asarray(n_pixels, dtype=float)
+                        
+                        fig, ax = plt.subplots(figsize=(10, 8))
+                        visualization.plot_bin_map(
+                            bin_num_2d,
+                            n_pixels,
+                            ax=ax,
+                            cmap="magma",
+                            title=f"{galaxy_name} - Pixels per Bin",
+                            colorbar_label="Number of Pixels",
+                            physical_scale=True,
+                            pixel_size=(cube._pxl_size_x, cube._pxl_size_y),
+                            wcs=cube._wcs if hasattr(cube, "_wcs") else None,
+                            log_scale=True
+                        )
+                        visualization.standardize_figure_saving(
+                            fig, plots_dir / f"{galaxy_name}_VNB_pixels_per_bin.png"
+                        )
+                        plt.close(fig)
+                    except Exception as e:
+                        logger.warning(f"Error creating pixels-per-bin map: {e}")
+                        plt.close('all')
             except Exception as e:
                 logger.warning(f"Error creating bin map: {e}")
                 plt.close("all")
@@ -660,9 +580,23 @@ def create_vnb_plots(cube, vnb_results, galaxy_name, plots_dir, args):
                 dispersion = vnb_results["stellar_kinematics"]["dispersion"]
                 bin_num = vnb_results["binning"]["bin_num"]
                 
-                # Reshape to 2D for plotting
+                # Convert to proper numpy arrays
+                velocity = np.asarray(velocity, dtype=float)
+                dispersion = np.asarray(dispersion, dtype=float)
+                
+                # Reshape to 2D for plotting if needed
                 if isinstance(bin_num, np.ndarray) and bin_num.ndim == 1:
-                    bin_num_2d = bin_num.reshape(cube._n_y, cube._n_x)
+                    # Make sure the dimensions match the cube
+                    if len(bin_num) == cube._n_x * cube._n_y:
+                        bin_num_2d = bin_num.reshape(cube._n_y, cube._n_x)
+                    else:
+                        # Handle case where bin_num length doesn't match cube dimensions
+                        logger.warning(f"bin_num length ({len(bin_num)}) doesn't match cube dimensions ({cube._n_y}x{cube._n_x})")
+                        # Create a dummy bin_num_2d with correct dimensions
+                        bin_num_2d = np.zeros((cube._n_y, cube._n_x), dtype=int)
+                        # Fill with what we can
+                        valid_len = min(len(bin_num), cube._n_y * cube._n_x)
+                        bin_num_2d.flat[:valid_len] = bin_num[:valid_len]
                 else:
                     bin_num_2d = bin_num
                     
@@ -679,6 +613,7 @@ def create_vnb_plots(cube, vnb_results, galaxy_name, plots_dir, args):
                     colorbar_label="Velocity (km/s)",
                     physical_scale=True,
                     pixel_size=(cube._pxl_size_x, cube._pxl_size_y),
+                    wcs=cube._wcs if hasattr(cube, "_wcs") else None
                 )
                 visualization.standardize_figure_saving(
                     fig, plots_dir / f"{galaxy_name}_VNB_velocity_map.png"
@@ -698,11 +633,92 @@ def create_vnb_plots(cube, vnb_results, galaxy_name, plots_dir, args):
                     colorbar_label="Dispersion (km/s)",
                     physical_scale=True,
                     pixel_size=(cube._pxl_size_x, cube._pxl_size_y),
+                    wcs=cube._wcs if hasattr(cube, "_wcs") else None
                 )
                 visualization.standardize_figure_saving(
                     fig, plots_dir / f"{galaxy_name}_VNB_dispersion_map.png"
                 )
                 plt.close(fig)
+                
+                # Create rotation curve and V/σ plot
+                if "distance" in vnb_results and "bin_distances" in vnb_results["distance"]:
+                    try:
+                        bin_distances = vnb_results["distance"]["bin_distances"]
+                        
+                        # Ensure proper numpy array type
+                        bin_distances = np.asarray(bin_distances, dtype=float)
+                        
+                        # Sort bins by distance from center
+                        sorted_indices = np.argsort(bin_distances)
+                        sorted_distances = bin_distances[sorted_indices]
+                        sorted_velocity = velocity[sorted_indices]
+                        sorted_dispersion = dispersion[sorted_indices]
+                        
+                        # Calculate V/σ
+                        v_sigma = np.abs(sorted_velocity) / sorted_dispersion
+                        
+                        # Create combined plot
+                        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
+                        
+                        # Plot rotation curve
+                        ax1.plot(sorted_distances, sorted_velocity, 'o-')
+                        ax1.set_xlabel('Radius (arcsec)')
+                        ax1.set_ylabel('Velocity (km/s)')
+                        ax1.set_title(f'{galaxy_name} - Rotation Curve')
+                        ax1.grid(True, alpha=0.3)
+                        
+                        # Plot V/σ
+                        ax2.plot(sorted_distances, v_sigma, 'o-')
+                        ax2.set_xlabel('Radius (arcsec)')
+                        ax2.set_ylabel('|V|/σ')
+                        ax2.set_title(f'{galaxy_name} - V/σ Profile')
+                        ax2.grid(True, alpha=0.3)
+                        
+                        # Horizontal line at V/σ = 1
+                        ax2.axhline(y=1, color='r', linestyle='--', alpha=0.7)
+                        
+                        plt.tight_layout()
+                        visualization.standardize_figure_saving(
+                            fig, plots_dir / f"{galaxy_name}_VNB_rotation_vsigma.png"
+                        )
+                        plt.close(fig)
+                    except Exception as e:
+                        logger.warning(f"Error creating rotation curve plot: {e}")
+                        plt.close('all')
+                
+                # Create kinematics summary plot
+                try:
+                    # Create 2D velocity and dispersion fields for plotting
+                    vel_2d = np.full(bin_num_2d.shape, np.nan, dtype=float)
+                    disp_2d = np.full(bin_num_2d.shape, np.nan, dtype=float)
+                    
+                    # Fill in values for each bin
+                    for i, (vel, disp) in enumerate(zip(velocity, dispersion)):
+                        if i < len(velocity):
+                            vel_2d[bin_num_2d == i] = vel
+                        if i < len(dispersion):
+                            disp_2d[bin_num_2d == i] = disp
+                    
+                    # Create summary plot
+                    fig = visualization.plot_kinematics_summary(
+                        velocity_field=vel_2d,
+                        dispersion_field=disp_2d,
+                        equal_aspect=True,
+                        physical_scale=True,
+                        pixel_size=(cube._pxl_size_x, cube._pxl_size_y),
+                        wcs=cube._wcs if hasattr(cube, "_wcs") else None
+                    )
+                    
+                    if fig is not None:
+                        visualization.standardize_figure_saving(
+                            fig, plots_dir / f"{galaxy_name}_VNB_kinematics_summary.png"
+                        )
+                        plt.close(fig)
+                    else:
+                        logger.warning("Failed to create kinematics summary plot")
+                except Exception as e:
+                    logger.warning(f"Error creating kinematics summary: {e}")
+                    plt.close("all")
                 
             except Exception as e:
                 logger.warning(f"Error creating kinematics plots: {e}")
@@ -714,17 +730,34 @@ def create_vnb_plots(cube, vnb_results, galaxy_name, plots_dir, args):
                 emission = vnb_results["emission"]
                 bin_num = vnb_results["binning"]["bin_num"]
                 
-                # Reshape to 2D for plotting
+                # Reshape to 2D for plotting if needed
                 if isinstance(bin_num, np.ndarray) and bin_num.ndim == 1:
-                    bin_num_2d = bin_num.reshape(cube._n_y, cube._n_x)
+                    # Make sure the dimensions match the cube
+                    if len(bin_num) == cube._n_x * cube._n_y:
+                        bin_num_2d = bin_num.reshape(cube._n_y, cube._n_x)
+                    else:
+                        # Handle case where bin_num length doesn't match cube dimensions
+                        logger.warning(f"bin_num length ({len(bin_num)}) doesn't match cube dimensions ({cube._n_y}x{cube._n_x})")
+                        # Create a dummy bin_num_2d with correct dimensions
+                        bin_num_2d = np.zeros((cube._n_y, cube._n_x), dtype=int)
+                        # Fill with what we can
+                        valid_len = min(len(bin_num), cube._n_y * cube._n_x)
+                        bin_num_2d.flat[:valid_len] = bin_num[:valid_len]
                 else:
                     bin_num_2d = bin_num
                     
+                # Create emission line plots directory
+                emission_dir = plots_dir / "emission_lines"
+                emission_dir.mkdir(exist_ok=True, parents=True)
+                
                 # Process each emission line field
                 for field_name, field_data in emission.items():
                     if field_name in ["flux", "velocity", "dispersion"] and isinstance(field_data, dict):
                         for line_name, line_values in field_data.items():
                             try:
+                                # Convert to numpy array
+                                line_values = np.asarray(line_values, dtype=float)
+                                
                                 if np.any(np.isfinite(line_values)):
                                     # Create map with physical scaling
                                     fig, ax = plt.subplots(figsize=(10, 8))
@@ -756,11 +789,46 @@ def create_vnb_plots(cube, vnb_results, galaxy_name, plots_dir, args):
                                         log_scale=log_scale,
                                         physical_scale=True,
                                         pixel_size=(cube._pxl_size_x, cube._pxl_size_y),
+                                        wcs=cube._wcs if hasattr(cube, "_wcs") else None
                                     )
                                     visualization.standardize_figure_saving(
-                                        fig, plots_dir / f"{galaxy_name}_VNB_{line_name}_{field_name}.png"
+                                        fig, emission_dir / f"{galaxy_name}_VNB_{line_name}_{field_name}.png"
                                     )
                                     plt.close(fig)
+                                    
+                                    # Create radial profile if distances available
+                                    if "distance" in vnb_results and "bin_distances" in vnb_results["distance"]:
+                                        try:
+                                            bin_distances = vnb_results["distance"]["bin_distances"]
+                                            
+                                            # Sort bins by distance from center
+                                            sorted_indices = np.argsort(bin_distances)
+                                            sorted_distances = bin_distances[sorted_indices]
+                                            sorted_values = line_values[sorted_indices]
+                                            
+                                            fig, ax = plt.subplots(figsize=(10, 6))
+                                            ax.plot(sorted_distances, sorted_values, 'o-')
+                                            ax.set_xlabel('Radius (arcsec)')
+                                            
+                                            if field_name == "flux":
+                                                ax.set_ylabel('Flux')
+                                                if np.all(sorted_values[np.isfinite(sorted_values)] > 0):
+                                                    ax.set_yscale('log')
+                                            elif field_name == "velocity":
+                                                ax.set_ylabel('Velocity (km/s)')
+                                            else:
+                                                ax.set_ylabel('Dispersion (km/s)')
+                                                
+                                            ax.set_title(f'{galaxy_name} - {line_name} {field_name.capitalize()} Radial Profile')
+                                            ax.grid(True, alpha=0.3)
+                                            
+                                            visualization.standardize_figure_saving(
+                                                fig, emission_dir / f"{galaxy_name}_VNB_{line_name}_{field_name}_profile.png"
+                                            )
+                                            plt.close(fig)
+                                        except Exception as e:
+                                            logger.warning(f"Error creating radial profile for {line_name} {field_name}: {e}")
+                                            plt.close('all')
                             except Exception as e:
                                 logger.warning(f"Error creating plot for {line_name} {field_name}: {e}")
                                 plt.close("all")
@@ -774,46 +842,414 @@ def create_vnb_plots(cube, vnb_results, galaxy_name, plots_dir, args):
                 bin_indices = vnb_results["bin_indices"]
                 bin_num = vnb_results["binning"]["bin_num"]
                 
-                # Reshape to 2D for plotting
+                # Reshape to 2D for plotting if needed
                 if isinstance(bin_num, np.ndarray) and bin_num.ndim == 1:
-                    bin_num_2d = bin_num.reshape(cube._n_y, cube._n_x)
+                    if len(bin_num) == cube._n_x * cube._n_y:
+                        bin_num_2d = bin_num.reshape(cube._n_y, cube._n_x)
+                    else:
+                        # Handle case where bin_num length doesn't match cube dimensions
+                        logger.warning(f"bin_num length ({len(bin_num)}) doesn't match cube dimensions ({cube._n_y}x{cube._n_x})")
+                        # Create a dummy bin_num_2d with correct dimensions
+                        bin_num_2d = np.zeros((cube._n_y, cube._n_x), dtype=int)
+                        # Fill with what we can
+                        valid_len = min(len(bin_num), cube._n_y * cube._n_x)
+                        bin_num_2d.flat[:valid_len] = bin_num[:valid_len]
                 else:
                     bin_num_2d = bin_num
-                    
+                
+                # Create spectral indices directory
+                indices_dir = plots_dir / "spectral_indices"
+                indices_dir.mkdir(exist_ok=True, parents=True)
+                
+                # Convert bin_indices to a regular dictionary if it isn't already
+                if not isinstance(bin_indices, dict):
+                    try:
+                        # Try to convert np.lib.npyio.NpzFile or other array-like
+                        bin_indices_dict = {}
+                        for key in bin_indices:
+                            # Convert to native Python types
+                            if isinstance(bin_indices[key], np.ndarray):
+                                bin_indices_dict[str(key)] = bin_indices[key].tolist()
+                            else:
+                                bin_indices_dict[str(key)] = bin_indices[key]
+                        bin_indices = bin_indices_dict
+                    except:
+                        logger.warning("Could not convert bin_indices to dictionary")
+                        bin_indices = {}
+                
                 # Process each spectral index
                 for idx_name, idx_values in bin_indices.items():
-                    if np.any(np.isfinite(idx_values)):
-                        # Create map with physical scaling
-                        fig, ax = plt.subplots(figsize=(10, 8))
-                        visualization.plot_bin_map(
-                            bin_num_2d,
-                            idx_values,
-                            ax=ax,
-                            cmap="plasma",
-                            title=f"{galaxy_name} - {idx_name}",
-                            colorbar_label="Index Value",
-                            physical_scale=True,
-                            pixel_size=(cube._pxl_size_x, cube._pxl_size_y),
-                        )
-                        visualization.standardize_figure_saving(
-                            fig, plots_dir / f"{galaxy_name}_VNB_{idx_name}.png"
-                        )
-                        plt.close(fig)
+                    try:
+                        # Make sure we have a proper numpy array
+                        idx_array = np.asarray(idx_values, dtype=float)
+                        
+                        if np.any(np.isfinite(idx_array)):
+                            # Create map with physical scaling
+                            fig, ax = plt.subplots(figsize=(10, 8))
+                            visualization.plot_bin_map(
+                                bin_num_2d,
+                                idx_array,
+                                ax=ax,
+                                cmap="plasma",
+                                title=f"{galaxy_name} - {idx_name}",
+                                colorbar_label="Index Value",
+                                physical_scale=True,
+                                pixel_size=(cube._pxl_size_x, cube._pxl_size_y),
+                                wcs=cube._wcs if hasattr(cube, "_wcs") else None
+                            )
+                            visualization.standardize_figure_saving(
+                                fig, indices_dir / f"{galaxy_name}_VNB_{idx_name}.png"
+                            )
+                            plt.close(fig)
+                            
+                            # Create radial profile if distances available
+                            if "distance" in vnb_results and "bin_distances" in vnb_results["distance"]:
+                                try:
+                                    bin_distances = vnb_results["distance"]["bin_distances"]
+                                    
+                                    # Ensure bin_distances is same length as idx_array
+                                    if len(bin_distances) == len(idx_array):
+                                        # Sort bins by distance from center
+                                        sorted_indices = np.argsort(bin_distances)
+                                        sorted_distances = bin_distances[sorted_indices]
+                                        sorted_values = idx_array[sorted_indices]
+                                        
+                                        fig, ax = plt.subplots(figsize=(10, 6))
+                                        ax.plot(sorted_distances, sorted_values, 'o-')
+                                        ax.set_xlabel('Radius (arcsec)')
+                                        ax.set_ylabel(f'{idx_name} Value')
+                                        ax.set_title(f'{galaxy_name} - {idx_name} Radial Profile')
+                                        ax.grid(True, alpha=0.3)
+                                        
+                                        visualization.standardize_figure_saving(
+                                            fig, indices_dir / f"{galaxy_name}_VNB_{idx_name}_profile.png"
+                                        )
+                                        plt.close(fig)
+                                except Exception as e:
+                                    logger.warning(f"Error creating radial profile for index {idx_name}: {e}")
+                                    plt.close('all')
+                    except Exception as e:
+                        logger.warning(f"Error creating plot for index {idx_name}: {e}")
+                        plt.close("all")
+                
+                # Create detailed spectral index plots for selected bins
+                if hasattr(cube, "_spectra") and hasattr(cube, "_lambda_gal") and hasattr(cube, "_template_weights"):
+                    try:
+                        # Import spectral_indices
+                        import spectral_indices
+                        from spectral_indices import LineIndexCalculator
+                        
+                        # Create spectral indices subdirectory
+                        idx_detail_dir = indices_dir / "detailed"
+                        idx_detail_dir.mkdir(exist_ok=True, parents=True)
+                        
+                        # Select a subset of bins to plot
+                        n_bins = len(vnb_results["binning"]["bin_x"])
+                        bins_to_plot = []
+                        
+                        if n_bins <= 20:
+                            bins_to_plot = list(range(n_bins))
+                        else:
+                            # Plot first, middle and last, plus some evenly spaced ones
+                            bins_to_plot = [0, n_bins // 4, n_bins // 2, 3 * n_bins // 4, n_bins - 1]
+                            # Add a few more evenly spaced ones
+                            if n_bins > 50:
+                                step = n_bins // 5
+                                for i in range(0, n_bins, step):
+                                    if i not in bins_to_plot:
+                                        bins_to_plot.append(i)
+                                bins_to_plot.sort()
+                        
+                        # Get binned spectra
+                        if hasattr(cube, "_binned_data") and cube._binned_data is not None:
+                            binned_spectra = cube._binned_data.spectra
+                            wavelength = cube._binned_data.wavelength
+                            
+                            # Plot selected bins
+                            for bin_idx in bins_to_plot:
+                                if bin_idx < binned_spectra.shape[1]:
+                                    try:
+                                        # Get stellar template fit
+                                        if hasattr(cube, "_bin_bestfit") and cube._bin_bestfit is not None:
+                                            bestfit = cube._bin_bestfit[:, bin_idx]
+                                        else:
+                                            # Skip if no bestfit available
+                                            continue
+                                            
+                                        # Get template and optimal weights
+                                        if hasattr(cube, "_sps") and hasattr(cube, "_optimal_weights"):
+                                            template = cube._sps.lam_temp
+                                            weights = cube._optimal_weights[:, bin_idx]
+                                        else:
+                                            template = wavelength
+                                            weights = np.ones_like(wavelength)
+                                        
+                                        # Get gas emission if available
+                                        em_wave = None
+                                        em_flux = None
+                                        if hasattr(cube, "_gas_bestfit") and cube._gas_bestfit is not None:
+                                            em_wave = wavelength
+                                            em_flux = cube._gas_bestfit[:, bin_idx]
+                                        
+                                        # Get velocity
+                                        vel = vnb_results["stellar_kinematics"]["velocity"][bin_idx]
+                                        
+                                        # Create calculator
+                                        calc = LineIndexCalculator(
+                                            wave=wavelength,
+                                            flux=binned_spectra[:, bin_idx],
+                                            fit_wave=template,
+                                            fit_flux=weights,
+                                            em_wave=em_wave,
+                                            em_flux_list=em_flux,
+                                            velocity_correction=vel,
+                                            continuum_mode="fit",
+                                            show_warnings=False
+                                        )
+                                        
+                                        # Plot all lines
+                                        fig, axes = calc.plot_all_lines(
+                                            mode="VNB",
+                                            number=bin_idx,
+                                            save_path=str(idx_detail_dir),
+                                            show_index=True
+                                        )
+                                        plt.close(fig)
+                                    except Exception as e:
+                                        logger.warning(f"Error creating spectral index plot for bin {bin_idx}: {e}")
+                                        import traceback
+                                        logger.debug(traceback.format_exc())
+                                        plt.close("all")
+                    except Exception as e:
+                        logger.warning(f"Error creating detailed spectral index plots: {e}")
+                        import traceback
+                        logger.debug(traceback.format_exc())
+                        plt.close("all")
             except Exception as e:
                 logger.warning(f"Error creating spectral indices plots: {e}")
                 plt.close("all")
         
-        # Create a new bin overlay plot showing binning on flux map
+        # Create overview and diagnostic plots
         try:
-            # Get flux map from cube - use median flux along wavelength
-            flux_map = np.nanmedian(cube._cube_data, axis=0)
+            # Create a comprehensive diagnostic plot
+            diagnostic_fig = visualization.create_diagnostic_plot(
+                cube, 
+                title=f"{galaxy_name} - VNB Analysis Overview",
+                output_dir=plots_dir
+            )
+            plt.close(diagnostic_fig)
+        except Exception as e:
+            logger.warning(f"Error creating diagnostic plot: {e}")
+            plt.close('all')
+        
+        # Create binned spectra plots
+        if hasattr(cube, "_binned_data") and cube._binned_data is not None:
+            try:
+                # Create binned spectra visualization directory
+                spectra_dir = plots_dir / "spectra"
+                spectra_dir.mkdir(exist_ok=True, parents=True)
+                
+                # Get binned data
+                binned_spectra = cube._binned_data.spectra
+                wavelength = cube._binned_data.wavelength
+                
+                # Create a plot of representative binned spectra
+                fig, ax = visualization.plot_binned_spectra(
+                    cube,
+                    binned_spectra,
+                    wavelength,
+                    title=f"{galaxy_name} - VNB Binned Spectra",
+                    save_path=spectra_dir / f"{galaxy_name}_VNB_binned_spectra.png"
+                )
+                plt.close(fig)
+                
+                # Create a more detailed plot showing the spectrum range used for analysis
+                if hasattr(cube, "_goodwavelengthrange"):
+                    fig, ax = plt.subplots(figsize=(12, 6))
+                    
+                    # Plot median spectrum of all bins
+                    median_spec = np.nanmedian(binned_spectra, axis=1)
+                    ax.plot(wavelength, median_spec, 'k-', label='Median Spectrum')
+                    
+                    # Highlight the good wavelength range
+                    good_range = cube._goodwavelengthrange
+                    ax.axvspan(good_range[0], good_range[1], alpha=0.2, color='green', 
+                              label='Analysis Range')
+                    
+                    # Add labels for key spectral features
+                    features = {
+                        4861: 'Hβ',
+                        4959: '[OIII]',
+                        5007: '[OIII]',
+                        5177: 'Mgb'
+                    }
+                    
+                    for wave, name in features.items():
+                        if min(wavelength) < wave < max(wavelength):
+                            ax.axvline(x=wave, color='red', linestyle=':', alpha=0.7)
+                            # Get y position for text
+                            ypos = ax.get_ylim()[0] + 0.9 * (ax.get_ylim()[1] - ax.get_ylim()[0])
+                            ax.text(wave, ypos, name, rotation=90, va='top', ha='center')
+                    
+                    ax.set_xlabel('Wavelength (Å)')
+                    ax.set_ylabel('Flux')
+                    ax.set_title(f"{galaxy_name} - VNB Spectral Range")
+                    ax.legend()
+                    ax.grid(True, alpha=0.3)
+                    
+                    visualization.standardize_figure_saving(
+                        fig, spectra_dir / f"{galaxy_name}_VNB_spectral_range.png"
+                    )
+                    plt.close(fig)
+            except Exception as e:
+                logger.warning(f"Error creating binned spectra plots: {e}")
+                plt.close('all')
+        
+        # Create detailed spectral fit plots
+        if hasattr(cube, "_binned_data") and hasattr(cube, "_bin_bestfit"):
+            try:
+                # Create spectral fit visualization directory
+                fit_dir = plots_dir / "spectral_fits"
+                fit_dir.mkdir(exist_ok=True, parents=True)
+                
+                # Get binned data
+                binned_spectra = cube._binned_data.spectra
+                wavelength = cube._binned_data.wavelength
+                bestfit = cube._bin_bestfit
+                
+                # Get emission component if available
+                emission = None
+                if hasattr(cube, "_gas_bestfit") and cube._gas_bestfit is not None:
+                    emission = cube._gas_bestfit
+                
+                # Number of bins to plot
+                n_bins = binned_spectra.shape[1]
+                bins_to_plot = []
+                
+                if n_bins <= 12:
+                    # Plot all bins if few
+                    bins_to_plot = list(range(n_bins))
+                else:
+                    # Plot selection of bins (first, some middle, last)
+                    bins_to_plot = [0, n_bins // 4, n_bins // 2, 3 * n_bins // 4, n_bins - 1]
+                
+                # Get bin distances if available
+                bin_distances = None
+                if "distance" in vnb_results and "bin_distances" in vnb_results["distance"]:
+                    bin_distances = vnb_results["distance"]["bin_distances"]
+                
+                for bin_id in bins_to_plot:
+                    if bin_id < binned_spectra.shape[1] and bin_id < bestfit.shape[1]:
+                        try:
+                            # Create comprehensive spectral fit plot
+                            observed = binned_spectra[:, bin_id]
+                            model = bestfit[:, bin_id]
+                            residuals = observed - model
+                            
+                            # Get emission component if available
+                            em_component = None
+                            if emission is not None and bin_id < emission.shape[1]:
+                                em_component = emission[:, bin_id]
+                            
+                            # Create title with bin info
+                            title = f"{galaxy_name} - VNB Bin {bin_id} Spectral Fit"
+                            
+                            # Add distance information if available
+                            if bin_distances is not None and bin_id < len(bin_distances):
+                                title += f" (r = {bin_distances[bin_id]:.1f} arcsec)"
+                            
+                            # Create plot
+                            fig, ax = visualization.plot_ppxf_fit(
+                                wavelength, observed, model, residuals, em_component,
+                                title=title,
+                                redshift=cube._redshift if hasattr(cube, "_redshift") else 0.0,
+                                save_path=fit_dir / f"{galaxy_name}_VNB_fit_bin{bin_id}.png"
+                            )
+                            plt.close(fig)
+                        except Exception as e:
+                            logger.warning(f"Error creating spectral fit plot for bin {bin_id}: {e}")
+                            plt.close('all')
+                            
+                # Create a combined spectral fit figure showing a selection of bins
+                try:
+                    # For combined plot, limit to 4 bins maximum
+                    combined_bins = bins_to_plot[:min(4, len(bins_to_plot))]
+                    
+                    if combined_bins:
+                        fig, axes = plt.subplots(len(combined_bins), 1, figsize=(12, 3*len(combined_bins)), sharex=True)
+                        
+                        # Handle single subplot case
+                        if len(combined_bins) == 1:
+                            axes = [axes]
+                        
+                        for i, bin_id in enumerate(combined_bins):
+                            # Get data
+                            observed = binned_spectra[:, bin_id]
+                            model = bestfit[:, bin_id]
+                            
+                            # Plot data and model
+                            axes[i].plot(wavelength, observed, 'k-', alpha=0.7, label='Observed')
+                            axes[i].plot(wavelength, model, 'r-', alpha=0.9, label='Model')
+                            
+                            # Add emission if available
+                            if emission is not None and bin_id < emission.shape[1]:
+                                em_component = emission[:, bin_id]
+                                if np.any(em_component != 0):
+                                    # Scale emission to be visible
+                                    scale = 0.5 * np.nanmax(observed) / np.nanmax(em_component) if np.nanmax(em_component) > 0 else 1
+                                    axes[i].plot(wavelength, em_component * scale, 'g-', alpha=0.7, 
+                                               label=f'Emission (×{scale:.1f})')
+                            
+                            # Add bin information
+                            bin_label = f"Bin {bin_id}"
+                            if bin_distances is not None and bin_id < len(bin_distances):
+                                bin_label += f" (r = {bin_distances[bin_id]:.1f} arcsec)"
+                            
+                            axes[i].set_title(bin_label)
+                            axes[i].grid(True, alpha=0.3)
+                            axes[i].legend(loc='upper right', fontsize='small')
+                            
+                            # Add y-axis label only for the middle subplot
+                            if i == len(combined_bins) // 2:
+                                axes[i].set_ylabel('Flux')
+                        
+                        # Set common x-axis label
+                        axes[-1].set_xlabel('Wavelength (Å)')
+                        
+                        # Adjust layout and save
+                        plt.suptitle(f"{galaxy_name} - VNB Spectral Fits", y=0.98)
+                        plt.tight_layout(rect=[0, 0, 1, 0.97])  # Adjust for suptitle
+                        
+                        visualization.standardize_figure_saving(
+                            fig, fit_dir / f"{galaxy_name}_VNB_combined_fits.png"
+                        )
+                        plt.close(fig)
+                except Exception as e:
+                    logger.warning(f"Error creating combined spectral fits plot: {e}")
+                    plt.close('all')
+                    
+            except Exception as e:
+                logger.warning(f"Error creating spectral fit plots: {e}")
+                plt.close('all')
+        
+        # Create a bin overlay plot showing binning on flux map
+        try:
+            # Get flux map from cube using improved function
+            flux_map = visualization.prepare_flux_map(cube)
             
             # Get binning information
             bin_num = vnb_results["binning"]["bin_num"]
             
             # If bin_num is 1D, reshape to match the cube dimensions
             if isinstance(bin_num, np.ndarray) and bin_num.ndim == 1:
-                bin_num_2d = bin_num.reshape(cube._n_y, cube._n_x)
+                if len(bin_num) == cube._n_x * cube._n_y:
+                    bin_num_2d = bin_num.reshape(cube._n_y, cube._n_x)
+                else:
+                    # Handle case where bin_num length doesn't match cube dimensions
+                    logger.warning(f"bin_num length ({len(bin_num)}) doesn't match cube dimensions ({cube._n_y}x{cube._n_x})")
+                    bin_num_2d = np.zeros((cube._n_y, cube._n_x), dtype=int)
+                    valid_len = min(len(bin_num), cube._n_y * cube._n_x)
+                    bin_num_2d.flat[:valid_len] = bin_num[:valid_len]
             else:
                 bin_num_2d = bin_num
             
@@ -822,208 +1258,16 @@ def create_vnb_plots(cube, vnb_results, galaxy_name, plots_dir, args):
             if "bin_x" in vnb_results["binning"] and "bin_y" in vnb_results["binning"]:
                 bin_centers = (vnb_results["binning"]["bin_x"], vnb_results["binning"]["bin_y"])
             
-            # Process WCS for proper handling
-            wcs_obj = None
-            if hasattr(cube, "_wcs") and cube._wcs is not None:
-                wcs_obj = cube._wcs
-                # Handle WCS with more than 2 dimensions by slicing
-                if wcs_obj.naxis > 2:
-                    try:
-                        from astropy.wcs import WCS
-                        
-                        # Try different approaches based on the astropy version
-                        try:
-                            # Newer astropy versions
-                            if hasattr(wcs_obj, 'celestial'):
-                                wcs_obj = wcs_obj.celestial
-                            # Older astropy versions
-                            elif hasattr(wcs_obj, 'sub'):
-                                wcs_obj = wcs_obj.sub([1, 2])
-                            # Really old versions
-                            else:
-                                # Just grab the spatial part manually
-                                header = wcs_obj.to_header()
-                                new_header = {}
-                                for key in header:
-                                    if '1' in key or '2' in key:  # Keep only 1st and 2nd axes
-                                        new_header[key] = header[key]
-                                wcs_obj = WCS(new_header)
-                        except Exception as e1:
-                            logger.warning(f"Error creating 2D WCS: {e1}")
-                            wcs_obj = None
-                            
-                    except Exception as e:
-                        logger.warning(f"Error processing WCS: {e}")
-                        wcs_obj = None
-            
-            # Create a dedicated new figure for the overlay plot
-            plt.figure(figsize=(10, 9))
-            
-            # Define save path
-            overlay_path = plots_dir / f"{galaxy_name}_VNB_binning_overlay.png"
-            
-            # Utility function to create the overlay plot
-            def create_overlay_plot():
-                """Create a high-quality bin overlay plot"""
-                from matplotlib.colors import LogNorm, Normalize
-                import matplotlib.colors as mcolors
-                from matplotlib.collections import LineCollection
-                
-                # Get current figure and axis
-                fig = plt.gcf()
-                ax = plt.gca()
-                
-                # Clear any previous content
-                ax.clear()
-                
-                # Get dimensions
-                ny, nx = flux_map.shape
-                
-                # Handle NaN values and mask
-                masked_flux = np.ma.array(flux_map, mask=~np.isfinite(flux_map))
-                
-                # Determine color normalization
-                valid_flux = masked_flux.compressed()
-                if len(valid_flux) > 0 and np.any(valid_flux > 0):
-                    # Logarithmic scale with safety
-                    min_positive = np.nanmax([np.min(valid_flux[valid_flux > 0]), 1e-10])
-                    norm = LogNorm(vmin=min_positive, vmax=np.nanmax(valid_flux))
-                else:
-                    # Linear scale fallback
-                    norm = Normalize(vmin=0, vmax=1)
-                
-                # Plot flux map
-                im = ax.imshow(masked_flux, origin='lower', cmap='inferno', norm=norm)
-                
-                # Add colorbar
-                cbar = plt.colorbar(im, ax=ax)
-                cbar.set_label('Flux (log scale)')
-                
-                # Better method to detect bin edges - work with the bin number array directly
-                bin_edges = []
-                
-                # Check for horizontal edges (better algorithm)
-                for j in range(ny):
-                    for i in range(nx-1):
-                        if (bin_num_2d[j, i] != bin_num_2d[j, i+1] and 
-                            bin_num_2d[j, i] >= 0 and bin_num_2d[j, i+1] >= 0):
-                            # Found an edge - store segment endpoints
-                            if hasattr(cube, "_pxl_size_x") and hasattr(cube, "_pxl_size_y"):
-                                # Use physical coordinates
-                                pixel_size_x = cube._pxl_size_x
-                                pixel_size_y = cube._pxl_size_y
-                                
-                                # Convert to physical units with center at (0,0)
-                                x1 = (i - nx/2) * pixel_size_x
-                                x2 = (i+1 - nx/2) * pixel_size_x
-                                y1 = (j - ny/2) * pixel_size_y
-                                y2 = y1  # Same y-coordinate
-                                
-                                bin_edges.append([(x1, y1), (x2, y2)])
-                            else:
-                                # Use pixel coordinates
-                                bin_edges.append([(i, j), (i+1, j)])
-                
-                # Check for vertical edges
-                for i in range(nx):
-                    for j in range(ny-1):
-                        if (bin_num_2d[j, i] != bin_num_2d[j+1, i] and 
-                            bin_num_2d[j, i] >= 0 and bin_num_2d[j+1, i] >= 0):
-                            # Found an edge - store segment endpoints
-                            if hasattr(cube, "_pxl_size_x") and hasattr(cube, "_pxl_size_y"):
-                                # Use physical coordinates
-                                pixel_size_x = cube._pxl_size_x
-                                pixel_size_y = cube._pxl_size_y
-                                
-                                # Convert to physical units with center at (0,0)
-                                x1 = (i - nx/2) * pixel_size_x
-                                x2 = x1  # Same x-coordinate
-                                y1 = (j - ny/2) * pixel_size_y
-                                y2 = (j+1 - ny/2) * pixel_size_y
-                                
-                                bin_edges.append([(x1, y1), (x2, y2)])
-                            else:
-                                # Use pixel coordinates
-                                bin_edges.append([(i, j), (i, j+1)])
-                
-                # Add edges as a LineCollection for better rendering
-                if bin_edges:
-                    line_segments = LineCollection(
-                        bin_edges, 
-                        colors='white',
-                        linewidths=0.5,
-                        alpha=0.7,
-                        zorder=10  # Ensure lines are drawn on top of the image
-                    )
-                    ax.add_collection(line_segments)
-                
-                # Plot bin centers if available
-                if bin_centers is not None:
-                    x_centers, y_centers = bin_centers
-                    
-                    # Show only a subset of bin labels to avoid clutter
-                    max_labels = min(30, len(x_centers))
-                    step = max(1, len(x_centers) // max_labels)
-                    
-                    # Convert to physical coordinates if needed
-                    if hasattr(cube, "_pxl_size_x") and hasattr(cube, "_pxl_size_y"):
-                        pixel_size_x = cube._pxl_size_x
-                        pixel_size_y = cube._pxl_size_y
-                        
-                        for i in range(0, len(x_centers), step):
-                            x = (x_centers[i] - nx/2) * pixel_size_x
-                            y = (y_centers[i] - ny/2) * pixel_size_y
-                            ax.text(
-                                x, y, str(i), 
-                                color='white', 
-                                fontsize=8, 
-                                ha='center', 
-                                va='center', 
-                                bbox=dict(facecolor='black', alpha=0.5, boxstyle='round,pad=0.2'),
-                                zorder=11  # On top of everything
-                            )
-                    else:
-                        for i in range(0, len(x_centers), step):
-                            ax.text(
-                                x_centers[i], y_centers[i], 
-                                str(i), 
-                                color='white', 
-                                fontsize=8, 
-                                ha='center', 
-                                va='center', 
-                                bbox=dict(facecolor='black', alpha=0.5, boxstyle='round,pad=0.2'),
-                                zorder=11
-                            )
-                
-                # Set axis labels
-                if hasattr(cube, "_pxl_size_x") and hasattr(cube, "_pxl_size_y"):
-                    ax.set_xlabel('Δ RA (arcsec)')
-                    ax.set_ylabel('Δ Dec (arcsec)')
-                    ax.set_aspect('equal')  # Ensure physical units are shown with correct aspect ratio
-                else:
-                    ax.set_xlabel('Pixels')
-                    ax.set_ylabel('Pixels')
-                
-                # Set title
-                ax.set_title(f"{galaxy_name} - Voronoi Binning")
-                
-                # Make sure the figure is properly sized
-                plt.tight_layout()
-                
-                # Save with high resolution
-                os.makedirs(os.path.dirname(overlay_path), exist_ok=True)
-                plt.savefig(overlay_path, dpi=150, bbox_inches='tight')
-                
-                return fig
-            
-            # Create the overlay plot
-            overlay_fig = create_overlay_plot()
-            
-            # Make sure to close the figure to avoid memory leaks
-            if overlay_fig is not None:
-                plt.close(overlay_fig)
-            else:
-                plt.close()  # Close the current figure anyway
+            # Create binning overlay plot using the improved function
+            fig, ax = visualization.plot_bin_boundaries_on_flux(
+                bin_num_2d,
+                flux_map,
+                cube,
+                galaxy_name=galaxy_name,
+                binning_type="Voronoi",
+                bin_centers=bin_centers,
+                save_path=plots_dir / f"{galaxy_name}_VNB_binning_overlay.png"
+            )
             
             logger.info(f"Created VNB binning overlay plot")
             
@@ -1035,5 +1279,6 @@ def create_vnb_plots(cube, vnb_results, galaxy_name, plots_dir, args):
                 
     except Exception as e:
         logger.error(f"Error in create_vnb_plots: {str(e)}")
+        import traceback
         logger.error(traceback.format_exc())
         plt.close("all")  # Close all figures in case of error

@@ -6,7 +6,7 @@ import logging
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Union, Optional, Tuple, Any
+from typing import Dict, List, Union, Optional, Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -25,9 +25,7 @@ class BinnedSpectra:
     """Base class for binned spectra data"""
 
     bin_num: np.ndarray  # Bin number for each pixel
-    bin_indices: List[
-        np.ndarray
-    ]  # List of arrays containing pixel indices for each bin
+    bin_indices: List[np.ndarray]  # List of arrays containing pixel indices for each bin
     spectra: np.ndarray  # 2D array of binned spectra [n_wavelength, n_bins]
     wavelength: np.ndarray  # 1D array of wavelength
     metadata: Dict  # Metadata dictionary
@@ -67,66 +65,17 @@ class BinnedSpectra:
             metadata=data["metadata"].item(),
         )
 
-    def to_p2p_compatible(self, original_cube=None):
-        """Convert to p2p compatible format"""
-        # Get dimensions
-        n_wave = len(self.wavelength)
-        n_bins = len(self.bin_indices)
-
-        # Create pseudo-cube with shape [n_wave, 1, n_bins]
-        pseudo_cube = np.zeros((n_wave, 1, n_bins))
-        for i in range(n_bins):
-            pseudo_cube[:, 0, i] = self.spectra[:, i]
-
-        # Create variance cube (simple estimate)
-        pseudo_variance = np.ones_like(pseudo_cube) * 0.01
-
-        # Create x, y coordinates (just bin indices)
-        x = np.arange(n_bins)
-        y = np.zeros(n_bins)
-
-        # Properly calculate velocity scale (matching ppxf requirements)
-        c = 299792.458  # Speed of light in km/s
-        ln_lambda = np.log(self.wavelength)
-        dln_lambda = np.diff(ln_lambda)
-        if len(dln_lambda) > 0:
-            # Use median to be robust
-            velscale = c * np.median(dln_lambda)
-        else:
-            # Fallback
-            velscale = 50.0
-
-        # Create result dict with all necessary cube attributes
-        result = {
-            "cube": pseudo_cube,
-            "variance": pseudo_variance,
-            "wavelength": self.wavelength,
-            "bin_num": self.bin_num,
-            "bin_indices": self.bin_indices,
-            "x": x,
-            "y": y,
-            "metadata": self.metadata,
-            "velscale": velscale,  # Add the properly calculated velscale
-        }
-
-        # Add useful information from original cube if available
-        if original_cube is not None:
-            if hasattr(original_cube, "_redshift"):
-                result["redshift"] = original_cube._redshift
-            if hasattr(original_cube, "_pxl_size_x"):
-                result["pxl_size_x"] = original_cube._pxl_size_x
-                result["pxl_size_y"] = original_cube._pxl_size_y
-
-        return result
-
     def create_visualization_plots(self, output_dir, galaxy_name):
         """Create basic visualization plots for binned data"""
-        plots_dir = Path(output_dir) / "plots"
+        from pathlib import Path
+        import visualization
+        
+        plots_dir = Path(output_dir)
         plots_dir.mkdir(exist_ok=True, parents=True)
 
         # 1. Plot bin map
         try:
-            # Get dimensions from bin_num
+            # Get dimensions from metadata
             if "ny" in self.metadata and "nx" in self.metadata:
                 ny, nx = self.metadata["ny"], self.metadata["nx"]
             else:
@@ -142,13 +91,25 @@ class BinnedSpectra:
 
             # Plot
             fig, ax = plt.subplots(figsize=(10, 10))
-            im = ax.imshow(bin_map_2d, cmap="tab20", interpolation="nearest")
-            plt.colorbar(im, ax=ax, label="Bin number")
-            ax.set_title(f"{galaxy_name} - Binning Map")
+            
+            # Get pixel size if available
+            pixel_size = None
+            if "pixelsize_x" in self.metadata and "pixelsize_y" in self.metadata:
+                pixel_size = (self.metadata["pixelsize_x"], self.metadata["pixelsize_y"])
+            
+            visualization.plot_bin_map(
+                bin_map_2d,
+                ax=ax,
+                cmap="tab20",
+                title=f"{galaxy_name} - Binning Map",
+                physical_scale=pixel_size is not None,
+                pixel_size=pixel_size
+            )
 
             # Save
-            plt.tight_layout()
-            plt.savefig(plots_dir / f"{galaxy_name}_bin_map.png")
+            visualization.standardize_figure_saving(
+                fig, plots_dir / f"{galaxy_name}_bin_map.png"
+            )
             plt.close(fig)
         except Exception as e:
             logger.warning(f"Failed to create bin map visualization: {e}")
@@ -175,10 +136,12 @@ class BinnedSpectra:
             ax.set_ylabel("Flux")
             ax.set_title(f"{galaxy_name} - Sample Bin Spectra")
             ax.legend()
+            ax.grid(True, alpha=0.3)
 
             # Save
-            plt.tight_layout()
-            plt.savefig(plots_dir / f"{galaxy_name}_sample_spectra.png")
+            visualization.standardize_figure_saving(
+                fig, plots_dir / f"{galaxy_name}_sample_spectra.png"
+            )
             plt.close(fig)
         except Exception as e:
             logger.warning(f"Failed to create sample spectra visualization: {e}")
@@ -190,10 +153,13 @@ class VoronoiBinnedData(BinnedSpectra):
 
     def create_visualization_plots(self, output_dir, galaxy_name):
         """Create Voronoi specific visualization plots"""
+        import visualization
+        from pathlib import Path
+        
         # Call parent method first
         super().create_visualization_plots(output_dir, galaxy_name)
 
-        plots_dir = Path(output_dir) / "plots"
+        plots_dir = Path(output_dir)
         plots_dir.mkdir(exist_ok=True, parents=True)
 
         # Add Voronoi specific plots
@@ -212,10 +178,12 @@ class VoronoiBinnedData(BinnedSpectra):
                 ax.set_ylabel("Number of Bins")
                 ax.set_title(f"{galaxy_name} - Voronoi Bin SNR Distribution")
                 ax.legend()
+                ax.grid(True, alpha=0.3)
 
                 # Save
-                plt.tight_layout()
-                plt.savefig(plots_dir / f"{galaxy_name}_voronoi_snr.png")
+                visualization.standardize_figure_saving(
+                    fig, plots_dir / f"{galaxy_name}_voronoi_snr.png"
+                )
                 plt.close(fig)
 
             # Plot bin size distribution
@@ -225,14 +193,17 @@ class VoronoiBinnedData(BinnedSpectra):
                 ax.set_xlabel("Number of Pixels per Bin")
                 ax.set_ylabel("Number of Bins")
                 ax.set_title(f"{galaxy_name} - Voronoi Bin Size Distribution")
+                ax.grid(True, alpha=0.3)
 
                 # Save
-                plt.tight_layout()
-                plt.savefig(plots_dir / f"{galaxy_name}_voronoi_bin_size.png")
+                visualization.standardize_figure_saving(
+                    fig, plots_dir / f"{galaxy_name}_voronoi_bin_size.png"
+                )
                 plt.close(fig)
 
         except Exception as e:
             logger.warning(f"Failed to create Voronoi visualization: {e}")
+            plt.close("all")
 
 
 @dataclass
@@ -243,10 +214,13 @@ class RadialBinnedData(BinnedSpectra):
 
     def create_visualization_plots(self, output_dir, galaxy_name):
         """Create radial specific visualization plots with physical coordinates"""
+        import visualization
+        from pathlib import Path
+        
         # Call parent method first
         super().create_visualization_plots(output_dir, galaxy_name)
 
-        plots_dir = Path(output_dir) / "plots"
+        plots_dir = Path(output_dir)
         plots_dir.mkdir(exist_ok=True, parents=True)
 
         # Add radial specific plots
@@ -254,6 +228,7 @@ class RadialBinnedData(BinnedSpectra):
             # Get pixel size for coordinate conversion
             pixel_size_x = self.metadata.get("pixelsize_x", 1.0)
             pixel_size_y = self.metadata.get("pixelsize_y", 1.0)
+            pixel_size = (pixel_size_x, pixel_size_y)
 
             # Plot radius vs. bin number
             fig, ax = plt.subplots(figsize=(10, 6))
@@ -264,8 +239,9 @@ class RadialBinnedData(BinnedSpectra):
             ax.grid(True, alpha=0.3)
 
             # Save
-            plt.tight_layout()
-            plt.savefig(plots_dir / f"{galaxy_name}_radial_bins.png")
+            visualization.standardize_figure_saving(
+                fig, plots_dir / f"{galaxy_name}_radial_bins.png"
+            )
             plt.close(fig)
 
             # Plot bin map with circles representing bins using physical coordinates
@@ -275,154 +251,38 @@ class RadialBinnedData(BinnedSpectra):
                     ny, nx = self.metadata["ny"], self.metadata["nx"]
                 else:
                     # Estimate from bin_num shape
-                    bin_shape = getattr(self.bin_num, "shape", None)
-                    if bin_shape is not None:
-                        ny, nx = bin_shape
-                    else:
-                        ny, nx = 1, len(self.bin_num)
-
-                # Create 2D bin map
-                bin_map_2d = self.bin_num.reshape(ny, nx)
-
-                # Get center coordinates
-                center_x = self.metadata.get("center_x", nx // 2)
-                center_y = self.metadata.get("center_y", ny // 2)
-
-                # Get ellipticity and PA
-                ellipticity = self.metadata.get("ellipticity", 0)
-                pa = self.metadata.get("pa", 0)
-
-                # Create physical coordinate grid
-                y_coords, x_coords = np.indices((ny, nx))
-
-                # Convert to physical units (arcseconds)
-                # Center coordinates based on image center
-                x_physical = (x_coords - nx / 2) * pixel_size_x
-                y_physical = (y_coords - ny / 2) * pixel_size_y
-
-                # Convert center to physical units relative to center
-                center_x_phys = (center_x - nx / 2) * pixel_size_x
-                center_y_phys = (center_y - ny / 2) * pixel_size_y
-
-                # Create plot
-                fig, ax = plt.subplots(figsize=(10, 10))
-
-                # Create colored bin map
-                unique_bins = np.unique(bin_map_2d)
-                unique_bins = unique_bins[unique_bins >= 0]  # Remove negative values
-                cmap = plt.cm.get_cmap("tab20", len(unique_bins))
-
-                # Plot each bin with proper physical coordinates
-                for i in unique_bins:
-                    mask = bin_map_2d == i
-                    color = cmap(i % 20)  # Cycle through colors
-                    x_bin = x_physical[mask]
-                    y_bin = y_physical[mask]
-
-                    if len(x_bin) > 0:
-                        # Use scatter for visualization
-                        ax.scatter(
-                            x_bin, y_bin, color=color, s=10, alpha=0.7, label=f"Bin {i}"
-                        )
-
-                # Add center marker
-                ax.plot(
-                    center_x_phys, center_y_phys, "r+", markersize=10, label="Center"
-                )
-
-                # Add rings representing bin edges in physical coordinates
-                if "bin_edges" in self.metadata:
-                    bin_edges = self.metadata["bin_edges"]
-
-                    for radius in bin_edges:
-                        # Draw circle or ellipse in physical coordinates
-                        if ellipticity == 0 or not np.isfinite(ellipticity):
-                            # Draw circle
-                            circle = plt.Circle(
-                                (center_x_phys, center_y_phys),
-                                radius,  # Already in arcsec
-                                fill=False,
-                                color="white",
-                                linestyle="--",
-                                alpha=0.7,
-                            )
-                            ax.add_patch(circle)
-                        else:
-                            # Draw ellipse
-                            from matplotlib.patches import Ellipse
-
-                            width = 2 * radius
-                            height = 2 * radius * (1 - ellipticity)
-                            ellipse = Ellipse(
-                                (center_x_phys, center_y_phys),
-                                width,
-                                height,
-                                angle=pa,
-                                fill=False,
-                                color="white",
-                                linestyle="--",
-                                alpha=0.7,
-                            )
-                            ax.add_patch(ellipse)
-
-                # Add ring labels
-                if "bin_radii" in dir(self):
-                    for i, radius in enumerate(self.bin_radii):
-                        # Label position along positive x-axis
-                        label_x = center_x_phys + radius * np.cos(np.radians(pa))
-                        label_y = center_y_phys + radius * np.sin(np.radians(pa))
-
-                        ax.text(
-                            label_x,
-                            label_y,
-                            f"{i}",
-                            color="white",
-                            fontsize=8,
-                            bbox=dict(
-                                facecolor="black", alpha=0.5, boxstyle="round,pad=0.2"
-                            ),
-                        )
-
-                # Set axis labels with physical units
-                ax.set_xlabel("X (arcsec)")
-                ax.set_ylabel("Y (arcsec)")
-                ax.set_aspect("equal")
-                ax.grid(True, alpha=0.3)
-
-                # Set title
-                ax.set_title(
-                    f"{galaxy_name} - Radial Bin Map (PA={pa:.1f}°, e={ellipticity:.2f})"
-                )
-
-                # Create legend for first few bins
-                if len(unique_bins) > 0:
-                    max_legend = min(5, len(unique_bins))
-                    handles, labels = ax.get_legend_handles_labels()
-                    # Filter to show only first few bins and center
-                    center_idx = labels.index("Center") if "Center" in labels else -1
-                    bin_indices = [
-                        i
-                        for i, label in enumerate(labels)
-                        if label.startswith("Bin")
-                        and int(label.split()[1]) < max_legend
-                    ]
-
-                    if center_idx >= 0:
-                        bin_indices.append(center_idx)
-
-                    filtered_handles = [handles[i] for i in bin_indices]
-                    filtered_labels = [labels[i] for i in bin_indices]
-
-                    ax.legend(
-                        filtered_handles,
-                        filtered_labels,
-                        loc="upper right",
-                        fontsize="small",
+                    ny, nx = (
+                        self.bin_num.shape
+                        if hasattr(self.bin_num, "shape")
+                        else (1, len(self.bin_num))
                     )
 
+                bin_map_2d = self.bin_num.reshape(ny, nx)
+                center_x = self.metadata.get("center_x", nx / 2)
+                center_y = self.metadata.get("center_y", ny / 2)
+                pa = self.metadata.get("pa", 0)
+                ellipticity = self.metadata.get("ellipticity", 0)
+
+                # Get WCS if available
+                wcs = self.metadata.get("wcs", None)
+
+                # Create the visualization plot
+                fig, ax = visualization.plot_flux_with_radial_bins(
+                    bin_map_2d,  # Use bin map as a base
+                    self.bin_radii,
+                    center_x,
+                    center_y,
+                    pa=pa,
+                    ellipticity=ellipticity,
+                    wcs=wcs,
+                    pixel_size=pixel_size,
+                    title=f"{galaxy_name} - Radial Bin Map",
+                )
+
                 # Save
-                plt.tight_layout()
-                plt.savefig(plots_dir / f"{galaxy_name}_radial_bin_map.png", dpi=150)
+                visualization.standardize_figure_saving(
+                    fig, plots_dir / f"{galaxy_name}_radial_bin_map.png"
+                )
                 plt.close(fig)
             except Exception as e:
                 logger.warning(f"Failed to create radial bin map: {e}")
@@ -465,18 +325,22 @@ def calculate_wavelength_intersection(wavelength, velocity_field, n_x):
     min_vel = np.min(valid_velocities)
     max_vel = np.max(valid_velocities)
 
-    # Calculate wavelength limits
-    # For redshifted spectra, the maximum wavelength becomes larger
-    # For blueshifted spectra, the minimum wavelength becomes smaller
-    min_factor = 1 + min_vel / c
-    max_factor = 1 + max_vel / c
+    # Calculate wavelength limits - accounting for redshift/blueshift
+    min_factor = 1 + min_vel / c  # For blueshift (v < 0), factor < 1
+    max_factor = 1 + max_vel / c  # For redshift (v > 0), factor > 1
 
-    # The observed range must be adjusted to account for all possible velocity shifts
-    # This ensures that after shifting, all spectra cover the same rest-frame range
-    rest_min = np.min(wavelength) / min(min_factor, max_factor)
-    rest_max = np.max(wavelength) / max(min_factor, max_factor)
+    # Determine range that works for all velocities
+    if min_vel < 0 and max_vel > 0:
+        # We have both blue and redshifts - more complex case
+        # The range must be within both limits
+        rest_min = np.min(wavelength) / max_factor  # Bluer limit for redshifts
+        rest_max = np.max(wavelength) / min_factor  # Redder limit for blueshifts
+    else:
+        # Simpler case - all velocities in same direction
+        rest_min = np.min(wavelength) / max(min_factor, max_factor)
+        rest_max = np.max(wavelength) / min(min_factor, max_factor)
 
-    # Get intersection range with some margin (1%)
+    # Add safety margin (1%)
     margin = 0.01 * (rest_max - rest_min)
     min_wave = rest_min + margin
     max_wave = rest_max - margin
@@ -484,9 +348,9 @@ def calculate_wavelength_intersection(wavelength, velocity_field, n_x):
     # Create mask for wavelength range
     mask = (wavelength >= min_wave) & (wavelength <= max_wave)
 
-    # Ensure we have some valid wavelengths left
+    # Ensure we have some valid wavelengths
     if np.sum(mask) < 10:
-        # If almost no wavelength points left, use most of the original range
+        # If too few wavelength points, use most of the original range
         logger.warning(
             "Velocity range too wide for wavelength intersection, using 80% of original range"
         )
@@ -507,6 +371,7 @@ def combine_spectra_efficiently(
     bin_indices,
     velocity_field=None,
     n_x=None,
+    n_y=None,
     edge_treatment="extend",
 ):
     """
@@ -524,6 +389,8 @@ def combine_spectra_efficiently(
         Velocity field for correction
     n_x : int, optional
         Number of pixels in x direction
+    n_y : int, optional
+        Number of pixels in y direction
     edge_treatment : str, default='extend'
         How to handle spectrum edges:
         - 'extend': Extend edge values rather than filling with zeros
@@ -643,7 +510,7 @@ def combine_spectra_efficiently(
                 except Exception as e:
                     logger.debug(f"Bin velocity correction failed: {e}")
 
-            # Second attempt: Process each spectrum individually
+            # Second attempt: Process each spectrum individually if first method failed
             if not velocity_correction_success:
                 # Process each spectrum individually
                 for idx in indices:
@@ -739,7 +606,7 @@ def run_voronoi_binning(
     x, y, signal, noise, target_snr, plot=0, quiet=False, cvt=True, min_snr=0.0
 ):
     """
-    Run Voronoi binning on input data with better handling of target SNR values
+    Run Voronoi binning on input data with comprehensive error handling and adaptive SNR.
 
     Parameters
     ----------
@@ -753,7 +620,7 @@ def run_voronoi_binning(
         Noise data
     target_snr : float
         Target signal-to-noise ratio. Recommended to be between:
-        - Minimum: 1.5 × maximum pixel SNR
+        - Minimum: 1.5 × median pixel SNR
         - Maximum: 50 × maximum pixel SNR
     plot : int, default=0
         Plotting flag (0=no plot, 1=plot)
@@ -1109,7 +976,7 @@ def _create_fallback_binning(x, y, n_bins=5):
     -------
     tuple
         Simple binning results compatible with Voronoi binning return
-        (bin_num, x_gen, y_gen, x_bar, y_bar, sn, n_pixels, scale)
+        (bin_num, x_gen, y_gen, sn, n_pixels, scale)
     """
     # Calculate distance from center for each point
     x_center = np.median(x[np.isfinite(x)])
@@ -1120,14 +987,12 @@ def _create_fallback_binning(x, y, n_bins=5):
     # Create simple radial bins
     valid_mask = np.isfinite(r)
     if np.sum(valid_mask) < 1:
-        # If no valid points, return a simple error state with 8 parameters
+        # If no valid points, return a simple error state
         bin_num = np.full_like(x, -1, dtype=int)
         return (
             bin_num,
             np.array([0]),
             np.array([0]),
-            np.array([0]),  # x_bar
-            np.array([0]),  # y_bar
             np.array([1.0]),
             np.array([1]),
             1.0,
@@ -1165,21 +1030,10 @@ def _create_fallback_binning(x, y, n_bins=5):
 
     logger.warning(f"Created simple fallback binning with {len(x_gen)} bins")
 
-    # Convert to numpy arrays
-    x_gen_arr = np.array(x_gen)
-    y_gen_arr = np.array(y_gen)
-    
-    # Use generators as centroids for fallback
-    x_bar = x_gen_arr.copy()
-    y_bar = y_gen_arr.copy()
-
-    # Return 8 parameters to match voronoi_2d_binning
     return (
         bin_num,
-        x_gen_arr,
-        y_gen_arr,
-        x_bar,  # Centroids (same as generators for fallback)
-        y_bar,
+        np.array(x_gen),
+        np.array(y_gen),
         np.array(sn),
         np.array(n_pixels),
         1.0,
@@ -1369,7 +1223,7 @@ def calculate_radial_bins(
         # Calculate bin radii (at middle of each bin)
         bin_radii = np.zeros(n_rings)
         bin_edges_full = np.concatenate(([0], bin_edges))
-
+        
         for i in range(n_rings):
             mask = bin_num == i
             if np.any(mask & valid_mask):
@@ -1395,22 +1249,22 @@ def create_grid_binning(
 ):
     """
     Create a grid-based binning as a reliable fallback
-
+    
     Parameters
     ----------
     x, y : ndarray
-        Coordinate arrays
+        Coordinates
     signal, noise : ndarray
-        Signal and noise arrays
+        Signal and noise data
     nx, ny : int
         Number of bins in x and y directions
     xmin, xmax, ymin, ymax : float, optional
         Coordinate bounds
-
+        
     Returns
     -------
     tuple or None
-        (bin_num, x_gen, y_gen, sn, n_pixels, scale) or None if failed
+        Binning results (bin_num, x_gen, y_gen, sn, n_pixels, scale)
     """
     try:
         # Ensure at least one bin
@@ -1427,7 +1281,7 @@ def create_grid_binning(
         if ymax is None:
             ymax = np.max(y)
 
-        # Add small margin to avoid edge issues
+        # Add small margin
         eps = 1e-6
         xmin -= eps
         xmax += eps
@@ -1456,7 +1310,7 @@ def create_grid_binning(
                 # Select points in this bin
                 mask = (x >= x_min) & (x < x_max) & (y >= y_min) & (y < y_max)
 
-                # Only create bin if it has data points
+                # Create bin if it has data points
                 if np.any(mask):
                     bin_num[mask] = bin_id
                     x_gen.append(np.mean(x[mask]))
@@ -1471,7 +1325,7 @@ def create_grid_binning(
                     n_pixels.append(np.sum(mask))
                     bin_id += 1
 
-        # Check if we created any bins
+        # Check if any bins were created
         if bin_id == 0:
             return None
 
