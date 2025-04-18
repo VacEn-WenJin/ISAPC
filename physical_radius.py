@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 def calculate_galaxy_radius(flux_2d, pixel_size_x=0.2, pixel_size_y=None):
     """
     Calculate elliptical galaxy radius (R_galaxy) based on flux distribution
+    with logarithmic weighting to reduce impact of artifacts
     
     Parameters
     ----------
@@ -35,90 +36,187 @@ def calculate_galaxy_radius(flux_2d, pixel_size_x=0.2, pixel_size_y=None):
         pixel_size_y = pixel_size_x
         
     try:
-        # Step 1: Calculate flux statistics
-        mean_flux = np.nanmean(flux_2d[flux_2d > 0])
-        std_flux = np.nanstd(flux_2d[flux_2d > 0])
+        # Step 1: Prepare flux data and apply log weighting
+        # Replace non-positive and NaN values with a small positive number
+        valid_flux = flux_2d[np.isfinite(flux_2d) & (flux_2d > 0)]
         
-        # Threshold: 1 sigma above mean
-        flux_threshold = mean_flux + std_flux
+        if len(valid_flux) == 0:
+            logger.warning("No positive flux values found in data")
+            # Create a fallback result
+            y_indices, x_indices = np.indices(flux_2d.shape)
+            center_y, center_x = flux_2d.shape[0]/2, flux_2d.shape[1]/2
+            R_galaxy = np.sqrt((x_indices - center_x)**2 + (y_indices - center_y)**2) * pixel_size_x
+            ellipse_params = {
+                'center_x': center_x,
+                'center_y': center_y,
+                'PA_degrees': 0,
+                'ellipticity': 0,
+                'a': 1,
+                'b': 1
+            }
+            return R_galaxy, ellipse_params
         
-        # Create mask for high-flux pixels
-        high_flux_mask = flux_2d > flux_threshold
+        # Find minimum positive value and use for replacement
+        min_positive = np.min(valid_flux)
+        # Create a copy to avoid modifying the original
+        flux_work = flux_2d.copy()
+        # Replace invalid values
+        flux_work[~np.isfinite(flux_work) | (flux_work <= 0)] = min_positive / 10
         
-        # If no pixels above threshold, use all pixels with positive flux
-        if not np.any(high_flux_mask):
-            logger.warning("No pixels above flux threshold, using all positive flux pixels")
-            high_flux_mask = flux_2d > 0
+        # Apply log scaling to compress the dynamic range
+        log_flux = np.log10(flux_work)
+        
+        # Calculate statistics on log scale
+        mean_log_flux = np.nanmean(log_flux)
+        std_log_flux = np.nanstd(log_flux)
+        
+        # Create mask to exclude artifacts and noise
+        # Lower bound removes background and noise
+        # Upper bound removes potential artifacts
+        flux_mask = (log_flux > mean_log_flux - 0.5*std_log_flux) & (log_flux < mean_log_flux + 2*std_log_flux)
+        
+        # If mask is too restrictive, relax the criteria
+        if np.sum(flux_mask) < 0.1 * flux_2d.size:
+            logger.warning("Flux mask too restrictive, relaxing criteria")
+            flux_mask = (log_flux > mean_log_flux - std_log_flux) & (log_flux < mean_log_flux + 3*std_log_flux)
             
-        # Step 2: Calculate flux-weighted center
+            # If still too few pixels, use a percentile-based approach
+            if np.sum(flux_mask) < 0.05 * flux_2d.size:
+                logger.warning("Using percentile-based flux masking")
+                sorted_flux = np.sort(log_flux[np.isfinite(log_flux)])
+                if len(sorted_flux) > 0:
+                    low_thresh = sorted_flux[int(0.2 * len(sorted_flux))]  # 20th percentile
+                    high_thresh = sorted_flux[int(0.8 * len(sorted_flux))]  # 80th percentile
+                    flux_mask = (log_flux >= low_thresh) & (log_flux <= high_thresh)
+        
+        # Step 2: Calculate flux-weighted center using the masked data
         y_indices, x_indices = np.indices(flux_2d.shape)
         
-        # Apply mask and calculate weighted mean
-        total_weight = np.sum(flux_2d[high_flux_mask])
-        # if total_weight > 0:
-        #     x_center = np.sum(x_indices[high_flux_mask] * flux_2d[high_flux_mask]) / total_weight
-        #     y_center = np.sum(y_indices[high_flux_mask] * flux_2d[high_flux_mask]) / total_weight
-        # else:
-        #     # Fallback to geometric center if weighting fails
-        #     x_center = flux_2d.shape[1] / 2
-        #     y_center = flux_2d.shape[0] / 2
-        #     logger.warning("Flux weighting failed. Using geometric center instead.")
+        # Use log-weighted flux for center calculation
+        weights = log_flux.copy()
+        # Zero out weights for pixels outside our mask
+        weights[~flux_mask] = 0
         
-        # Uniform center
-        x_center = flux_2d.shape[1] / 2
-        y_center = flux_2d.shape[0] / 2
-
-        # Step 3: Calculate flux-weighted second moments
+        # Apply mask and calculate weighted mean for center
+        total_weight = np.sum(weights[flux_mask])
+        
+        if total_weight > 0:
+            # Calculate flux-weighted center
+            x_center = np.sum(x_indices[flux_mask] * weights[flux_mask]) / total_weight
+            y_center = np.sum(y_indices[flux_mask] * weights[flux_mask]) / total_weight
+        else:
+            # Fallback to geometric center
+            x_center = flux_2d.shape[1] / 2
+            y_center = flux_2d.shape[0] / 2
+            logger.warning("Weighted center calculation failed. Using geometric center.")
+        
+        # Step 3: Calculate flux-weighted second moments for ellipse
         dx = x_indices - x_center
         dy = y_indices - y_center
         
-        # Create weights from flux
-        weights = flux_2d.copy()
-        weights[~high_flux_mask] = 0  # Zero weight for low-flux pixels
+        # Create weights for moments calculation - use squared flux to emphasize bright regions
+        # but limit extreme values
+        weights_moments = np.power(10, log_flux.clip(mean_log_flux - std_log_flux, 
+                                                     mean_log_flux + std_log_flux))
         
-        total_weight = np.sum(weights)
+        # Zero weights for masked regions
+        weights_moments[~flux_mask] = 0
+        
+        # Calculate weighted moments
+        total_weight = np.sum(weights_moments[flux_mask])
         
         if total_weight > 0:
-            I_xx = np.sum(weights * dx**2) / total_weight
-            I_yy = np.sum(weights * dy**2) / total_weight
-            I_xy = np.sum(weights * dx * dy) / total_weight
+            I_xx = np.sum(weights_moments[flux_mask] * dx[flux_mask]**2) / total_weight
+            I_yy = np.sum(weights_moments[flux_mask] * dy[flux_mask]**2) / total_weight
+            I_xy = np.sum(weights_moments[flux_mask] * dx[flux_mask] * dy[flux_mask]) / total_weight
         else:
-            # Fallback to unity weights if weighting fails
-            valid_mask = high_flux_mask & np.isfinite(dx) & np.isfinite(dy)
-            I_xx = np.mean(dx[valid_mask]**2)
-            I_yy = np.mean(dy[valid_mask]**2)
-            I_xy = np.mean(dx[valid_mask] * dy[valid_mask])
+            # Fallback to unweighted calculation
+            valid_mask = flux_mask & np.isfinite(dx) & np.isfinite(dy)
+            if np.any(valid_mask):
+                I_xx = np.mean(dx[valid_mask]**2)
+                I_yy = np.mean(dy[valid_mask]**2)
+                I_xy = np.mean(dx[valid_mask] * dy[valid_mask])
+            else:
+                # Last resort: use identity matrix (circular shape)
+                I_xx = 1.0
+                I_yy = 1.0
+                I_xy = 0.0
             
-        # Step 4: Determine ellipse parameters
-        # Calculate position angle
-        PA = 0.5 * np.arctan2(2 * I_xy, I_xx - I_yy)
-        PA_degrees = (PA * 180 / np.pi) % 180
-        
-        # Calculate variances along principal axes
-        a = I_xx*np.cos(PA)**2 + 2*I_xy*np.sin(PA)*np.cos(PA) + I_yy*np.sin(PA)**2
-        b = I_xx*np.sin(PA)**2 - 2*I_xy*np.sin(PA)*np.cos(PA) + I_yy*np.cos(PA)**2
-        
-        # Calculate ellipticity (handle edge cases)
-        if a > 0 and b > 0:
-            ellipticity = 1 - np.sqrt(b / a)
+        # Step 4: Determine ellipse parameters with robust error handling
+        try:
+            # Calculate position angle
+            PA = 0.5 * np.arctan2(2 * I_xy, I_xx - I_yy)
+            PA_degrees = (PA * 180 / np.pi) % 180
             
-            # Constrain ellipticity to reasonable range
-            ellipticity = max(0, min(0.95, ellipticity))
-        else:
+            # Calculate semi-major and semi-minor axis lengths
+            # These formulas compute eigenvalues of the inertia tensor
+            term1 = (I_xx + I_yy) / 2
+            term2 = np.sqrt(((I_xx - I_yy) / 2)**2 + I_xy**2)
+            
+            # Semi-major and semi-minor axes (eigenvalues)
+            a_sq = term1 + term2  # Larger eigenvalue
+            b_sq = term1 - term2  # Smaller eigenvalue
+            
+            # Ensure positive values with error checking
+            if a_sq <= 0 or not np.isfinite(a_sq):
+                logger.warning("Invalid semi-major axis calculation, using default value")
+                a_sq = max(I_xx, I_yy)  # Fallback
+                
+            if b_sq <= 0 or not np.isfinite(b_sq):
+                logger.warning("Invalid semi-minor axis calculation, using default value")
+                b_sq = min(max(0.1, min(I_xx, I_yy)), a_sq * 0.9)  # Fallback with constraints
+            
+            # Calculate ellipticity with constraints
+            if a_sq > 0 and b_sq > 0:
+                # Eigenvalues give us the square of the semi-axis lengths
+                a = np.sqrt(a_sq)
+                b = np.sqrt(b_sq)
+                
+                # Ellipticity defined as 1 - (minor/major)
+                ellipticity = 1 - (b / a)
+                
+                # Constrain ellipticity to reasonable range [0, 0.95]
+                ellipticity = max(0, min(0.95, ellipticity))
+            else:
+                a = np.sqrt(max(I_xx, I_yy, 0.1))
+                b = np.sqrt(max(min(I_xx, I_yy), 0.1))
+                ellipticity = 0
+                logger.warning("Using circular model (e=0) due to calculation issues")
+                
+            # Fix potential issues with angles
+            if not np.isfinite(PA_degrees):
+                PA_degrees = 0
+                
+            # Handle degenerate cases where ellipticity is very low
+            if ellipticity < 0.05:
+                # For nearly circular objects, the PA is not well-defined
+                # Set to 0 to avoid numerical instability
+                PA_degrees = 0
+                ellipticity = 0
+        except Exception as e:
+            logger.warning(f"Error calculating ellipse parameters: {str(e)}")
+            # Default to circular shape
+            a = np.sqrt(max(I_xx, I_yy, 0.1))
+            b = a
+            PA_degrees = 0
             ellipticity = 0
-            logger.warning("Invalid axis lengths, using circular model (e=0)")
-        
+                
         # Step 5: Calculate R_galaxy for each pixel
         # Prepare coordinate arrays
         dx = x_indices - x_center
         dy = y_indices - y_center
         
         # Rotate coordinates to align with principal axes
-        x_prime = dx * np.cos(PA) + dy * np.sin(PA)
-        y_prime = -dx * np.sin(PA) + dy * np.cos(PA)
+        PA_rad = np.radians(PA_degrees)
+        x_prime = dx * np.cos(PA_rad) + dy * np.sin(PA_rad)
+        y_prime = -dx * np.sin(PA_rad) + dy * np.cos(PA_rad)
         
         # Calculate elliptical radius
-        scale_factor = 1.0 / max(1.0 - ellipticity, 0.001)  # Avoid division by zero
+        if ellipticity < 1:
+            scale_factor = 1.0 / (1.0 - ellipticity)
+        else:
+            scale_factor = 20.0  # High but finite value for extreme cases
+            
         R_galaxy = np.sqrt(x_prime**2 + (y_prime * scale_factor)**2)
         
         # Scale to arcseconds
@@ -130,8 +228,8 @@ def calculate_galaxy_radius(flux_2d, pixel_size_x=0.2, pixel_size_y=None):
             'center_y': y_center,
             'PA_degrees': PA_degrees,
             'ellipticity': ellipticity,
-            'a': np.sqrt(a),  # Semi-major axis scale
-            'b': np.sqrt(b)   # Semi-minor axis scale
+            'a': a,  # Semi-major axis scale
+            'b': b   # Semi-minor axis scale
         }
         
         return R_galaxy_arcsec, ellipse_params

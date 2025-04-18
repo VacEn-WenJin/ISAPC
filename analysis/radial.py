@@ -411,7 +411,7 @@ def run_rdb_analysis(args, cube, p2p_results=None):
 
 def create_rdb_plots(cube, rdb_results, galaxy_name, plots_dir, args):
     """
-    Create visualization plots for RDB analysis
+    Create visualization plots for RDB analysis with consistent physical scaling
     
     Parameters
     ----------
@@ -430,6 +430,11 @@ def create_rdb_plots(cube, rdb_results, galaxy_name, plots_dir, args):
         import matplotlib.pyplot as plt
         import numpy as np
         import os
+        from matplotlib.colors import Normalize, LogNorm
+        from matplotlib.patches import Ellipse
+        
+        # Create flux map for visualization
+        flux_map = visualization.prepare_flux_map(cube)
         
         # Create radial bin map
         if "binning" in rdb_results and "bin_num" in rdb_results["binning"]:
@@ -457,24 +462,153 @@ def create_rdb_plots(cube, rdb_results, galaxy_name, plots_dir, args):
                 else:
                     bin_num_2d = bin_num
                 
-                # Create radial bin map with physical scaling
+                # 1. Create bin boundaries plot (similar to VNB visualization)
+                # --------------------------------------------------------------
+                fig, ax = visualization.plot_bin_boundaries_on_flux(
+                    bin_num_2d,
+                    flux_map,
+                    cube,
+                    galaxy_name=galaxy_name,
+                    binning_type="Radial",
+                    bin_radii=bin_radii,
+                    center_x=center_x,
+                    center_y=center_y,
+                    pa=pa,
+                    ellipticity=ellipticity,
+                    save_path=plots_dir / f"{galaxy_name}_RDB_binning_overlay.png"
+                )
+                
+                if fig is not None:
+                    plt.close(fig)
+                
+                # 2. Create bin map with colored bins
+                # -----------------------------------
                 fig, ax = plt.subplots(figsize=(10, 8))
+                
+                # Use physical coordinates consistently
+                physical_scale = True
+                pixel_size = (cube._pxl_size_x, cube._pxl_size_y)
+                wcs = cube._wcs if hasattr(cube, "_wcs") else None
+                
                 visualization.plot_bin_map(
                     bin_num_2d,
-                    None,
+                    None,  # No values to color by
                     ax=ax,
                     cmap="tab20",
                     title=f"{galaxy_name} - Radial Bins",
-                    physical_scale=True,
-                    pixel_size=(cube._pxl_size_x, cube._pxl_size_y),
-                    wcs=cube._wcs if hasattr(cube, "_wcs") else None
+                    physical_scale=physical_scale,
+                    pixel_size=pixel_size,
+                    wcs=wcs
                 )
+                
                 visualization.standardize_figure_saving(
                     fig, plots_dir / f"{galaxy_name}_RDB_bin_map.png"
                 )
                 plt.close(fig)
                 
-                # Create radial profile plots
+                # 3. Create physical radius contour plot
+                # -------------------------------------
+                # Generate physical radius map if needed
+                r_galaxy = None
+                if hasattr(cube, "_physical_radius") and cube._physical_radius is not None:
+                    r_galaxy = cube._physical_radius
+                    ellipse_params = cube._ellipse_params if hasattr(cube, "_ellipse_params") else None
+                else:
+                    # Calculate physical radius
+                    from physical_radius import calculate_galaxy_radius
+                    r_galaxy, ellipse_params = calculate_galaxy_radius(
+                        flux_map,
+                        pixel_size_x=cube._pxl_size_x, 
+                        pixel_size_y=cube._pxl_size_y
+                    )
+                
+                # Create figure for physical radius contours
+                fig, ax = plt.subplots(figsize=(10, 8))
+                
+                # Plot using physical coordinates
+                ny, nx = r_galaxy.shape
+                extent = [
+                    -nx/2 * cube._pxl_size_x,
+                    nx/2 * cube._pxl_size_x,
+                    -ny/2 * cube._pxl_size_y,
+                    ny/2 * cube._pxl_size_y
+                ]
+                
+                # Plot flux map as background with log scale
+                valid_flux = flux_map[np.isfinite(flux_map) & (flux_map > 0)]
+                if len(valid_flux) > 0:
+                    vmin = np.percentile(valid_flux, 1)
+                    vmax = np.percentile(valid_flux, 99)
+                    norm = LogNorm(vmin=max(vmin, 1e-10), vmax=vmax)
+                else:
+                    norm = None
+                
+                im = ax.imshow(
+                    flux_map,
+                    origin='lower',
+                    cmap='inferno',
+                    norm=norm,
+                    extent=extent,
+                    aspect='equal'
+                )
+                plt.colorbar(im, ax=ax, label='Flux')
+                
+                # Add contours of physical radius
+                # Calculate levels based on bin radii
+                contour_levels = bin_radii
+                
+                # Generate contours with consistent colormap
+                contour = ax.contour(
+                    np.linspace(extent[0], extent[1], nx),
+                    np.linspace(extent[2], extent[3], ny),
+                    r_galaxy,
+                    levels=contour_levels,
+                    colors='white',
+                    linewidths=1.5,
+                    alpha=0.7
+                )
+                
+                # Add contour labels
+                plt.clabel(contour, inline=True, fontsize=8, fmt='%.1f')
+                
+                # Add ellipses for bin edges
+                for radius in bin_radii:
+                    # Convert center to physical coordinates
+                    center_x_phys = (center_x - nx/2) * cube._pxl_size_x
+                    center_y_phys = (center_y - ny/2) * cube._pxl_size_y
+                    
+                    # Create ellipse
+                    ell = Ellipse(
+                        (center_x_phys, center_y_phys),
+                        2 * radius,  # Diameter
+                        2 * radius * (1 - ellipticity),  # Account for ellipticity
+                        angle=pa,
+                        fill=False,
+                        edgecolor='yellow',
+                        linestyle='--',
+                        linewidth=1.0,
+                        alpha=0.6
+                    )
+                    ax.add_patch(ell)
+                
+                # Set labels and title
+                ax.set_xlabel('Δ RA (arcsec)')
+                ax.set_ylabel('Δ Dec (arcsec)')
+                ax.set_title(f'{galaxy_name} - Physical Radius Contours')
+                
+                # Add center marker
+                center_x_phys = (center_x - nx/2) * cube._pxl_size_x
+                center_y_phys = (center_y - ny/2) * cube._pxl_size_y
+                ax.plot(center_x_phys, center_y_phys, '+', color='yellow', markersize=10)
+                
+                # Save figure
+                visualization.standardize_figure_saving(
+                    fig, plots_dir / f"{galaxy_name}_RDB_physical_coords.png"
+                )
+                plt.close(fig)
+                
+                # 4. Create radial profile plots
+                # ------------------------------
                 if "distance" in rdb_results and "bin_distances" in rdb_results["distance"]:
                     try:
                         bin_distances = rdb_results["distance"]["bin_distances"]
@@ -924,7 +1058,7 @@ def create_rdb_plots(cube, rdb_results, galaxy_name, plots_dir, args):
                                         idx_array = np.asarray(idx_values, dtype=float)
                                         
                                         if np.any(np.isfinite(idx_array)):
-                                            # Plot bin map with index values
+                                            # Plot bin map with index values and physical scaling
                                             visualization.plot_bin_map(
                                                 bin_num_2d,
                                                 idx_array,
@@ -1289,55 +1423,6 @@ def create_rdb_plots(cube, rdb_results, galaxy_name, plots_dir, args):
             except Exception as e:
                 logger.warning(f"Error creating spectral fit plots: {e}")
                 plt.close('all')
-        
-        # Create a bin overlay plot showing binning on flux map
-        try:
-            # Get flux map from cube using improved function
-            flux_map = visualization.prepare_flux_map(cube)
-            
-            # Get binning information
-            bin_num = rdb_results["binning"]["bin_num"]
-            bin_radii = rdb_results["binning"]["bin_radii"]
-            center_x = rdb_results["binning"]["center_x"]
-            center_y = rdb_results["binning"]["center_y"]
-            pa = rdb_results["binning"]["pa"]
-            ellipticity = rdb_results["binning"]["ellipticity"]
-            
-            # If bin_num is 1D, reshape to match the cube dimensions
-            if isinstance(bin_num, np.ndarray) and bin_num.ndim == 1:
-                if len(bin_num) == cube._n_x * cube._n_y:
-                    bin_num_2d = bin_num.reshape(cube._n_y, cube._n_x)
-                else:
-                    # Handle case where bin_num length doesn't match cube dimensions
-                    logger.warning(f"bin_num length ({len(bin_num)}) doesn't match cube dimensions ({cube._n_y}x{cube._n_x})")
-                    bin_num_2d = np.zeros((cube._n_y, cube._n_x), dtype=int)
-                    valid_len = min(len(bin_num), cube._n_y * cube._n_x)
-                    bin_num_2d.flat[:valid_len] = bin_num[:valid_len]
-            else:
-                bin_num_2d = bin_num
-            
-            # Create binning overlay plot using the improved function
-            fig, ax = visualization.plot_bin_boundaries_on_flux(
-                bin_num_2d,
-                flux_map,
-                cube,
-                galaxy_name=galaxy_name,
-                binning_type="Radial",
-                bin_radii=bin_radii,
-                center_x=center_x,
-                center_y=center_y,
-                pa=pa,
-                ellipticity=ellipticity,
-                save_path=plots_dir / f"{galaxy_name}_RDB_binning_overlay.png"
-            )
-            
-            logger.info(f"Created RDB binning overlay plot")
-            
-        except Exception as e:
-            logger.warning(f"Error creating RDB binning overlay plot: {e}")
-            import traceback
-            logger.debug(traceback.format_exc())
-            plt.close("all")  # Close all figures in case of error
                 
     except Exception as e:
         logger.error(f"Error in create_rdb_plots: {str(e)}")

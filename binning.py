@@ -1049,7 +1049,7 @@ def calculate_radial_bins(
     ellipticity=0,
     n_rings=10,
     log_spacing=False,
-    r_galaxy=None  # New parameter to use pre-calculated R_galaxy
+    r_galaxy=None  # Pre-calculated physical radius
 ):
     """
     Calculate radial bins with improved error handling and proper centering
@@ -1089,16 +1089,26 @@ def calculate_radial_bins(
             # Original calculation method
             # Determine the center if not provided
             if center_x is None or center_y is None:
-                # Use the center of the IFU field (geometric center)
-                x_min, x_max = np.min(x[np.isfinite(x)]), np.max(x[np.isfinite(x)])
-                y_min, y_max = np.min(y[np.isfinite(y)]), np.max(y[np.isfinite(y)])
-
-                if center_x is None:
-                    center_x = (x_min + x_max) / 2.0
-                if center_y is None:
-                    center_y = (y_min + y_max) / 2.0
-
-                logger.info(f"Using IFU center as bin center: ({center_x:.2f}, {center_y:.2f})")
+                # Use the more robust median of valid positions
+                valid_x = x[np.isfinite(x)]
+                valid_y = y[np.isfinite(y)]
+                
+                if len(valid_x) > 0 and len(valid_y) > 0:
+                    if center_x is None:
+                        center_x = np.median(valid_x)
+                    if center_y is None:
+                        center_y = np.median(valid_y)
+                else:
+                    # Fallback to simple estimation
+                    x_min, x_max = np.nanmin(x), np.nanmax(x)
+                    y_min, y_max = np.nanmin(y), np.nanmax(y)
+                    
+                    if center_x is None:
+                        center_x = (x_min + x_max) / 2.0
+                    if center_y is None:
+                        center_y = (y_min + y_max) / 2.0
+                
+                logger.info(f"Using center coordinates: ({center_x:.2f}, {center_y:.2f})")
 
             # Convert position angle to radians
             pa_rad = np.radians(pa)
@@ -1111,8 +1121,12 @@ def calculate_radial_bins(
             x_rot = dx * np.cos(pa_rad) + dy * np.sin(pa_rad)
             y_rot = -dx * np.sin(pa_rad) + dy * np.cos(pa_rad)
 
-            # Apply ellipticity
-            y_rot_scaled = y_rot / (1 - ellipticity) if ellipticity < 1 else y_rot
+            # Apply ellipticity with error handling
+            if ellipticity < 1:
+                y_rot_scaled = y_rot / (1 - ellipticity)
+            else:
+                y_rot_scaled = y_rot * 20  # Use a high but finite value for extreme cases
+                logger.warning("Ellipticity too high, using fallback scaling")
 
             # Calculate radius
             radius = np.sqrt(x_rot**2 + y_rot_scaled**2)
@@ -1127,10 +1141,22 @@ def calculate_radial_bins(
             bin_radii = np.array([0.0])
             return bin_num, bin_edges, bin_radii
 
-        # Calculate bin edges
-        max_radius = np.nanmax(radius[valid_mask])
-        min_radius = np.nanmin(radius[valid_mask])
-
+        # Calculate bin edges more robustly using percentiles
+        # This helps avoid outliers affecting the binning
+        valid_radii = radius[valid_mask]
+        
+        # Use robust range: 1st percentile to 95th percentile
+        # This can avoid extreme outliers while keeping most of the galaxy
+        min_radius = np.percentile(valid_radii, 1)
+        max_radius = np.percentile(valid_radii, 95)
+        
+        # Add margin to max_radius to ensure we cover enough area
+        max_radius *= 1.1  # Add 10% margin
+        
+        # Ensure min_radius is not too close to 0 for log spacing
+        if log_spacing and min_radius < max_radius / 1000:
+            min_radius = max_radius / 1000
+            
         # Ensure we have a reasonable range
         if (
             max_radius <= min_radius
@@ -1152,25 +1178,39 @@ def calculate_radial_bins(
             )
             n_rings = new_n_rings
 
-        if log_spacing:
-            # Logarithmic spacing (avoid log(0) issues)
-            min_log = np.log10(max(min_radius, max_radius / 1000))
+        # Create full bin edges array including 0
+        if log_spacing and min_radius > 0:
+            # Logarithmic spacing 
+            min_log = np.log10(min_radius)
             max_log = np.log10(max_radius)
-            bin_edges = np.logspace(min_log, max_log, n_rings + 1)[1:]
+            bin_edges_full = np.hstack([
+                [0],  # Include 0 as the first edge
+                np.logspace(min_log, max_log, n_rings)
+            ])
         else:
             # Linear spacing
-            bin_edges = np.linspace(min_radius, max_radius, n_rings + 1)[1:]
+            bin_edges_full = np.hstack([
+                [0],  # Include 0 as the first edge
+                np.linspace(min_radius, max_radius, n_rings)
+            ])
+
+        # Bin edges are everything except the first edge (0)
+        bin_edges = bin_edges_full[1:]
 
         # Assign bin numbers
         bin_num = np.zeros_like(radius, dtype=int)
-
+        
+        # Assign all invalid points to bin 0
+        bin_num[~valid_mask] = 0
+        
+        # For valid points, determine bin by radius
         for i in range(n_rings):
             if i == 0:
                 # First bin: all points with radius <= first edge
-                mask = radius <= bin_edges[i]
+                mask = valid_mask & (radius <= bin_edges[i])
             else:
                 # Other bins: points with radius between previous and current edge
-                mask = (radius > bin_edges[i - 1]) & (radius <= bin_edges[i])
+                mask = valid_mask & (radius > bin_edges[i - 1]) & (radius <= bin_edges[i])
 
             bin_num[mask] = i
 
@@ -1205,15 +1245,10 @@ def calculate_radial_bins(
                     new_bin_num[bin_num == old_bin] = new_bin
 
             # Create new bin_edges by only using edges that define non-empty bins
-            if log_spacing:
-                # Recreate with fewer bins but same range
-                new_bin_edges = np.logspace(min_log, max_log, len(non_empty_bins) + 1)[
-                    1:
-                ]
-            else:
-                new_bin_edges = np.linspace(
-                    min_radius, max_radius, len(non_empty_bins) + 1
-                )[1:]
+            new_edges_indices = np.sort(np.concatenate([[0], non_empty_bins, non_empty_bins + 1]))
+            new_edges_indices = np.unique(new_edges_indices)
+            new_edges_indices = new_edges_indices[new_edges_indices < len(bin_edges_full)]
+            new_bin_edges = bin_edges_full[new_edges_indices[1:]]  # Skip first edge (0)
 
             # Update values
             bin_num = new_bin_num
@@ -1227,8 +1262,8 @@ def calculate_radial_bins(
         for i in range(n_rings):
             mask = bin_num == i
             if np.any(mask & valid_mask):
-                # Use mean radius of points in bin
-                bin_radii[i] = np.nanmean(radius[mask & valid_mask])
+                # Use median radius of points in bin (more robust than mean)
+                bin_radii[i] = np.nanmedian(radius[mask & valid_mask])
             else:
                 # Use middle of bin edges if no points (shouldn't happen after our fixes)
                 bin_radii[i] = 0.5 * (bin_edges_full[i] + bin_edges_full[i + 1])
