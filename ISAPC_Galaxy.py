@@ -369,3 +369,5 @@ if __name__ == "__main__":
         # Process all galaxies
         logger.info(f"Processing all {len(GALAXIES)} galaxies")
         run_galaxy_pipeline(GALAXIES, args)
+
+# python ISAPC_Galaxy.py --template ./templates/spectra_emiles_9.0.npz --output-dir ./output --mode ALL --target-snr 20 --n-jobs 12 --physical-radius 

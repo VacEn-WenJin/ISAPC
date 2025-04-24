@@ -319,6 +319,45 @@ def run_vnb_analysis(args, cube, p2p_results=None):
 
     logger.info(f"Stellar kinematics completed in {time.time() - start_time:.1f} seconds")
 
+    # Extract stellar population parameters
+    stellar_pop_params = None
+    if hasattr(cube, "_bin_weights") and cube._bin_weights is not None:
+        try:
+            logger.info("Extracting stellar population parameters for bins...")
+            start_time = time.time()
+
+            # Initialize weight parser
+            from stellar_population import WeightParser
+            weight_parser = WeightParser(args.template)
+
+            # Prepare arrays for physical parameters
+            n_bins = len(bin_indices)
+            stellar_pop_params = {
+                "log_age": np.full(n_bins, np.nan),
+                "age": np.full(n_bins, np.nan),
+                "metallicity": np.full(n_bins, np.nan),
+            }
+
+            # Process weights for each bin
+            weights = cube._bin_weights
+            
+            for bin_idx in range(n_bins):
+                try:
+                    bin_weights = weights[:, bin_idx]
+                    
+                    # Skip bins with invalid weights
+                    if np.sum(bin_weights) > 0 and np.all(np.isfinite(bin_weights)):
+                        params = weight_parser.get_physical_params(bin_weights)
+                        for param_name, value in params.items():
+                            stellar_pop_params[param_name][bin_idx] = value
+                except Exception as e:
+                    logger.debug(f"Error calculating stellar params for bin {bin_idx}: {e}")
+
+            logger.info(f"Stellar population parameters extracted in {time.time() - start_time:.1f} seconds")
+        except Exception as e:
+            logger.error(f"Failed to extract stellar population parameters: {e}")
+            stellar_pop_params = None
+
     # Fit emission lines if requested
     emission_result = None
     if not hasattr(args, "no_emission") or not args.no_emission:
@@ -420,6 +459,10 @@ def run_vnb_analysis(args, cube, p2p_results=None):
             "pixelsize_y": cube._pxl_size_y,
         },
     }
+    
+    # Add stellar population parameters if available
+    if stellar_pop_params is not None:
+        vnb_results["stellar_population"] = stellar_pop_params
 
     # Add emission line results if available
     if emission_result is not None:
@@ -724,6 +767,101 @@ def create_vnb_plots(cube, vnb_results, galaxy_name, plots_dir, args):
                 logger.warning(f"Error creating kinematics plots: {e}")
                 plt.close("all")
                 
+        # Create stellar population plots if available
+        if "stellar_population" in vnb_results:
+            try:
+                # Create directory for stellar population plots
+                stellar_dir = plots_dir / "stellar_population"
+                stellar_dir.mkdir(exist_ok=True, parents=True)
+                
+                bin_num = vnb_results["binning"]["bin_num"]
+                
+                # Reshape to 2D for plotting if needed
+                if isinstance(bin_num, np.ndarray) and bin_num.ndim == 1:
+                    if len(bin_num) == cube._n_x * cube._n_y:
+                        bin_num_2d = bin_num.reshape(cube._n_y, cube._n_x)
+                    else:
+                        # Handle case where bin_num length doesn't match cube dimensions
+                        logger.warning(f"bin_num length ({len(bin_num)}) doesn't match cube dimensions ({cube._n_y}x{cube._n_x})")
+                        bin_num_2d = np.zeros((cube._n_y, cube._n_x), dtype=int)
+                        valid_len = min(len(bin_num), cube._n_y * cube._n_x)
+                        bin_num_2d.flat[:valid_len] = bin_num[:valid_len]
+                else:
+                    bin_num_2d = bin_num
+                
+                # Process each parameter
+                for param_name, param_values in vnb_results["stellar_population"].items():
+                    # Convert to numpy array if needed
+                    param_values = np.asarray(param_values, dtype=float)
+                    
+                    # Define parameter info
+                    param_info = {
+                        "log_age": {"title": "Log Age [yr]", "cmap": "plasma"},
+                        "age": {"title": "Age [Gyr]", "cmap": "plasma", "scale_factor": 1e-9},
+                        "metallicity": {"title": "Metallicity [Z/H]", "cmap": "viridis"}
+                    }
+                    
+                    # Get parameter settings
+                    info = param_info.get(param_name, {"title": param_name, "cmap": "viridis"})
+                    
+                    # Apply scale factor if needed
+                    values_to_plot = param_values
+                    if "scale_factor" in info:
+                        values_to_plot = param_values * info["scale_factor"]
+                    
+                    # Create bin map with this parameter
+                    fig, ax = plt.subplots(figsize=(10, 8))
+                    
+                    # Plot the map
+                    visualization.plot_bin_map(
+                        bin_num_2d,
+                        values_to_plot,
+                        ax=ax,
+                        cmap=info["cmap"],
+                        title=f"{galaxy_name} - Stellar {info['title']}",
+                        colorbar_label=info["title"],
+                        physical_scale=True,
+                        pixel_size=(cube._pxl_size_x, cube._pxl_size_y),
+                        wcs=cube._wcs if hasattr(cube, "_wcs") else None
+                    )
+                    
+                    visualization.standardize_figure_saving(
+                        fig, stellar_dir / f"{galaxy_name}_VNB_{param_name}.png"
+                    )
+                    plt.close(fig)
+                    
+                    # Create radial profile if distances available
+                    if "distance" in vnb_results and "bin_distances" in vnb_results["distance"]:
+                        try:
+                            bin_distances = vnb_results["distance"]["bin_distances"]
+                            
+                            # Sort bins by distance from center
+                            sorted_indices = np.argsort(bin_distances)
+                            sorted_distances = bin_distances[sorted_indices]
+                            sorted_values = values_to_plot[sorted_indices]
+                            
+                            # Create profile plot
+                            fig, ax = plt.subplots(figsize=(10, 6))
+                            ax.plot(sorted_distances, sorted_values, 'o-')
+                            ax.set_xlabel('Radius (arcsec)')
+                            ax.set_ylabel(info["title"])
+                            ax.set_title(f'{galaxy_name} - Stellar {info["title"]} Profile')
+                            ax.grid(True, alpha=0.3)
+                            
+                            visualization.standardize_figure_saving(
+                                fig, stellar_dir / f"{galaxy_name}_VNB_{param_name}_profile.png"
+                            )
+                            plt.close(fig)
+                        except Exception as e:
+                            logger.warning(f"Error creating profile for parameter {param_name}: {e}")
+                            plt.close('all')
+                    
+            except Exception as e:
+                logger.warning(f"Error creating stellar population plots: {e}")
+                import traceback
+                logger.debug(traceback.format_exc())
+                plt.close('all')
+                
         # Create emission line plots if available
         if "emission" in vnb_results:
             try:
@@ -819,7 +957,7 @@ def create_vnb_plots(cube, vnb_results, galaxy_name, plots_dir, args):
                                             else:
                                                 ax.set_ylabel('Dispersion (km/s)')
                                                 
-                                            ax.set_title(f'{galaxy_name} - {line_name} {field_name.capitalize()} Radial Profile')
+                                            ax.set_title(f'{galaxy_name} - {line_name} {field_name.capitalize()} Profile')
                                             ax.grid(True, alpha=0.3)
                                             
                                             visualization.standardize_figure_saving(
