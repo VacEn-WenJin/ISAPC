@@ -2200,7 +2200,7 @@ class MUSECube:
             }
 
     def calculate_spectral_indices(
-        self, indices_list=None, n_jobs=-1, verbose=False, use_binned=None
+        self, indices_list=None, n_jobs=-1, verbose=False, use_binned=None, save_mode=None, save_path=None
     ):
         """
         Universal spectral indices calculation for both pixel-by-pixel and binned data
@@ -2231,7 +2231,7 @@ class MUSECube:
             and self._binned_spectra is not None
         ):
             return self._calculate_spectral_indices_binned(
-                indices_list, n_jobs, verbose
+                indices_list, n_jobs, verbose, save_mode=save_mode, save_path=save_path
             )
         else:
             # Original pixel-by-pixel implementation
@@ -2466,7 +2466,7 @@ class MUSECube:
             return {}
 
     def _calculate_spectral_indices_binned(
-        self, indices_list=None, n_jobs=-1, verbose=False
+        self, indices_list=None, n_jobs=-1, verbose=False, save_mode='None', save_path='./'
     ):
         """
         Calculate spectral indices for binned data using the same approach as pixel-to-pixel mode
@@ -2627,6 +2627,7 @@ class MUSECube:
                                 gas_velocity_correction=gas_velocity,  # Gas velocity correction - key change
                                 continuum_mode="auto",  # Auto select continuum mode
                             )
+                            calculator.plot_all_lines(mode=save_mode, save_path=save_path, number=bin_idx, show_index=True)
                         except Exception as e:
                             if verbose:
                                 logger.warning(

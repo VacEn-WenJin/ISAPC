@@ -401,6 +401,8 @@ def run_vnb_analysis(args, cube, p2p_results=None):
             indices_result = cube.calculate_spectral_indices(
                 indices_list=indices_list,
                 n_jobs=args.n_jobs,
+                save_mode='VNB',
+                save_path=plots_dir
             )
             
             logger.info(f"Spectral indices calculation completed in {time.time() - start_idx_time:.1f} seconds")
@@ -457,6 +459,9 @@ def run_vnb_analysis(args, cube, p2p_results=None):
             "bin_distances": bin_distances,
             "pixelsize_x": cube._pxl_size_x,
             "pixelsize_y": cube._pxl_size_y,
+        },
+        "meta_data":{
+            metadata
         },
     }
     

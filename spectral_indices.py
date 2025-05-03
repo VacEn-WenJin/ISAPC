@@ -1068,6 +1068,7 @@ class LineIndexCalculator:
                 # Save figure
                 fig.savefig(filepath, format="pdf", bbox_inches="tight")
                 print(f"Figure saved as: {filepath}")
+                fig.close()
             except Exception as e:
                 self._warn(f"Error saving figure: {str(e)}")
 
