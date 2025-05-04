@@ -461,7 +461,22 @@ def run_vnb_analysis(args, cube, p2p_results=None):
             "pixelsize_y": cube._pxl_size_y,
         },
         "meta_data":{
-            metadata
+            "nx": cube._n_x,
+            "ny": cube._n_y,
+            "target_snr": target_snr,
+            "sn": sn,
+            "n_pixels": n_pixels,
+            "scale": scale,
+            "time": time.time(),
+            "galaxy_name": galaxy_name,
+            "analysis_type": "VNB",
+            "pixelsize_x": cube._pxl_size_x,
+            "pixelsize_y": cube._pxl_size_y,
+            "redshift": cube._redshift if hasattr(cube, "_redshift") else 0.0,
+            "bin_x": x_gen,
+            "bin_y": y_gen,
+            "bin_xbar": x_bar,
+            "bin_ybar": y_bar,
         },
     }
     

@@ -508,7 +508,7 @@ class LineIndexCalculator:
         """
         # Validate mode and number parameters
         if mode is not None and number is not None:
-            valid_modes = ["P2P", "VNB", "RNB", "MUSE"]
+            valid_modes = ["P2P", "VNB", "RDB", "MUSE"]
             if mode not in valid_modes:
                 self._warn(f"Mode must be one of {valid_modes}, got {mode}")
                 mode = None
@@ -1057,6 +1057,7 @@ class LineIndexCalculator:
 
         # Save figure if path provided
         if save_path and mode_title:
+            # print('!')
             # Ensure save_path exists
             if not os.path.exists(save_path):
                 os.makedirs(save_path)

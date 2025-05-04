@@ -2628,6 +2628,7 @@ class MUSECube:
                                 continuum_mode="auto",  # Auto select continuum mode
                             )
                             calculator.plot_all_lines(mode=save_mode, save_path=save_path, number=bin_idx, show_index=True)
+                            # print(save_path)
                         except Exception as e:
                             if verbose:
                                 logger.warning(

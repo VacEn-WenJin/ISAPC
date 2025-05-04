@@ -342,13 +342,15 @@ def run_rdb_analysis(args, cube, p2p_results=None):
             indices_list = None
             if hasattr(args, "configured_indices"):
                 indices_list = args.configured_indices
-                
+            
+            # print(indices_list)
             # Calculate indices
             indices_result = cube.calculate_spectral_indices(
                 indices_list=indices_list,
                 n_jobs=args.n_jobs,
                 save_mode='RDB',
-                save_path=plots_dir
+                save_path=plots_dir,
+                verbose=True
             )
             
             logger.info(f"Spectral indices calculation completed in {time.time() - start_idx_time:.1f} seconds")
@@ -413,7 +415,22 @@ def run_rdb_analysis(args, cube, p2p_results=None):
             "pixelsize_y": cube._pxl_size_y,
         },
         "meta_data":{
-            metadata
+            "nx": cube._n_x,
+            "ny": cube._n_y,
+            "n_rings": n_rings,
+            "pa": pa,
+            "ellipticity": ellipticity,
+            "center_x": center_x if center_x is not None else cube._n_x // 2,
+            "center_y": center_y if center_y is not None else cube._n_y // 2,
+            "log_spacing": log_spacing,
+            "bin_edges": bin_edges,
+            "bin_radii": bin_radii,
+            "time": time.time(),
+            "galaxy_name": galaxy_name,
+            "analysis_type": "RDB",
+            "pixelsize_x": cube._pxl_size_x,
+            "pixelsize_y": cube._pxl_size_y,
+            "redshift": cube._redshift if hasattr(cube, "_redshift") else 0.0,
         },
     }
     
