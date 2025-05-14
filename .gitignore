@@ -3,6 +3,9 @@ output
 Grid
 *.png
 *.html
+*.zip
+*.yaml
+*.ipynb
 ### VisualStudioCode template
 .vscode/*
 !.vscode/settings.json

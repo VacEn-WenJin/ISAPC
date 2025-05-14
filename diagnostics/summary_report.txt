@@ -1,0 +1,82 @@
+GALAXY DIAGNOSTICS SUMMARY REPORT
+=================================
+
+Galaxy     Flux Map   Binning         Type       Re         Issues    
+----------------------------------------------------------------------
+VCC0308    Missing    Missing         Unknown    Missing    1         
+VCC0667    Missing    Missing         Unknown    Missing    1         
+VCC0990    Missing    Missing         Unknown    Missing    1         
+VCC1048    Missing    Missing         Unknown    Missing    1         
+VCC1154    Missing    Missing         Unknown    Missing    1         
+VCC1193    Missing    Missing         Unknown    Missing    1         
+VCC1368    Missing    Missing         Unknown    Missing    1         
+VCC1410    Missing    Missing         Unknown    Missing    1         
+VCC1454    Missing    Missing         Unknown    Missing    1         
+VCC1499    Missing    Missing         Unknown    Missing    1         
+VCC1549    Missing    Missing         Unknown    Missing    1         
+VCC1588    Missing    Missing         Unknown    Missing    1         
+VCC1695    Missing    Missing         Unknown    Missing    1         
+VCC1833    Missing    Missing         Unknown    Missing    1         
+VCC1896    Missing    Missing         Unknown    Missing    1         
+VCC1902    Missing    Missing         Unknown    Missing    1         
+VCC1910    Missing    Missing         Unknown    Missing    1         
+VCC1949    Missing    Missing         Unknown    Missing    1         
+
+
+DETAILED ISSUES BY GALAXY
+========================
+
+VCC0308:
+  1. Error running diagnostic
+
+VCC0667:
+  1. Error running diagnostic
+
+VCC0990:
+  1. Error running diagnostic
+
+VCC1048:
+  1. Error running diagnostic
+
+VCC1154:
+  1. Error running diagnostic
+
+VCC1193:
+  1. Error running diagnostic
+
+VCC1368:
+  1. Error running diagnostic
+
+VCC1410:
+  1. Error running diagnostic
+
+VCC1454:
+  1. Error running diagnostic
+
+VCC1499:
+  1. Error running diagnostic
+
+VCC1549:
+  1. Error running diagnostic
+
+VCC1588:
+  1. Error running diagnostic
+
+VCC1695:
+  1. Error running diagnostic
+
+VCC1833:
+  1. Error running diagnostic
+
+VCC1896:
+  1. Error running diagnostic
+
+VCC1902:
+  1. Error running diagnostic
+
+VCC1910:
+  1. Error running diagnostic
+
+VCC1949:
+  1. Error running diagnostic
+

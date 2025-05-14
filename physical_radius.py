@@ -226,6 +226,75 @@ def calculate_galaxy_radius(flux_2d, pixel_size_x=0.2, pixel_size_y=None):
         }
         return R_galaxy, ellipse_params
 
+
+def calculate_effective_radius(flux_2d, R_galaxy, ellipse_params, pixel_size_x=0.2, pixel_size_y=None):
+    """
+    Calculate the effective radius (Re) containing 50% of the galaxy light
+    
+    Parameters
+    ----------
+    flux_2d : numpy.ndarray
+        2D array of flux values
+    R_galaxy : numpy.ndarray
+        2D array of elliptical radius values from calculate_galaxy_radius
+    ellipse_params : dict
+        Dictionary with ellipse parameters from calculate_galaxy_radius
+    pixel_size_x : float, default=0.2
+        Pixel size in x-direction (arcsec)
+    pixel_size_y : float, optional
+        Pixel size in y-direction (arcsec), defaults to pixel_size_x
+        
+    Returns
+    -------
+    float
+        Effective radius in arcseconds
+    """
+    if pixel_size_y is None:
+        pixel_size_y = pixel_size_x
+        
+    try:
+        # Create a mask for valid flux values
+        valid_mask = np.isfinite(flux_2d) & (flux_2d > 0)
+        
+        if np.sum(valid_mask) == 0:
+            logger.warning("No valid flux values found, using default effective radius")
+            return 5.0  # Default value in arcseconds
+        
+        # Get total flux and sort pixels by radius
+        total_flux = np.sum(flux_2d[valid_mask])
+        
+        # Create sorted arrays of radius and corresponding flux
+        R_valid = R_galaxy[valid_mask]
+        flux_valid = flux_2d[valid_mask]
+        
+        # Sort by radius
+        sort_idx = np.argsort(R_valid)
+        R_sorted = R_valid[sort_idx]
+        flux_sorted = flux_valid[sort_idx]
+        
+        # Calculate cumulative flux
+        cumulative_flux = np.cumsum(flux_sorted)
+        cumulative_flux_fraction = cumulative_flux / total_flux
+        
+        # Find effective radius (where cumulative flux fraction reaches 0.5)
+        half_light_idx = np.searchsorted(cumulative_flux_fraction, 0.5)
+        
+        # If half-light index is valid, get Re
+        if half_light_idx < len(R_sorted):
+            Re = R_sorted[half_light_idx]
+        else:
+            # Fallback to maximum radius
+            logger.warning("Half-light index out of range, using maximum radius")
+            Re = np.max(R_valid)
+        
+        return Re
+        
+    except Exception as e:
+        logger.error(f"Error calculating effective radius: {str(e)}")
+        # Return a reasonable default value
+        return 5.0  # Default value in arcseconds
+
+
 def visualize_galaxy_radius(flux_2d, R_galaxy, ellipse_params, output_path=None):
     """
     Visualize the elliptical radius calculation

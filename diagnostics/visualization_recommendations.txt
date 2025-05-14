@@ -1,0 +1,57 @@
+VISUALIZATION RECOMMENDATIONS
+============================
+
+VCC0308:
+  - Be careful with bin labeling as there are few bins
+
+VCC0667:
+  - Be careful with bin labeling as there are few bins
+
+VCC0990:
+  - Be careful with bin labeling as there are few bins
+
+VCC1048:
+  - Be careful with bin labeling as there are few bins
+
+VCC1154:
+  - Be careful with bin labeling as there are few bins
+
+VCC1193:
+  - Be careful with bin labeling as there are few bins
+
+VCC1368:
+  - Be careful with bin labeling as there are few bins
+
+VCC1410:
+  - Be careful with bin labeling as there are few bins
+
+VCC1454:
+  - Be careful with bin labeling as there are few bins
+
+VCC1499:
+  - Be careful with bin labeling as there are few bins
+
+VCC1549:
+  - Be careful with bin labeling as there are few bins
+
+VCC1588:
+  - Be careful with bin labeling as there are few bins
+
+VCC1695:
+  - Be careful with bin labeling as there are few bins
+
+VCC1833:
+  - Be careful with bin labeling as there are few bins
+
+VCC1896:
+  - Be careful with bin labeling as there are few bins
+
+VCC1902:
+  - Be careful with bin labeling as there are few bins
+
+VCC1910:
+  - Be careful with bin labeling as there are few bins
+
+VCC1949:
+  - Be careful with bin labeling as there are few bins
+

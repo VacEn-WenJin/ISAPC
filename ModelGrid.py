@@ -1019,8 +1019,8 @@ class SpectrumIndexPlotter:
         # 确保有合理的范围值
         if x_range is None or y_range is None:
             logger.warning("无法自动确定坐标轴范围，使用默认值")
-            x_range = x_range or (1.0, 5.0)  # 默认值
-            y_range = y_range or (1.0, 3.0)  # 默认值
+            x_range = x_range or (0, 6.0)  # 默认值
+            y_range = y_range or (0.0, 4.0)  # 默认值
         
         print(f"坐标轴范围: X={x_range}, Y={y_range}")
         
@@ -1281,15 +1281,139 @@ def main():
     
     # 设置颜色参数
     color_params = [
-        {'column': 'R', 'label': 'R', 'range': (0, 30)},
-        {'column': 'Age', 'label': 'Age', 'range': (0, 4)},
-        {'column': 'MOH', 'label': r'[M/H]', 'range': (-1.2, 0)},
+        {'column': 'R', 'label': 'R', 'range': (0, 45)},
+        {'column': 'Age', 'label': 'Age', 'range': (0, 6)},
+        {'column': 'MOH', 'label': r'[M/H]', 'range': (-1.5, 0.5)},
     ]
     
     # 为每个星系创建图表
     for galaxy_name in galaxies:
         print(f"处理星系: {galaxy_name}")
         
+        try:
+            # 读取星系数据
+            p2p_data, vnb_data, rdb_data = Read_Galaxy(galaxy_name)
+            
+            # 合并数据为DataFrame，应用信噪比过滤
+            galaxy_df = combine_galaxy_data(p2p_data, vnb_data, rdb_data, snr_threshold=snr_threshold)
+            
+            # 创建绘图对象
+            plotter = SpectrumIndexPlotter()
+            
+            # 使用增强版绘图函数
+            fig = plotter.plot_index_grid(
+                data_file=data_file,
+                x_index='Hbeta',
+                y_index='Mgb',
+                x_range=x_range,
+                y_range=y_range,
+                ages=ages,
+                data_df=galaxy_df,
+                data_name=None,  # 使用mode_data_names替代
+                color_params=color_params,
+                show_errorbar=False,
+                layout=(1,3),
+                
+                base_size=7,           # 基础大小
+                height_scale=1.6,      # 高度缩放
+                width_ratios=0.9,      # 宽度比例
+                wspace=0.25,           # 水平间距
+                hspace=0.3,            # 垂直间距
+                dpi=300,
+                hist_width="15%",      # 直方图宽度
+                cbar_width="5%",       # colorbar宽度
+                hist_pad=0.05,         # 间距
+                cbar_pad=0.05,         # 间距
+                fig_scale=1.5,         # 整体缩放
+                
+                # 多模式参数
+                mode_data_names=mode_data_names,
+                p2p_size=15,           # P2P数据点使用'.'
+                p2p_alpha=0.7,         # P2P数据点透明度
+                vnb_size=80,           # VNB数据点使用'+'
+                vnb_alpha=0.85,        
+                rdb_size=80,           # RDB数据点使用'x'
+                rdb_alpha=0.85,
+                text_size_scale=1.4,   # 减小文字大小
+                separate_histograms=True  # 使用分离的直方图
+            )
+            
+            # 调整整体布局，解决排版问题
+            plt.tight_layout(rect=[0, 0, 1, 0.95])  # 避免标题与子图重叠
+            
+            # 保存图形
+            output_path = f'{galaxy_name}_spectral_indices_comparison_0.png'
+            fig.savefig(output_path, dpi=300, bbox_inches='tight')
+            print(f"已保存图表: {output_path}")
+            
+            # 关闭图形以释放内存
+            plt.close(fig)
+            
+        except Exception as e:
+            print(f"处理星系 {galaxy_name} 时出错: {e}")
+            continue
+        try:
+            # 读取星系数据
+            p2p_data, vnb_data, rdb_data = Read_Galaxy(galaxy_name)
+            
+            # 合并数据为DataFrame，应用信噪比过滤
+            galaxy_df = combine_galaxy_data(p2p_data, vnb_data, rdb_data, snr_threshold=snr_threshold)
+            
+            # 创建绘图对象
+            plotter = SpectrumIndexPlotter()
+            
+            # 使用增强版绘图函数
+            fig = plotter.plot_index_grid(
+                data_file=data_file,
+                x_index='Hbeta',
+                y_index='Fe5015',
+                x_range=x_range,
+                y_range=y_range,
+                ages=ages,
+                data_df=galaxy_df,
+                data_name=None,  # 使用mode_data_names替代
+                color_params=color_params,
+                show_errorbar=False,
+                layout=(1,3),
+                
+                base_size=7,           # 基础大小
+                height_scale=1.6,      # 高度缩放
+                width_ratios=0.9,      # 宽度比例
+                wspace=0.25,           # 水平间距
+                hspace=0.3,            # 垂直间距
+                dpi=300,
+                hist_width="15%",      # 直方图宽度
+                cbar_width="5%",       # colorbar宽度
+                hist_pad=0.05,         # 间距
+                cbar_pad=0.05,         # 间距
+                fig_scale=1.5,         # 整体缩放
+                
+                # 多模式参数
+                mode_data_names=mode_data_names,
+                p2p_size=15,           # P2P数据点使用'.'
+                p2p_alpha=0.7,         # P2P数据点透明度
+                vnb_size=80,           # VNB数据点使用'+'
+                vnb_alpha=0.85,        
+                rdb_size=80,           # RDB数据点使用'x'
+                rdb_alpha=0.85,
+                text_size_scale=1.4,   # 减小文字大小
+                separate_histograms=True  # 使用分离的直方图
+            )
+            
+            # 调整整体布局，解决排版问题
+            plt.tight_layout(rect=[0, 0, 1, 0.95])  # 避免标题与子图重叠
+            
+            # 保存图形
+            output_path = f'{galaxy_name}_spectral_indices_comparison_1.png'
+            fig.savefig(output_path, dpi=300, bbox_inches='tight')
+            print(f"已保存图表: {output_path}")
+            
+            # 关闭图形以释放内存
+            plt.close(fig)
+            
+        except Exception as e:
+            print(f"处理星系 {galaxy_name} 时出错: {e}")
+            continue
         try:
             # 读取星系数据
             p2p_data, vnb_data, rdb_data = Read_Galaxy(galaxy_name)
@@ -1342,7 +1466,7 @@ def main():
             plt.tight_layout(rect=[0, 0, 1, 0.95])  # 避免标题与子图重叠
             
             # 保存图形
-            output_path = f'{galaxy_name}_spectral_indices_comparison.png'
+            output_path = f'{galaxy_name}_spectral_indices_comparison_2.png'
             fig.savefig(output_path, dpi=300, bbox_inches='tight')
             print(f"已保存图表: {output_path}")
             
@@ -1352,6 +1476,8 @@ def main():
         except Exception as e:
             print(f"处理星系 {galaxy_name} 时出错: {e}")
             continue
+
+        
 
 if __name__ == "__main__":
     main()

@@ -161,16 +161,18 @@ def run_vnb_analysis(args, cube, p2p_results=None):
         safe_target_snr = target_snr
 
     # Calculate physical radius if requested
+    r_galaxy = None
     ellipse_params = None
+    Re_arcsec = None
     if use_physical_radius:
         try:
-            from physical_radius import calculate_galaxy_radius
+            from physical_radius import calculate_galaxy_radius, calculate_effective_radius
             
             # Create flux map for radius calculation
             flux_2d = np.nanmedian(cube._cube_data, axis=0)
             
-            # Calculate physical radius
-            R_galaxy, ellipse_params = calculate_galaxy_radius(
+            # Calculate physical radius and ellipse parameters
+            r_galaxy, ellipse_params = calculate_galaxy_radius(
                 flux_2d,
                 pixel_size_x=cube._pxl_size_x,
                 pixel_size_y=cube._pxl_size_y
@@ -180,8 +182,22 @@ def run_vnb_analysis(args, cube, p2p_results=None):
                         f"ε={ellipse_params['ellipticity']:.2f}")
                         
             # Store for later use
-            cube._physical_radius = R_galaxy
+            cube._physical_radius = r_galaxy
             cube._ellipse_params = ellipse_params
+            
+            # Calculate effective radius (Re)
+            Re_arcsec = calculate_effective_radius(
+                flux_2d,
+                r_galaxy,
+                ellipse_params,
+                pixel_size_x=cube._pxl_size_x,
+                pixel_size_y=cube._pxl_size_y
+            )
+            
+            logger.info(f"Calculated effective radius Re = {Re_arcsec:.2f} arcsec")
+                        
+            # Store for later use
+            cube._effective_radius = Re_arcsec
             
         except Exception as e:
             logger.warning(f"Error calculating physical radius: {e}")
@@ -273,6 +289,7 @@ def run_vnb_analysis(args, cube, p2p_results=None):
     if use_physical_radius and ellipse_params is not None:
         metadata["physical_radius"] = True
         metadata["ellipse_params"] = ellipse_params
+        metadata["effective_radius"] = Re_arcsec  # Add effective radius
         if hasattr(cube, "_physical_radius"):
             metadata["R_galaxy_map"] = cube._physical_radius
 
@@ -457,6 +474,7 @@ def run_vnb_analysis(args, cube, p2p_results=None):
         },
         "distance": {
             "bin_distances": bin_distances,
+            "effective_radius": Re_arcsec,  # Add effective radius
             "pixelsize_x": cube._pxl_size_x,
             "pixelsize_y": cube._pxl_size_y,
         },
@@ -537,6 +555,8 @@ def create_vnb_plots(cube, vnb_results, galaxy_name, plots_dir, args):
         import matplotlib.pyplot as plt
         import numpy as np
         import os
+        from matplotlib.patches import Ellipse
+        from matplotlib.colors import LogNorm
         
         # Create bin map plot with physical scaling
         if "binning" in vnb_results and "bin_num" in vnb_results["binning"]:
@@ -634,6 +654,99 @@ def create_vnb_plots(cube, vnb_results, galaxy_name, plots_dir, args):
                         plt.close('all')
             except Exception as e:
                 logger.warning(f"Error creating bin map: {e}")
+                plt.close("all")
+        
+        # Create effective radius visualization
+        if "distance" in vnb_results and "effective_radius" in vnb_results["distance"]:
+            try:
+                Re = vnb_results["distance"]["effective_radius"]
+                
+                if Re is not None and Re > 0:
+                    # Get ellipse parameters if available
+                    ellipse_params = None
+                    if "meta_data" in vnb_results and "ellipse_params" in vnb_results["meta_data"]:
+                        ellipse_params = vnb_results["meta_data"]["ellipse_params"]
+                    elif hasattr(cube, "_ellipse_params"):
+                        ellipse_params = cube._ellipse_params
+                    
+                    # Create flux map
+                    flux_map = visualization.prepare_flux_map(cube)
+                    
+                    # Create figure
+                    fig, ax = plt.subplots(figsize=(10, 8))
+                    
+                    # Plot flux with log scale if possible
+                    valid_flux = flux_map[np.isfinite(flux_map) & (flux_map > 0)]
+                    if len(valid_flux) > 0:
+                        vmin = np.percentile(valid_flux, 1)
+                        vmax = np.percentile(valid_flux, 99)
+                        norm = LogNorm(vmin=max(vmin, 1e-10), vmax=vmax)
+                    else:
+                        norm = None
+                        
+                    im = ax.imshow(flux_map, origin='lower', cmap='inferno', norm=norm)
+                    plt.colorbar(im, ax=ax, label='Flux')
+                    
+                    # Draw effective radius ellipse
+                    if ellipse_params is not None:
+                        # Get center and shape parameters
+                        center_x = ellipse_params["center_x"]
+                        center_y = ellipse_params["center_y"]
+                        pa = ellipse_params["PA_degrees"]
+                        ellipticity = ellipse_params["ellipticity"]
+                        
+                        # Convert Re to pixels
+                        Re_pix = Re / cube._pxl_size_x
+                        
+                        # Draw the ellipse representing Re
+                        ell = Ellipse(
+                            (center_x, center_y),
+                            2 * Re_pix,  # Diameter
+                            2 * Re_pix * (1 - ellipticity),  # Account for ellipticity
+                            angle=pa,
+                            fill=False,
+                            edgecolor='white',
+                            linestyle='-',
+                            linewidth=2.0
+                        )
+                        ax.add_patch(ell)
+                        
+                        # Add center marker
+                        ax.plot(center_x, center_y, '+', color='white', markersize=10)
+                    else:
+                        # Use a circular Re if no ellipse parameters
+                        center_x = cube._n_x // 2
+                        center_y = cube._n_y // 2
+                        
+                        # Convert Re to pixels
+                        Re_pix = Re / cube._pxl_size_x
+                        
+                        # Draw the circle representing Re
+                        from matplotlib.patches import Circle
+                        circ = Circle(
+                            (center_x, center_y),
+                            Re_pix,  # Radius
+                            fill=False,
+                            edgecolor='white',
+                            linestyle='-',
+                            linewidth=2.0
+                        )
+                        ax.add_patch(circ)
+                        
+                        # Add center marker
+                        ax.plot(center_x, center_y, '+', color='white', markersize=10)
+                    
+                    ax.set_title(f'{galaxy_name} - Effective Radius (Re = {Re:.2f} arcsec)')
+                    
+                    visualization.standardize_figure_saving(
+                        fig, plots_dir / f"{galaxy_name}_VNB_effective_radius.png"
+                    )
+                    plt.close(fig)
+                
+            except Exception as e:
+                logger.warning(f"Error creating effective radius visualization: {e}")
+                import traceback
+                logger.debug(traceback.format_exc())
                 plt.close("all")
                 
         # Create kinematics plots
@@ -745,6 +858,74 @@ def create_vnb_plots(cube, vnb_results, galaxy_name, plots_dir, args):
                             fig, plots_dir / f"{galaxy_name}_VNB_rotation_vsigma.png"
                         )
                         plt.close(fig)
+                        
+                        # Create profiles in Re units if effective radius is available
+                        if "effective_radius" in vnb_results["distance"]:
+                            try:
+                                Re = vnb_results["distance"]["effective_radius"]
+                                
+                                if Re is not None and Re > 0:
+                                    # Create a version of distances in Re units
+                                    distances_in_Re = sorted_distances / Re
+                                    
+                                    # Velocity profile in Re units
+                                    fig, ax = plt.subplots(figsize=(10, 6))
+                                    ax.plot(distances_in_Re, sorted_velocity, 'o-', markersize=6, linewidth=1.5)
+                                    ax.set_xlabel('R/Re')
+                                    ax.set_ylabel('Velocity (km/s)')
+                                    ax.set_title(f'{galaxy_name} - Rotation Curve (Re = {Re:.2f} arcsec)')
+                                    ax.grid(True, alpha=0.3)
+                                    
+                                    # Add vertical line at Re
+                                    ax.axvline(x=1.0, color='r', linestyle='--', alpha=0.7, label='Re')
+                                    ax.legend()
+                                    
+                                    visualization.standardize_figure_saving(
+                                        fig, plots_dir / f"{galaxy_name}_VNB_velocity_vs_Re.png"
+                                    )
+                                    plt.close(fig)
+                                    
+                                    # Dispersion profile in Re units
+                                    fig, ax = plt.subplots(figsize=(10, 6))
+                                    ax.plot(distances_in_Re, sorted_dispersion, 'o-', markersize=6, linewidth=1.5)
+                                    ax.set_xlabel('R/Re')
+                                    ax.set_ylabel('Dispersion (km/s)')
+                                    ax.set_title(f'{galaxy_name} - Dispersion Profile (Re = {Re:.2f} arcsec)')
+                                    ax.grid(True, alpha=0.3)
+                                    
+                                    # Add vertical line at Re
+                                    ax.axvline(x=1.0, color='r', linestyle='--', alpha=0.7, label='Re')
+                                    ax.legend()
+                                    
+                                    visualization.standardize_figure_saving(
+                                        fig, plots_dir / f"{galaxy_name}_VNB_dispersion_vs_Re.png"
+                                    )
+                                    plt.close(fig)
+                                    
+                                    # V/σ profile in Re units
+                                    fig, ax = plt.subplots(figsize=(10, 6))
+                                    ax.plot(distances_in_Re, v_sigma, 'o-', markersize=6, linewidth=1.5)
+                                    ax.set_xlabel('R/Re')
+                                    ax.set_ylabel('|V|/σ')
+                                    ax.set_title(f'{galaxy_name} - V/σ Profile (Re = {Re:.2f} arcsec)')
+                                    ax.grid(True, alpha=0.3)
+                                    
+                                    # Add horizontal line at V/σ = 1
+                                    ax.axhline(y=1.0, color='k', linestyle='--', alpha=0.7)
+                                    
+                                    # Add vertical line at Re
+                                    ax.axvline(x=1.0, color='r', linestyle='--', alpha=0.7, label='Re')
+                                    ax.legend()
+                                    
+                                    visualization.standardize_figure_saving(
+                                        fig, plots_dir / f"{galaxy_name}_VNB_vsigma_vs_Re.png"
+                                    )
+                                    plt.close(fig)
+                                    
+                            except Exception as e:
+                                logger.warning(f"Error creating profiles in Re units: {e}")
+                                plt.close('all')
+                        
                     except Exception as e:
                         logger.warning(f"Error creating rotation curve plot: {e}")
                         plt.close('all')
@@ -872,6 +1053,37 @@ def create_vnb_plots(cube, vnb_results, galaxy_name, plots_dir, args):
                                 fig, stellar_dir / f"{galaxy_name}_VNB_{param_name}_profile.png"
                             )
                             plt.close(fig)
+                            
+                            # Create profile in Re units if effective radius is available
+                            if "effective_radius" in vnb_results["distance"]:
+                                try:
+                                    Re = vnb_results["distance"]["effective_radius"]
+                                    
+                                    if Re is not None and Re > 0:
+                                        # Create a version of distances in Re units
+                                        distances_in_Re = sorted_distances / Re
+                                        
+                                        # Create profile plot in Re units
+                                        fig, ax = plt.subplots(figsize=(10, 6))
+                                        ax.plot(distances_in_Re, sorted_values, 'o-', markersize=6, linewidth=1.5)
+                                        ax.set_xlabel('R/Re')
+                                        ax.set_ylabel(info["title"])
+                                        ax.set_title(f'{galaxy_name} - Stellar {info["title"]} Profile (Re = {Re:.2f} arcsec)')
+                                        ax.grid(True, alpha=0.3)
+                                        
+                                        # Add vertical line at Re
+                                        ax.axvline(x=1.0, color='r', linestyle='--', alpha=0.7, label='Re')
+                                        ax.legend()
+                                        
+                                        visualization.standardize_figure_saving(
+                                            fig, stellar_dir / f"{galaxy_name}_VNB_{param_name}_vs_Re.png"
+                                        )
+                                        plt.close(fig)
+                                        
+                                except Exception as e:
+                                    logger.warning(f"Error creating profile in Re units for parameter {param_name}: {e}")
+                                    plt.close('all')
+                                    
                         except Exception as e:
                             logger.warning(f"Error creating profile for parameter {param_name}: {e}")
                             plt.close('all')
@@ -984,6 +1196,46 @@ def create_vnb_plots(cube, vnb_results, galaxy_name, plots_dir, args):
                                                 fig, emission_dir / f"{galaxy_name}_VNB_{line_name}_{field_name}_profile.png"
                                             )
                                             plt.close(fig)
+                                            
+                                            # Create profile in Re units if effective radius is available
+                                            if "effective_radius" in vnb_results["distance"]:
+                                                try:
+                                                    Re = vnb_results["distance"]["effective_radius"]
+                                                    
+                                                    if Re is not None and Re > 0:
+                                                        # Create a version of distances in Re units
+                                                        distances_in_Re = sorted_distances / Re
+                                                        
+                                                        # Create profile plot in Re units
+                                                        fig, ax = plt.subplots(figsize=(10, 6))
+                                                        ax.plot(distances_in_Re, sorted_values, 'o-', markersize=6, linewidth=1.5)
+                                                        ax.set_xlabel('R/Re')
+                                                        
+                                                        if field_name == "flux":
+                                                            ax.set_ylabel('Flux')
+                                                            if np.all(sorted_values[np.isfinite(sorted_values)] > 0):
+                                                                ax.set_yscale('log')
+                                                        elif field_name == "velocity":
+                                                            ax.set_ylabel('Velocity (km/s)')
+                                                        else:
+                                                            ax.set_ylabel('Dispersion (km/s)')
+                                                            
+                                                        ax.set_title(f'{galaxy_name} - {line_name} {field_name.capitalize()} Profile (Re = {Re:.2f} arcsec)')
+                                                        ax.grid(True, alpha=0.3)
+                                                        
+                                                        # Add vertical line at Re
+                                                        ax.axvline(x=1.0, color='r', linestyle='--', alpha=0.7, label='Re')
+                                                        ax.legend()
+                                                        
+                                                        visualization.standardize_figure_saving(
+                                                            fig, emission_dir / f"{galaxy_name}_VNB_{line_name}_{field_name}_vs_Re.png"
+                                                        )
+                                                        plt.close(fig)
+                                                        
+                                                except Exception as e:
+                                                    logger.warning(f"Error creating profile in Re units for {line_name} {field_name}: {e}")
+                                                    plt.close('all')
+                                                    
                                         except Exception as e:
                                             logger.warning(f"Error creating radial profile for {line_name} {field_name}: {e}")
                                             plt.close('all')
@@ -1083,6 +1335,36 @@ def create_vnb_plots(cube, vnb_results, galaxy_name, plots_dir, args):
                                             fig, indices_dir / f"{galaxy_name}_VNB_{idx_name}_profile.png"
                                         )
                                         plt.close(fig)
+                                        
+                                        # Create profile in Re units if effective radius is available
+                                        if "effective_radius" in vnb_results["distance"]:
+                                            try:
+                                                Re = vnb_results["distance"]["effective_radius"]
+                                                
+                                                if Re is not None and Re > 0:
+                                                    # Create a version of distances in Re units
+                                                    distances_in_Re = sorted_distances / Re
+                                                    
+                                                    # Create profile plot in Re units
+                                                    fig, ax = plt.subplots(figsize=(10, 6))
+                                                    ax.plot(distances_in_Re, sorted_values, 'o-', markersize=6, linewidth=1.5)
+                                                    ax.set_xlabel('R/Re')
+                                                    ax.set_ylabel(f'{idx_name} Value')
+                                                    ax.set_title(f'{galaxy_name} - {idx_name} Profile (Re = {Re:.2f} arcsec)')
+                                                    ax.grid(True, alpha=0.3)
+                                                    
+                                                    # Add vertical line at Re
+                                                    ax.axvline(x=1.0, color='r', linestyle='--', alpha=0.7, label='Re')
+                                                    ax.legend()
+                                                    
+                                                    visualization.standardize_figure_saving(
+                                                        fig, indices_dir / f"{galaxy_name}_VNB_{idx_name}_vs_Re.png"
+                                                    )
+                                                    plt.close(fig)
+                                                    
+                                            except Exception as e:
+                                                logger.warning(f"Error creating profile in Re units for index {idx_name}: {e}")
+                                                plt.close('all')
                                 except Exception as e:
                                     logger.warning(f"Error creating radial profile for index {idx_name}: {e}")
                                     plt.close('all')
