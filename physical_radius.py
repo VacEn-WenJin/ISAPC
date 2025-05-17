@@ -11,10 +11,89 @@ from matplotlib.patches import Ellipse
 
 logger = logging.getLogger(__name__)
 
-def calculate_galaxy_radius(flux_2d, pixel_size_x=0.2, pixel_size_y=None):
+def detect_sources(flux_map, min_size=10, threshold=0.2):
+    """
+    Detect potential sources in a flux map using simple thresholding.
+    
+    Parameters
+    ----------
+    flux_map : ndarray
+        2D flux map of the field
+    min_size : int, optional
+        Minimum size in pixels for a source
+    threshold : float, optional
+        Fraction of maximum flux to use as detection threshold
+        
+    Returns
+    -------
+    list
+        List of (x,y) coordinates of detected source centers
+    """
+    import numpy as np
+    from scipy import ndimage
+    
+    # Handle NaN values
+    flux_copy = np.copy(flux_map)
+    if np.any(np.isnan(flux_copy)):
+        flux_copy = np.nan_to_num(flux_copy, nan=0.0)
+    
+    # Calculate threshold based on maximum flux
+    max_flux = np.nanmax(flux_copy)
+    threshold_value = max_flux * threshold
+    
+    # Create binary mask of pixels above threshold
+    binary_mask = flux_copy > threshold_value
+    
+    # Label connected regions
+    labeled_array, num_features = ndimage.label(binary_mask)
+    
+    if num_features == 0:
+        return []
+    
+    # Get properties of each region
+    centers = []
+    for i in range(1, num_features + 1):
+        # Create mask for this region
+        region_mask = labeled_array == i
+        region_size = np.sum(region_mask)
+        
+        # Skip if region is too small
+        if region_size < min_size:
+            continue
+        
+        # Find center of mass
+        y_indices, x_indices = np.where(region_mask)
+        center_y = int(np.mean(y_indices))
+        center_x = int(np.mean(x_indices))
+        
+        # Add to centers list
+        centers.append((center_x, center_y))
+    
+    # Sort by region brightness (brightest first)
+    if centers:
+        brightnesses = []
+        for center_x, center_y in centers:
+            # Get mean brightness in a small region around center
+            region_size = 3  # 3x3 box
+            x_min = max(0, center_x - region_size)
+            x_max = min(flux_copy.shape[1] - 1, center_x + region_size)
+            y_min = max(0, center_y - region_size)
+            y_max = min(flux_copy.shape[0] - 1, center_y + region_size)
+            
+            region = flux_copy[y_min:y_max+1, x_min:x_max+1]
+            brightness = np.nanmean(region)
+            brightnesses.append(brightness)
+        
+        # Sort centers by brightness (descending)
+        centers = [center for _, center in sorted(zip(brightnesses, centers), reverse=True)]
+    
+    return centers
+
+
+def calculate_galaxy_radius(flux_2d, pixel_size_x=0.2, pixel_size_y=None, focus_central=True):
     """
     Calculate elliptical galaxy radius (R_galaxy) based on flux distribution
-    with artifact masking and uniform weighting
+    with multiple source detection and handling
     
     Parameters
     ----------
@@ -24,6 +103,8 @@ def calculate_galaxy_radius(flux_2d, pixel_size_x=0.2, pixel_size_y=None):
         Pixel size in x-direction (arcsec)
     pixel_size_y : float, optional
         Pixel size in y-direction (arcsec), defaults to pixel_size_x
+    focus_central : bool, default=True
+        Whether to focus on the central galaxy
     
     Returns
     -------
@@ -36,7 +117,7 @@ def calculate_galaxy_radius(flux_2d, pixel_size_x=0.2, pixel_size_y=None):
         pixel_size_y = pixel_size_x
         
     try:
-        # Step 1: Identify and mask artifacts
+        # Step 1: Identify and mask artifacts and prepare flux data
         # Get dimensions
         ny, nx = flux_2d.shape
         
@@ -72,7 +153,7 @@ def calculate_galaxy_radius(flux_2d, pixel_size_x=0.2, pixel_size_y=None):
         artifact_threshold_high = median_flux + 5 * mad
         artifact_threshold_low = max(0, median_flux - 5 * mad)  # Don't go below zero
         
-        # Create mask that excludes artifacts
+        # Create clean mask that excludes artifacts
         clean_mask = valid_mask & (flux_2d < artifact_threshold_high) & (flux_2d > artifact_threshold_low)
         
         # Check if we still have enough valid pixels
@@ -82,18 +163,96 @@ def calculate_galaxy_radius(flux_2d, pixel_size_x=0.2, pixel_size_y=None):
             low_percentile = np.percentile(flux_values, 10)
             high_percentile = np.percentile(flux_values, 90)
             clean_mask = valid_mask & (flux_2d >= low_percentile) & (flux_2d <= high_percentile)
-        
-        # Step 2: Find the brightest central region (to avoid edge artifacts)
-        # We'll use a smoothed version of the flux map to identify the central region
+            
+        # Step 2: Detect multiple sources (if any)
+        # Apply Gaussian filter to smooth the data
         from scipy.ndimage import gaussian_filter
-        
-        # Apply Gaussian smoothing
         smoothed_flux = gaussian_filter(np.nan_to_num(flux_2d, nan=0), sigma=3.0)
         
-        # Create a mask for the central region (brightest 50% after smoothing)
-        smoothed_threshold = np.percentile(smoothed_flux[smoothed_flux > 0], 50)
-        central_mask = smoothed_flux > smoothed_threshold
+        # Try to detect multiple local maxima
+        from scipy import ndimage
         
+        # Create mask for maxima detection
+        maxima_mask = smoothed_flux > np.mean(smoothed_flux[smoothed_flux > 0])
+        
+        # Use distance transform to find local maxima
+        local_max = ndimage.maximum_filter(smoothed_flux, size=10) == smoothed_flux
+        local_max = local_max & maxima_mask  # Only consider high-signal regions
+        
+        # Get coordinates of local maxima
+        coords = np.array(np.where(local_max)).T
+        
+        # Skip if no local maxima found
+        if len(coords) == 0:
+            logger.warning("No local maxima found, using brightest pixel")
+            # Find brightest pixel
+            brightest_idx = np.unravel_index(np.argmax(smoothed_flux), smoothed_flux.shape)
+            coords = np.array([brightest_idx])
+        
+        # If multiple sources detected, choose the appropriate one
+        if len(coords) > 1:
+            logger.info(f"Detected {len(coords)} potential sources")
+            
+            if focus_central:
+                # Calculate distance from center of field
+                field_center_y, field_center_x = ny // 2, nx // 2
+                dist_from_center = np.sqrt((coords[:, 0] - field_center_y)**2 + 
+                                          (coords[:, 1] - field_center_x)**2)
+                
+                # Choose the closest source to the center
+                central_idx = np.argmin(dist_from_center)
+                center_y, center_x = coords[central_idx]
+                
+                logger.info(f"Focusing on central source at ({center_x}, {center_y})")
+                
+                # Modify mask to focus on this source
+                # Create a distance map from this source
+                y_indices, x_indices = np.indices(flux_2d.shape)
+                dist_map = np.sqrt((y_indices - center_y)**2 + (x_indices - center_x)**2)
+                
+                # Keep only pixels in clean_mask that are closer to chosen source than to other sources
+                for i, (y, x) in enumerate(coords):
+                    if i != central_idx:
+                        dist_to_other = np.sqrt((y_indices - y)**2 + (x_indices - x)**2)
+                        closer_to_other = dist_to_other < dist_map
+                        clean_mask[closer_to_other] = False
+            else:
+                # Use the brightest source
+                source_brightness = np.array([smoothed_flux[y, x] for y, x in coords])
+                brightest_idx = np.argmax(source_brightness)
+                center_y, center_x = coords[brightest_idx]
+                
+                logger.info(f"Using brightest source at ({center_x}, {center_y})")
+                
+                # Modify mask to focus on this source
+                y_indices, x_indices = np.indices(flux_2d.shape)
+                dist_map = np.sqrt((y_indices - center_y)**2 + (x_indices - center_x)**2)
+                
+                # Keep only pixels in clean_mask that are closer to chosen source than to other sources
+                for i, (y, x) in enumerate(coords):
+                    if i != brightest_idx:
+                        dist_to_other = np.sqrt((y_indices - y)**2 + (x_indices - x)**2)
+                        closer_to_other = dist_to_other < dist_map
+                        clean_mask[closer_to_other] = False
+        else:
+            # Single source - use its coordinates as center
+            center_y, center_x = coords[0]
+            logger.info(f"Single source detected at ({center_x}, {center_y})")
+        
+        # Step 3: Create a central region mask to focus on main galaxy
+        # Focus on central region around the chosen center
+        y_indices, x_indices = np.indices(flux_2d.shape)
+        dist_from_center = np.sqrt((y_indices - center_y)**2 + (x_indices - center_x)**2)
+        
+        # Use a percentile-based approach to determine central region size
+        valid_dists = dist_from_center[clean_mask]
+        if len(valid_dists) > 0:
+            central_dist_threshold = np.percentile(valid_dists, 75)  # Include up to 75th percentile distance
+            central_mask = dist_from_center <= central_dist_threshold
+        else:
+            # Fallback to a fixed radius
+            central_mask = dist_from_center <= min(ny, nx) / 4
+            
         # Combine masks - we want pixels that are both clean and in the central region
         final_mask = clean_mask & central_mask
         
@@ -101,29 +260,29 @@ def calculate_galaxy_radius(flux_2d, pixel_size_x=0.2, pixel_size_y=None):
         if np.sum(final_mask) < 0.02 * flux_2d.size:
             logger.warning("Central region mask too restrictive, using clean mask only")
             final_mask = clean_mask
+            
+        # Step 4: Calculate second moments for shape determination
+        # Create coordinate arrays relative to the chosen center
+        dx = x_indices - center_x
+        dy = y_indices - center_y
         
-        # Step 3: Calculate center using centroid of selected pixels
-        y_indices, x_indices = np.indices(flux_2d.shape)
-        
+        # Calculate flux-weighted moments
         if np.sum(final_mask) > 0:
-            # Use uniform weighting (all valid pixels have equal weight)
-            x_center = np.mean(x_indices[final_mask])
-            y_center = np.mean(y_indices[final_mask])
-        else:
-            # If no valid pixels, use geometric center
-            logger.warning("No valid pixels for center calculation, using geometric center")
-            x_center = nx / 2
-            y_center = ny / 2
-        
-        # Step 4: Calculate second moments using uniform weighting
-        dx = x_indices - x_center
-        dy = y_indices - y_center
-        
-        if np.sum(final_mask) > 0:
-            # Calculate unweighted moments
-            I_xx = np.mean(dx[final_mask]**2)
-            I_yy = np.mean(dy[final_mask]**2)
-            I_xy = np.mean(dx[final_mask] * dy[final_mask])
+            # Extract valid data
+            valid_dx = dx[final_mask]
+            valid_dy = dy[final_mask]
+            valid_flux = flux_2d[final_mask]
+            
+            # Normalize flux for weighting (avoid division by zero)
+            if np.sum(valid_flux) > 0:
+                flux_weights = valid_flux / np.sum(valid_flux)
+            else:
+                flux_weights = np.ones_like(valid_flux) / len(valid_flux)
+            
+            # Calculate weighted moments
+            I_xx = np.sum(valid_dx**2 * flux_weights)
+            I_yy = np.sum(valid_dy**2 * flux_weights)
+            I_xy = np.sum(valid_dx * valid_dy * flux_weights)
         else:
             # Default to circular shape
             I_xx = 1.0
@@ -177,8 +336,8 @@ def calculate_galaxy_radius(flux_2d, pixel_size_x=0.2, pixel_size_y=None):
                 
         # Step 6: Calculate R_galaxy for each pixel
         # Prepare coordinate arrays
-        dx = x_indices - x_center
-        dy = y_indices - y_center
+        dx = x_indices - center_x
+        dy = y_indices - center_y
         
         # Rotate coordinates to align with principal axes
         PA_rad = np.radians(PA_degrees)
@@ -198,8 +357,8 @@ def calculate_galaxy_radius(flux_2d, pixel_size_x=0.2, pixel_size_y=None):
         
         # Store ellipse parameters
         ellipse_params = {
-            'center_x': x_center,
-            'center_y': y_center,
+            'center_x': center_x,
+            'center_y': center_y,
             'PA_degrees': PA_degrees,
             'ellipticity': ellipticity,
             'a': a,  # Semi-major axis scale
@@ -212,6 +371,8 @@ def calculate_galaxy_radius(flux_2d, pixel_size_x=0.2, pixel_size_y=None):
         
     except Exception as e:
         logger.error(f"Error calculating galaxy radius: {str(e)}")
+        import traceback
+        logger.error(traceback.format_exc())
         # Return a simple radius measure as fallback
         y_indices, x_indices = np.indices(flux_2d.shape)
         center_y, center_x = flux_2d.shape[0]/2, flux_2d.shape[1]/2

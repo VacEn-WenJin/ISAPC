@@ -40,6 +40,102 @@ def safe_tight_layout(fig=None):
             pass
 
 
+def safe_plot_array(values, bin_map, ax=None, title=None, cmap='viridis', label=None, vmin=None, vmax=None):
+    """
+    Safely plot values mapped onto bins, handling non-numeric data types
+    
+    Parameters
+    ----------
+    values : array-like
+        Values for each bin
+    bin_map : numpy.ndarray
+        2D array of bin numbers
+    ax : matplotlib.axes.Axes, optional
+        Axis to plot on
+    title : str, optional
+        Plot title
+    cmap : str, default='viridis'
+        Colormap name
+    label : str, optional
+        Colorbar label
+    vmin, vmax : float, optional
+        Value range limits
+        
+    Returns
+    -------
+    matplotlib.axes.Axes
+        Plot axis
+    """
+    # Create axis if needed
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(8, 7))
+    
+    # Convert bin_map to integer type for mapping
+    bin_map_int = np.asarray(bin_map, dtype=np.int32)
+    
+    # Convert values to numeric safely
+    try:
+        # If values is already numeric numpy array, this won't change it
+        if isinstance(values, np.ndarray) and np.issubdtype(values.dtype, np.number):
+            numeric_values = values
+        else:
+            # For non-numeric arrays, try to convert element by element
+            numeric_values = np.zeros(len(values), dtype=float)
+            for i, val in enumerate(values):
+                try:
+                    numeric_values[i] = float(val)
+                except (ValueError, TypeError):
+                    numeric_values[i] = np.nan
+    except Exception as e:
+        logger.warning(f"Error converting values to numeric: {e}")
+        # Create NaN array as fallback
+        numeric_values = np.full(np.max(bin_map_int) + 1, np.nan)
+    
+    # Create value map using bin numbers
+    value_map = np.full_like(bin_map, np.nan, dtype=float)
+    
+    # Valid bins are non-negative and within range of values
+    max_bin = min(np.max(bin_map_int), len(numeric_values) - 1)
+    
+    # Populate value map
+    for bin_idx in range(max_bin + 1):
+        # Safety check to avoid index errors
+        if bin_idx < len(numeric_values):
+            value = numeric_values[bin_idx]
+            # Check if value is valid
+            if np.isfinite(value):
+                value_map[bin_map_int == bin_idx] = value
+    
+    # Create masked array for better visualization
+    masked_data = np.ma.array(value_map, mask=~np.isfinite(value_map))
+    
+    # Determine color limits
+    if vmin is None or vmax is None:
+        valid_data = masked_data.compressed()
+        if len(valid_data) > 0:
+            if vmin is None:
+                vmin = np.nanpercentile(valid_data, 5)
+            if vmax is None:
+                vmax = np.nanpercentile(valid_data, 95)
+    
+    # Plot the data
+    im = ax.imshow(masked_data, origin='lower', cmap=cmap, vmin=vmin, vmax=vmax)
+    
+    # Add colorbar
+    cbar = plt.colorbar(im, ax=ax)
+    if label:
+        cbar.set_label(label)
+    
+    # Set title
+    if title:
+        ax.set_title(title)
+    
+    # Set aspect ratio for better visualization
+    ax.set_aspect('equal')
+    
+    return ax
+
+
 def standardize_figure_saving(fig, filename, dpi=150, transparent=False, ext=None):
     """
     Save figure with standardized settings and proper directory creation
@@ -354,6 +450,86 @@ def get_figure_size_for_cube(cube, base_size=8):
             figsize = (base_size * image_ratio, base_size)
     
     return figsize
+
+
+def plot_bin_indices(indices_dict, bin_map, title=None, save_path=None):
+    """
+    Plot spectral indices for binned data with safe handling of non-numeric data
+    
+    Parameters
+    ----------
+    indices_dict : dict
+        Dictionary of spectral indices
+    bin_map : numpy.ndarray
+        2D array of bin numbers
+    title : str, optional
+        Figure title
+    save_path : str or Path, optional
+        Path to save the figure
+        
+    Returns
+    -------
+    fig : matplotlib.figure.Figure
+        Figure with plots
+    """
+    # Get number of indices to plot
+    n_indices = len(indices_dict)
+    if n_indices == 0:
+        logger.warning("No spectral indices to plot")
+        return None
+    
+    # Determine grid layout
+    if n_indices <= 3:
+        n_rows, n_cols = 1, n_indices
+    else:
+        n_rows = (n_indices + 2) // 3  # Ceiling division
+        n_cols = min(3, n_indices)
+    
+    # Create figure
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(4*n_cols, 4*n_rows))
+    
+    # Ensure axes is array-like
+    axes = np.atleast_1d(axes)
+    
+    # Plot each index with safe plotting
+    for i, (index_name, values) in enumerate(indices_dict.items()):
+        if i < axes.size:
+            # Get current axis
+            if axes.ndim == 1:
+                ax = axes[i]
+            else:
+                ax = axes.flat[i]
+                
+            # Plot with safe handling of non-numeric data
+            safe_plot_array(
+                values=values,
+                bin_map=bin_map,
+                ax=ax,
+                title=index_name,
+                cmap='plasma',
+                label='Index Value'
+            )
+    
+    # Hide unused axes
+    for i in range(len(indices_dict), axes.size):
+        if axes.ndim == 1 and i < len(axes):
+            axes[i].axis('off')
+        elif axes.ndim > 1:
+            axes.flat[i].axis('off')
+    
+    # Add title to figure
+    if title:
+        fig.suptitle(title, fontsize=16)
+        # Adjust for title
+        plt.tight_layout(rect=[0, 0, 1, 0.95])
+    else:
+        plt.tight_layout()
+    
+    # Save if path provided
+    if save_path:
+        standardize_figure_saving(fig, save_path)
+    
+    return fig
 
 
 def plot_bin_map(bin_num, values=None, ax=None, cmap='viridis', title=None, 

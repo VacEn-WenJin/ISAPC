@@ -17,6 +17,7 @@ from binning import (
     run_voronoi_binning,
     calculate_wavelength_intersection,
     combine_spectra_efficiently,
+    optimize_voronoi_binning
 )
 from utils.io import save_standardized_results
 
@@ -25,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 def run_vnb_analysis(args, cube, p2p_results=None):
     """
-    Run Voronoi binning analysis on MUSE data cube
+    Run Voronoi binning analysis on MUSE data cube with improved binning
     
     Parameters
     ----------
@@ -81,12 +82,14 @@ def run_vnb_analysis(args, cube, p2p_results=None):
             logger.warning(f"Error loading P2P results: {e}")
             p2p_results = None
 
-    # Set up binning parameters
-    target_snr = args.target_snr if hasattr(args, "target_snr") else 30
+    # Set up binning parameters - use lower SNR as requested
+    # Use 15 as the default target SNR instead of 30
+    target_snr = args.target_snr if hasattr(args, "target_snr") else 15
     min_snr = args.min_snr if hasattr(args, "min_snr") else 1
     use_cvt = args.cvt if hasattr(args, "cvt") else True
     high_snr_mode = args.high_snr_mode if hasattr(args, "high_snr_mode") else False
-    use_physical_radius = args.physical_radius if hasattr(args, "physical_radius") else False
+    use_physical_radius = True  # Always use physical radius in improved version
+    verbose = args.verbose if hasattr(args, "verbose") else False
 
     # Get cube coordinates, ensuring we use the original x,y coordinates from the cube
     x = cube.x if hasattr(cube, "x") else np.arange(cube._n_x * cube._n_y) % cube._n_x
@@ -140,6 +143,58 @@ def run_vnb_analysis(args, cube, p2p_results=None):
         f"Maximum pixel SNR: {max_pixel_snr:.1f}, Median pixel SNR: {median_snr:.1f}"
     )
 
+    # Calculate physical radius if requested
+    r_galaxy = None
+    ellipse_params = None
+    Re_arcsec = None
+    try:
+        # Always try to calculate physical radius
+        from physical_radius import calculate_galaxy_radius, calculate_effective_radius, detect_sources
+        
+        # Create flux map for radius calculation
+        flux_2d = np.nanmedian(cube._cube_data, axis=0)
+        
+        # Detect potential sources
+        sources = detect_sources(flux_2d)
+        if sources and len(sources) > 1:
+            logger.info(f"Detected {len(sources)} potential sources")
+            # Focus on the central source (usually the largest)
+            central_source = sources[0]  # First source is typically the main one
+            logger.info(f"Focusing on central source at ({central_source[0]}, {central_source[1]})")
+        
+        # Calculate physical radius and ellipse parameters with improved method
+        r_galaxy, ellipse_params = calculate_galaxy_radius(
+            flux_2d,
+            pixel_size_x=cube._pxl_size_x,
+            pixel_size_y=cube._pxl_size_y,
+            focus_central=True  # Ensure we focus on the central galaxy
+        )
+        
+        logger.info(f"Calculated physical radius with PA={ellipse_params['PA_degrees']:.1f}°, "
+                    f"ε={ellipse_params['ellipticity']:.2f}")
+                    
+        # Store for later use
+        cube._physical_radius = r_galaxy
+        cube._ellipse_params = ellipse_params
+        
+        # Calculate effective radius (Re)
+        Re_arcsec = calculate_effective_radius(
+            flux_2d,
+            r_galaxy,
+            ellipse_params,
+            pixel_size_x=cube._pxl_size_x,
+            pixel_size_y=cube._pxl_size_y
+        )
+        
+        logger.info(f"Calculated effective radius Re = {Re_arcsec:.2f} arcsec")
+                    
+        # Store for later use
+        cube._effective_radius = Re_arcsec
+        
+    except Exception as e:
+        logger.warning(f"Error calculating physical radius: {e}")
+        use_physical_radius = False
+
     # Determine recommended SNR range
     min_recommended = min(2, median_snr * 0.5)
     max_recommended = max(max_pixel_snr * 1.2, median_snr * 10)
@@ -160,61 +215,33 @@ def run_vnb_analysis(args, cube, p2p_results=None):
     else:
         safe_target_snr = target_snr
 
-    # Calculate physical radius if requested
-    r_galaxy = None
-    ellipse_params = None
-    Re_arcsec = None
-    if use_physical_radius:
-        try:
-            from physical_radius import calculate_galaxy_radius, calculate_effective_radius
-            
-            # Create flux map for radius calculation
-            flux_2d = np.nanmedian(cube._cube_data, axis=0)
-            
-            # Calculate physical radius and ellipse parameters
-            r_galaxy, ellipse_params = calculate_galaxy_radius(
-                flux_2d,
-                pixel_size_x=cube._pxl_size_x,
-                pixel_size_y=cube._pxl_size_y
-            )
-            
-            logger.info(f"Calculated physical radius with PA={ellipse_params['PA_degrees']:.1f}°, "
-                        f"ε={ellipse_params['ellipticity']:.2f}")
-                        
-            # Store for later use
-            cube._physical_radius = r_galaxy
-            cube._ellipse_params = ellipse_params
-            
-            # Calculate effective radius (Re)
-            Re_arcsec = calculate_effective_radius(
-                flux_2d,
-                r_galaxy,
-                ellipse_params,
-                pixel_size_x=cube._pxl_size_x,
-                pixel_size_y=cube._pxl_size_y
-            )
-            
-            logger.info(f"Calculated effective radius Re = {Re_arcsec:.2f} arcsec")
-                        
-            # Store for later use
-            cube._effective_radius = Re_arcsec
-            
-        except Exception as e:
-            logger.warning(f"Error calculating physical radius: {e}")
-            use_physical_radius = False
+    # Log the number of valid pixels being used
+    valid_mask = np.isfinite(signal) & np.isfinite(noise) & (signal > 0) & (noise > 0)
+    logger.info(f"Using {np.sum(valid_mask)} valid pixels out of {len(signal)} for Voronoi binning")
+    logger.info(f"Median SNR in data: {median_snr:.1f}, Maximum SNR: {max_pixel_snr:.1f}")
+    logger.info(f"Trying Voronoi binning with target SNR = {safe_target_snr:.1f}")
 
-    # Run Voronoi binning with the original coordinates
-    logger.info(f"Running Voronoi binning with target SNR = {safe_target_snr:.1f}")
-    
-    # Run the binning algorithm
-    bin_num, x_gen, y_gen, x_bar, y_bar, sn, n_pixels, scale = run_voronoi_binning(
-        x, y, signal, noise, 
-        target_snr=safe_target_snr,
-        plot=0, 
-        quiet=False, 
-        cvt=use_cvt,
-        min_snr=min_snr
-    )
+    # Run the binning algorithm using optimization for 10-20 bins
+    if hasattr(args, "optimize_bins") and args.optimize_bins:
+        logger.info("Using optimized binning to target 10-20 bins")
+        bin_num, x_gen, y_gen, x_bar, y_bar, sn, n_pixels, scale = optimize_voronoi_binning(
+            x, y, signal, noise, 
+            target_bin_count=15,  # Target around 15 bins
+            min_bins=10,          # Accept minimum 10 bins 
+            max_bins=20,          # Accept maximum 20 bins
+            cvt=use_cvt,
+            quiet=not verbose
+        )
+    else:
+        # Run with standard parameters if optimization not requested
+        bin_num, x_gen, y_gen, x_bar, y_bar, sn, n_pixels, scale = run_voronoi_binning(
+            x, y, signal, noise, 
+            target_snr=safe_target_snr,
+            plot=0, 
+            quiet=False, 
+            cvt=use_cvt,
+            min_snr=min_snr
+        )
 
     # Create bin indices
     bin_indices = []
@@ -226,6 +253,8 @@ def run_vnb_analysis(args, cube, p2p_results=None):
 
     # Get velocity field from P2P results if available, for velocity correction
     velocity_field = None
+    gas_velocity_field = None  # Additional gas velocity field for separate correction
+    
     if p2p_results is not None:
         try:
             # Try standard format first
@@ -242,6 +271,19 @@ def run_vnb_analysis(args, cube, p2p_results=None):
                 logger.info(
                     "Using velocity field from P2P results for velocity correction"
                 )
+                
+                # Try to get gas velocity field as well
+                if "emission" in p2p_results and "velocity" in p2p_results["emission"]:
+                    # Try to extract a representative gas velocity field
+                    for line_name, vel_map in p2p_results["emission"]["velocity"].items():
+                        # Use the first gas velocity map with valid values
+                        if np.any(np.isfinite(vel_map)):
+                            gas_velocity_field = vel_map
+                            logger.info(f"Using {line_name} velocity field for gas")
+                            
+                            # Attach gas velocity field to the stellar field for easy access
+                            velocity_field.gas_velocity_field = gas_velocity_field
+                            break
         except Exception as e:
             logger.warning(f"Error extracting velocity field from P2P results: {e}")
 
@@ -262,7 +304,9 @@ def run_vnb_analysis(args, cube, p2p_results=None):
 
     # Combine spectra into bins with velocity correction
     binned_spectra = combine_spectra_efficiently(
-        spectra, wavelength, bin_indices, velocity_field, cube._n_x, cube._n_y
+        spectra, wavelength, bin_indices, velocity_field, cube._n_x, cube._n_y,
+        edge_treatment="extend",
+        use_separate_velocity=True  # Enable separate stellar and gas velocity handling
     )
 
     # Create metadata
@@ -310,6 +354,9 @@ def run_vnb_analysis(args, cube, p2p_results=None):
     if hasattr(cube, "setup_binning"):
         cube.setup_binning("VNB", binned_data)
     
+    # Log the number of bins created
+    logger.info(f"Cube set up for VNB analysis with {len(bin_indices)} bins")
+    
     # Run stellar component analysis
     logger.info("Fitting stellar kinematics for binned spectra...")
     
@@ -341,7 +388,7 @@ def run_vnb_analysis(args, cube, p2p_results=None):
     if hasattr(cube, "_bin_weights") and cube._bin_weights is not None:
         try:
             logger.info("Extracting stellar population parameters for bins...")
-            start_time = time.time()
+            start_sp_time = time.time()
 
             # Initialize weight parser
             from stellar_population import WeightParser
@@ -370,10 +417,79 @@ def run_vnb_analysis(args, cube, p2p_results=None):
                 except Exception as e:
                     logger.debug(f"Error calculating stellar params for bin {bin_idx}: {e}")
 
-            logger.info(f"Stellar population parameters extracted in {time.time() - start_time:.1f} seconds")
+            logger.info(f"Stellar population parameters extracted in {time.time() - start_sp_time:.1f} seconds")
         except Exception as e:
             logger.error(f"Failed to extract stellar population parameters: {e}")
             stellar_pop_params = None
+
+    # Calculate bin distances (in arcsec)
+    bin_distances = None
+    if "bin_x" in metadata and "bin_y" in metadata:
+        try:
+            # Get IFU center
+            center_x = cube._n_x // 2
+            center_y = cube._n_y // 2
+
+            # Calculate distances in pixels
+            dx = metadata["bin_x"] - center_x
+            dy = metadata["bin_y"] - center_y
+
+            # Convert to arcseconds
+            bin_distances = np.sqrt(
+                (dx * cube._pxl_size_x) ** 2 + (dy * cube._pxl_size_y) ** 2
+            )
+
+            logger.info(f"Calculated bin distances from center")
+        except Exception as e:
+            logger.warning(f"Error calculating bin distances: {e}")
+
+    # IMPORTANT: Create the vnb_results dictionary BEFORE accessing it
+    vnb_results = {
+        "analysis_type": "VNB",
+        "binning": {
+            "bin_num": bin_num,
+            "bin_x": x_gen,
+            "bin_y": y_gen,
+            "bin_xbar": x_bar,
+            "bin_ybar": y_bar,
+            "snr": sn,
+            "n_pixels": n_pixels,
+            "scale": scale,
+            "target_snr": target_snr,
+        },
+        "stellar_kinematics": {
+            "velocity": stellar_velocity_field,
+            "dispersion": stellar_dispersion_field,
+        },
+        "distance": {
+            "bin_distances": bin_distances,
+            "effective_radius": Re_arcsec,  # Add effective radius
+            "pixelsize_x": cube._pxl_size_x,
+            "pixelsize_y": cube._pxl_size_y,
+        },
+        "meta_data": {
+            "nx": cube._n_x,
+            "ny": cube._n_y,
+            "target_snr": target_snr,
+            "sn": sn,
+            "n_pixels": n_pixels,
+            "scale": scale,
+            "time": time.time(),
+            "galaxy_name": galaxy_name,
+            "analysis_type": "VNB",
+            "pixelsize_x": cube._pxl_size_x,
+            "pixelsize_y": cube._pxl_size_y,
+            "redshift": cube._redshift if hasattr(cube, "_redshift") else 0.0,
+            "bin_x": x_gen,
+            "bin_y": y_gen,
+            "bin_xbar": x_bar,
+            "bin_ybar": y_bar,
+        },
+    }
+
+    # Add stellar population parameters if available
+    if stellar_pop_params is not None:
+        vnb_results["stellar_population"] = stellar_pop_params
 
     # Fit emission lines if requested
     emission_result = None
@@ -413,11 +529,17 @@ def run_vnb_analysis(args, cube, p2p_results=None):
             indices_list = None
             if hasattr(args, "configured_indices"):
                 indices_list = args.configured_indices
-                
-            # Calculate indices
-            indices_result = cube.calculate_spectral_indices(
+                    
+            # Get methods list (continuum modes)
+            methods = ['auto', 'original', 'fit']
+            if hasattr(args, "indices_methods"):
+                methods = args.indices_methods
+            
+            # Calculate indices with multiple methods
+            indices_result = cube.calculate_spectral_indices_multi_method(
                 indices_list=indices_list,
                 n_jobs=args.n_jobs,
+                verbose=verbose,
                 save_mode='VNB',
                 save_path=plots_dir
             )
@@ -425,82 +547,26 @@ def run_vnb_analysis(args, cube, p2p_results=None):
             logger.info(f"Spectral indices calculation completed in {time.time() - start_idx_time:.1f} seconds")
         except Exception as e:
             logger.error(f"Error calculating spectral indices: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             indices_result = None
+
+    # Add spectral indices results if available - AFTER creating vnb_results
+    if indices_result is not None:
+        if isinstance(indices_result, dict) and "auto" in indices_result:
+            # Results with multiple methods format
+            vnb_results["bin_indices_multi"] = indices_result
+            # For backward compatibility, use auto method as default
+            vnb_results["bin_indices"] = indices_result["auto"]
+        else:
+            # Standard single-method format
+            vnb_results["bin_indices"] = indices_result
 
     # Save binned data for later reuse
     try:
         binned_data.save(data_dir / f"{galaxy_name}_VNB_binned.npz")
     except Exception as e:
         logger.warning(f"Error saving binned data: {e}")
-
-    # Calculate bin distances (in arcsec)
-    bin_distances = None
-    if "bin_x" in metadata and "bin_y" in metadata:
-        try:
-            # Get IFU center
-            center_x = cube._n_x // 2
-            center_y = cube._n_y // 2
-
-            # Calculate distances in pixels
-            dx = metadata["bin_x"] - center_x
-            dy = metadata["bin_y"] - center_y
-
-            # Convert to arcseconds
-            bin_distances = np.sqrt(
-                (dx * cube._pxl_size_x) ** 2 + (dy * cube._pxl_size_y) ** 2
-            )
-
-            logger.info(f"Calculated bin distances from center")
-        except Exception as e:
-            logger.warning(f"Error calculating bin distances: {e}")
-
-    # Create standardized results dictionary
-    vnb_results = {
-        "analysis_type": "VNB",
-        "binning": {
-            "bin_num": bin_num,
-            "bin_x": x_gen,
-            "bin_y": y_gen,
-            "bin_xbar": x_bar,
-            "bin_ybar": y_bar,
-            "snr": sn,
-            "n_pixels": n_pixels,
-            "scale": scale,
-            "target_snr": target_snr,
-        },
-        "stellar_kinematics": {
-            "velocity": stellar_velocity_field,
-            "dispersion": stellar_dispersion_field,
-        },
-        "distance": {
-            "bin_distances": bin_distances,
-            "effective_radius": Re_arcsec,  # Add effective radius
-            "pixelsize_x": cube._pxl_size_x,
-            "pixelsize_y": cube._pxl_size_y,
-        },
-        "meta_data":{
-            "nx": cube._n_x,
-            "ny": cube._n_y,
-            "target_snr": target_snr,
-            "sn": sn,
-            "n_pixels": n_pixels,
-            "scale": scale,
-            "time": time.time(),
-            "galaxy_name": galaxy_name,
-            "analysis_type": "VNB",
-            "pixelsize_x": cube._pxl_size_x,
-            "pixelsize_y": cube._pxl_size_y,
-            "redshift": cube._redshift if hasattr(cube, "_redshift") else 0.0,
-            "bin_x": x_gen,
-            "bin_y": y_gen,
-            "bin_xbar": x_bar,
-            "bin_ybar": y_bar,
-        },
-    }
-    
-    # Add stellar population parameters if available
-    if stellar_pop_params is not None:
-        vnb_results["stellar_population"] = stellar_pop_params
 
     # Add emission line results if available
     if emission_result is not None:
@@ -516,10 +582,6 @@ def run_vnb_analysis(args, cube, p2p_results=None):
             if key in emission_result and emission_result[key] is not None:
                 vnb_results[key] = emission_result[key]
 
-    # Add spectral indices results if available
-    if indices_result is not None:
-        vnb_results["bin_indices"] = indices_result
-
     # Save standardized results
     should_save = not hasattr(args, "no_save") or not args.no_save
     if should_save:
@@ -528,11 +590,18 @@ def run_vnb_analysis(args, cube, p2p_results=None):
     # Create visualization plots
     should_plot = not hasattr(args, "no_plots") or not args.no_plots
     if should_plot:
-        create_vnb_plots(cube, vnb_results, galaxy_name, plots_dir, args)
+        try:
+            # Check for potential dimension mismatches before plotting
+            if 'stellar_kinematics' in vnb_results and hasattr(vnb_results['stellar_kinematics']['velocity'], 'shape'):
+                logger.info(f"Velocity field shape: {vnb_results['stellar_kinematics']['velocity'].shape}")
+            create_vnb_plots(cube, vnb_results, galaxy_name, plots_dir, args)
+        except Exception as e:
+            logger.warning(f"Error creating plots: {e}")
+            import traceback
+            logger.warning(traceback.format_exc())
 
     logger.info("Voronoi binning analysis completed")
     return vnb_results
-
 
 def create_vnb_plots(cube, vnb_results, galaxy_name, plots_dir, args):
     """

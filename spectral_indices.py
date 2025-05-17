@@ -78,6 +78,44 @@ def warn(message, category=UserWarning):
         warnings.warn(message, category)
 
 
+def convert_to_numeric_safely(data):
+    """
+    Convert data to numeric type safely, replacing non-numeric values with NaN
+    """
+    if isinstance(data, np.ndarray) and np.issubdtype(data.dtype, np.number):
+        # Already numeric
+        return data
+        
+    try:
+        # Try direct conversion
+        return np.array(data, dtype=float)
+    except (ValueError, TypeError):
+        # Try element-wise conversion
+        if hasattr(data, 'shape'):
+            shape = data.shape
+            flat_data = data.flatten()
+        else:
+            shape = None
+            flat_data = data
+            
+        # Convert each element
+        numeric_data = []
+        for item in flat_data:
+            try:
+                numeric_data.append(float(item))
+            except (ValueError, TypeError):
+                numeric_data.append(np.nan)
+                
+        # Reshape if needed
+        if shape is not None:
+            try:
+                return np.array(numeric_data, dtype=float).reshape(shape)
+            except:
+                return np.array(numeric_data, dtype=float)
+        else:
+            return np.array(numeric_data, dtype=float)
+
+
 class LineIndexCalculator:
     def __init__(
         self,
@@ -232,9 +270,21 @@ class LineIndexCalculator:
         --------
         bool : Whether the range is fully covered
         """
-        return (wave_range[0] >= np.min(self.wave)) and (
-            wave_range[1] <= np.max(self.wave)
-        )
+        try:
+            # Convert wavelength to numeric safely
+            safe_wave = convert_to_numeric_safely(self.wave)
+            
+            # Check if range is covered
+            if len(safe_wave) == 0:
+                return False
+                
+            min_wave = np.nanmin(safe_wave)
+            max_wave = np.nanmax(safe_wave)
+            
+            return (wave_range[0] >= min_wave) and (wave_range[1] <= max_wave)
+        except Exception as e:
+            self._warn(f"Error checking data coverage: {str(e)}")
+            return False
 
     def define_line_windows(self, line_name):
         """
@@ -300,7 +350,7 @@ class LineIndexCalculator:
 
     def calculate_pseudo_continuum(self, wave_range, flux_range, region_type):
         """
-        Calculate pseudo-continuum
+        Calculate pseudo-continuum with improved type handling
 
         Parameters:
         -----------
@@ -315,14 +365,30 @@ class LineIndexCalculator:
         --------
         float : Pseudo-continuum value
         """
+        # Safety check for wave_range
+        if wave_range is None:
+            self._warn(f"No wavelength range provided for {region_type} continuum")
+            return 0
+        
+        # Ensure wave_range is a tuple of two values
+        if not isinstance(wave_range, tuple) and not isinstance(wave_range, list):
+            self._warn(f"Invalid wave_range format for {region_type} continuum")
+            return 0
+        
+        if len(wave_range) != 2:
+            self._warn(f"Wave range must have exactly 2 values for {region_type} continuum")
+            return 0
+
         if self.continuum_mode == "fit":
             # Use fitted spectrum
             try:
-                mask = (self.fit_wave >= wave_range[0]) & (
-                    self.fit_wave <= wave_range[1]
-                )
+                # Convert to numeric safely
+                safe_fit_wave = convert_to_numeric_safely(self.fit_wave)
+                safe_fit_flux = convert_to_numeric_safely(self.fit_flux)
+                
+                mask = (safe_fit_wave >= wave_range[0]) & (safe_fit_wave <= wave_range[1])
                 if np.any(mask):
-                    return np.nanmedian(self.fit_flux[mask])
+                    return np.nanmedian(safe_fit_flux[mask])
                 else:
                     self._warn(
                         f"No fitted data points in {region_type} continuum range"
@@ -336,20 +402,24 @@ class LineIndexCalculator:
 
         elif self.continuum_mode == "auto":
             # Check original data coverage
+            safe_wave = convert_to_numeric_safely(self.wave)
+            safe_flux = convert_to_numeric_safely(self.flux)
+            
             if self._check_data_coverage(wave_range):
-                mask = (self.wave >= wave_range[0]) & (self.wave <= wave_range[1])
+                mask = (safe_wave >= wave_range[0]) & (safe_wave <= wave_range[1])
                 if np.any(mask):
-                    return np.nanmedian(self.flux[mask])
+                    return np.nanmedian(safe_flux[mask])
                 else:
                     self._warn(f"No data points in {region_type} continuum range")
                     return 0
             else:
                 # Use fitted spectrum when data is insufficient
-                mask = (self.fit_wave >= wave_range[0]) & (
-                    self.fit_wave <= wave_range[1]
-                )
+                safe_fit_wave = convert_to_numeric_safely(self.fit_wave)
+                safe_fit_flux = convert_to_numeric_safely(self.fit_flux)
+                
+                mask = (safe_fit_wave >= wave_range[0]) & (safe_fit_wave <= wave_range[1])
                 if np.any(mask):
-                    return np.nanmedian(self.fit_flux[mask])
+                    return np.nanmedian(safe_fit_flux[mask])
                 else:
                     self._warn(
                         f"No fitted data points in {region_type} continuum range"
@@ -357,22 +427,25 @@ class LineIndexCalculator:
                     return 0
 
         else:  # 'original'
+            safe_wave = convert_to_numeric_safely(self.wave)
+            safe_flux = convert_to_numeric_safely(self.flux)
+            
             if not self._check_data_coverage(wave_range):
                 self._warn(
                     f"Original data insufficient to cover {region_type} continuum region, returning 0"
                 )
                 return 0
-            mask = (self.wave >= wave_range[0]) & (self.wave <= wave_range[1])
+            mask = (safe_wave >= wave_range[0]) & (safe_wave <= wave_range[1])
             if np.any(mask):
-                return np.nanmedian(self.flux[mask])
+                return np.nanmedian(safe_flux[mask])
             else:
                 self._warn(f"No data points in {region_type} continuum range")
                 return 0
 
     def calculate_index(self, line_name, return_error=False):
         """
-        Calculate absorption line index
-
+        Calculate absorption line index with improved type handling
+        
         Parameters:
         -----------
         line_name : str
@@ -399,7 +472,6 @@ class LineIndexCalculator:
             return np.nan if not return_error else (np.nan, np.nan)
 
         # Handle both 'line' and 'band' keys for compatibility
-        # Config system uses 'band', older code uses 'line'
         if "band" in windows:
             line_range = windows["band"]
         elif "line" in windows:
@@ -410,10 +482,16 @@ class LineIndexCalculator:
 
         # Get line region data
         try:
-            line_mask = (self.wave >= line_range[0]) & (self.wave <= line_range[1])
-            line_wave = self.wave[line_mask]
-            line_flux = self.flux[line_mask]
-            line_err = self.error[line_mask]
+            # Convert flux and wave to numeric safely
+            safe_wave = convert_to_numeric_safely(self.wave)
+            safe_flux = convert_to_numeric_safely(self.flux)
+            safe_error = convert_to_numeric_safely(self.error)
+            
+            # Continue with safe arrays
+            line_mask = (safe_wave >= line_range[0]) & (safe_wave <= line_range[1])
+            line_wave = safe_wave[line_mask]
+            line_flux = safe_flux[line_mask]
+            line_err = safe_error[line_mask]
 
             # Check data points
             if len(line_flux) < 3:

@@ -373,9 +373,11 @@ def combine_spectra_efficiently(
     n_x=None,
     n_y=None,
     edge_treatment="extend",
+    use_separate_velocity=True
 ):
     """
-    Efficiently combine spectra into bins with improved velocity correction.
+    Efficiently combine spectra into bins with improved velocity correction
+    and support for separate stellar and gas velocities.
 
     Parameters
     ----------
@@ -396,7 +398,9 @@ def combine_spectra_efficiently(
         - 'extend': Extend edge values rather than filling with zeros
         - 'mask': Use NaN for edge values
         - 'zero': Fill with zeros (original behavior)
-
+    use_separate_velocity : bool, default=True
+        Whether to use separate stellar and gas velocities when available
+        
     Returns
     -------
     numpy.ndarray
@@ -440,25 +444,40 @@ def combine_spectra_efficiently(
                     for idx in indices:
                         row = idx // n_x
                         col = idx % n_x
-                        if (
-                            row < velocity_field.shape[0]
-                            and col < velocity_field.shape[1]
-                        ):
+                        if row < velocity_field.shape[0] and col < velocity_field.shape[1]:
                             vel = velocity_field[row, col]
                             if np.isfinite(vel):
                                 bin_velocities.append(vel)
 
+                    # Check for gas velocity field if available and use_separate_velocity is enabled
+                    gas_velocity_field = None
+                    bin_gas_velocities = []
+                    
+                    if use_separate_velocity and hasattr(velocity_field, 'gas_velocity_field'):
+                        gas_velocity_field = velocity_field.gas_velocity_field
+                        
+                        # Get gas velocities for this bin
+                        for idx in indices:
+                            row = idx // n_x
+                            col = idx % n_x
+                            if (row < gas_velocity_field.shape[0] and 
+                                col < gas_velocity_field.shape[1]):
+                                gas_vel = gas_velocity_field[row, col]
+                                if np.isfinite(gas_vel):
+                                    bin_gas_velocities.append(gas_vel)
+                    
                     # Use median velocity for the bin if we have valid velocities
                     if bin_velocities:
                         median_velocity = np.median(bin_velocities)
+                        
+                        # Get median gas velocity if available
+                        median_gas_velocity = (
+                            np.median(bin_gas_velocities) if bin_gas_velocities 
+                            else median_velocity
+                        )
 
                         # Only apply correction for non-zero velocities
-                        if (
-                            abs(median_velocity) > 1.0
-                        ):  # Minimum 1 km/s to apply correction
-                            # Apply velocity shift using Doppler formula
-                            lam_shifted = wavelength * (1 + median_velocity / c)
-
+                        if abs(median_velocity) > 1.0:  # Minimum 1 km/s to apply correction
                             # Combine all spectra first, then apply correction once
                             combined_spectrum = np.zeros(n_wave)
                             weight_sum = 0
@@ -472,7 +491,10 @@ def combine_spectra_efficiently(
                             if weight_sum > 0:
                                 combined_spectrum /= weight_sum
 
-                                # Use spectres for resampling the combined spectrum with edge handling
+                                # Apply velocity shift using Doppler formula
+                                lam_shifted = wavelength * (1 + median_velocity / c)
+
+                                # Use spectres for resampling with edge handling
                                 try:
                                     if edge_treatment == "extend":
                                         # Use nearest valid values for edges
@@ -506,13 +528,15 @@ def combine_spectra_efficiently(
                                     velocity_correction_success = True
                                     continue  # Skip to next bin
                                 except Exception as e:
-                                    logger.debug(f"Velocity correction failed: {e}")
+                                    logger.debug(f"Bulk velocity correction failed: {e}")
                 except Exception as e:
                     logger.debug(f"Bin velocity correction failed: {e}")
 
             # Second attempt: Process each spectrum individually if first method failed
             if not velocity_correction_success:
                 # Process each spectrum individually
+                individual_velocity_data = []
+                
                 for idx in indices:
                     # Get spectrum
                     spectrum = spectra[:, idx]
@@ -528,10 +552,7 @@ def combine_spectra_efficiently(
                             col = idx % n_x
 
                             # Check bounds
-                            if (
-                                row < velocity_field.shape[0]
-                                and col < velocity_field.shape[1]
-                            ):
+                            if row < velocity_field.shape[0] and col < velocity_field.shape[1]:
                                 vel = velocity_field[row, col]
 
                                 # Only correct if velocity is valid and non-negligible
@@ -567,12 +588,16 @@ def combine_spectra_efficiently(
                                                 fill=0.0,
                                                 preserve_edges=False,
                                             )
-
-                                        bin_spectra_list.append(corrected_spectrum)
+                                                                                
+                                        # Store velocity-corrected spectrum
+                                        individual_velocity_data.append({
+                                            'spectrum': corrected_spectrum, 
+                                            'velocity': vel
+                                        })
                                         continue  # Skip the default append
                                     except Exception as e:
                                         # Fall through to add original spectrum
-                                        pass
+                                        logger.debug(f"Individual velocity correction failed: {e}")
                         except Exception as e:
                             # Fall through to add original spectrum
                             pass
@@ -580,8 +605,41 @@ def combine_spectra_efficiently(
                     # Add the original spectrum if no velocity correction
                     bin_spectra_list.append(spectrum)
 
-                # Combine spectra if any valid
-                if bin_spectra_list:
+                # First try to use velocity-corrected spectra if available
+                if individual_velocity_data:
+                    try:
+                        # Extract spectra and velocities
+                        vel_corrected_spectra = [data['spectrum'] for data in individual_velocity_data]
+                        velocities = [data['velocity'] for data in individual_velocity_data]
+                        
+                        # Stack into array
+                        spectra_array = np.array(vel_corrected_spectra)
+                        
+                        # Calculate median velocity-corrected spectrum
+                        bin_spectra[:, i] = np.nanmedian(spectra_array, axis=0)
+                        
+                        # Handle NaN wavelengths
+                        all_nan = np.all(~np.isfinite(spectra_array), axis=0)
+                        bin_spectra[all_nan, i] = np.nan
+                        
+                        # Log velocity statistics
+                        if len(velocities) > 1:
+                            vel_median = np.median(velocities)
+                            vel_std = np.std(velocities)
+                            if vel_std > 20:  # If velocity dispersion is high
+                                logger.debug(f"Bin {i} has high velocity dispersion: {vel_std:.1f} km/s")
+                    except Exception as e:
+                        logger.debug(f"Failed to combine velocity-corrected spectra: {e}")
+                        # Fall back to regular spectra
+                        if bin_spectra_list:
+                            spectra_array = np.array(bin_spectra_list)
+                            bin_spectra[:, i] = np.nanmedian(spectra_array, axis=0)
+                            all_nan = np.all(~np.isfinite(spectra_array), axis=0)
+                            bin_spectra[all_nan, i] = np.nan
+                        else:
+                            bin_spectra[:, i] = np.nan
+                # Use regular spectra if no velocity data
+                elif bin_spectra_list:
                     # Convert to array for easier operations
                     spectra_array = np.array(bin_spectra_list)
 
@@ -600,6 +658,190 @@ def combine_spectra_efficiently(
             bin_spectra[:, i] = np.nan
 
     return bin_spectra
+
+
+def optimize_voronoi_binning(
+    x, y, signal, noise, target_bin_count=15, min_bins=10, max_bins=20, 
+    snr_range=(10, 100), cvt=True, quiet=False
+):
+    """
+    Optimize Voronoi binning to achieve a target number of bins
+    
+    Parameters
+    ----------
+    x : ndarray
+        x coordinates
+    y : ndarray
+        y coordinates
+    signal : ndarray
+        Signal data
+    noise : ndarray
+        Noise data
+    target_bin_count : int, default=15
+        Target number of bins (middle of range)
+    min_bins : int, default=10
+        Minimum acceptable number of bins
+    max_bins : int, default=20
+        Maximum acceptable number of bins
+    snr_range : tuple, default=(10, 100)
+        Initial SNR range to search (min, max)
+    cvt : bool, default=True
+        Whether to use CVT in Voronoi binning
+    quiet : bool, default=False
+        Whether to suppress output
+    
+    Returns
+    -------
+    tuple
+        (bin_num, x_gen, y_gen, x_bar, y_bar, sn, n_pixels, scale)
+        Same return values as run_voronoi_binning
+    """
+    from vorbin.voronoi_2d_binning import voronoi_2d_binning
+    import warnings
+
+    logger.info(f"Optimizing Voronoi binning for {target_bin_count} bins (range: {min_bins}-{max_bins})")
+    
+    # Find valid pixels
+    valid_mask = (
+        np.isfinite(x) & np.isfinite(y) & 
+        np.isfinite(signal) & np.isfinite(noise) & 
+        (noise > 0)
+    )
+    x_valid = x[valid_mask]
+    y_valid = y[valid_mask]
+    signal_valid = signal[valid_mask]
+    noise_valid = noise[valid_mask]
+    
+    if not quiet:
+        logger.info(f"Using {np.sum(valid_mask)} valid pixels for optimization")
+    
+    if np.sum(valid_mask) < 3:
+        logger.warning(f"Too few valid pixels ({np.sum(valid_mask)}) for binning optimization")
+        # Fall back to standard binning with target_snr=30
+        return run_voronoi_binning(x, y, signal, noise, 30, 0, True, 1.0)
+    
+    # Calculate pixel SNR statistics
+    pixel_snr = signal_valid / noise_valid
+    median_snr = np.median(pixel_snr)
+    max_snr = np.max(pixel_snr)
+    
+    if not quiet:
+        logger.info(f"Pixel SNR - Median: {median_snr:.1f}, Max: {max_snr:.1f}")
+    
+    # Initialize search parameters
+    min_snr, max_snr = snr_range
+    
+    # Adjust initial SNR range based on pixel SNR statistics
+    if max_snr < median_snr * 2:
+        min_snr = median_snr * 1.1
+        max_snr = median_snr * 10
+    
+    # Try binary search to find optimal target_snr
+    num_iterations = 10  # Maximum iterations for binary search
+    best_result = None
+    best_bin_count = 0
+    
+    for iteration in range(num_iterations):
+        # Calculate midpoint SNR
+        target_snr = (min_snr + max_snr) / 2
+        
+        if not quiet and iteration > 0:
+            logger.info(f"Iteration {iteration}: Trying SNR={target_snr:.1f} (range: {min_snr:.1f}-{max_snr:.1f})")
+        
+        # Run Voronoi binning with current target_snr
+        try:
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", category=RuntimeWarning)
+                
+                try:
+                    # Try with provided CVT setting
+                    binning_result = voronoi_2d_binning(
+                        x_valid, y_valid, signal_valid, noise_valid,
+                        target_snr, cvt=cvt, plot=0, quiet=True, wvt=True
+                    )
+                except Exception:
+                    # Fall back to attempt without CVT
+                    binning_result = voronoi_2d_binning(
+                        x_valid, y_valid, signal_valid, noise_valid,
+                        target_snr, cvt=False, plot=0, quiet=True, wvt=True
+                    )
+                
+                # Extract bin_num from result to count unique bins
+                if isinstance(binning_result, tuple) and len(binning_result) >= 1:
+                    bin_num = binning_result[0]
+                    unique_bins = np.unique(bin_num[bin_num >= 0])
+                    bin_count = len(unique_bins)
+                    
+                    if not quiet:
+                        logger.info(f"SNR={target_snr:.1f} produced {bin_count} bins")
+                    
+                    # Check if this is the best result so far
+                    if min_bins <= bin_count <= max_bins:
+                        # Score based on distance from target
+                        current_score = abs(bin_count - target_bin_count)
+                        best_score = abs(best_bin_count - target_bin_count) if best_bin_count > 0 else float('inf')
+                        
+                        if best_result is None or current_score < best_score:
+                            best_result = binning_result
+                            best_bin_count = bin_count
+                            
+                            if not quiet:
+                                logger.info(f"New best result: {bin_count} bins with SNR={target_snr:.1f}")
+                    
+                    # Update search range
+                    if bin_count > target_bin_count:
+                        # Too many bins, increase SNR
+                        min_snr = target_snr
+                    else:
+                        # Too few bins, decrease SNR
+                        max_snr = target_snr
+                    
+                    # Check for convergence
+                    if bin_count == target_bin_count or abs(min_snr - max_snr) < 0.5:
+                        if not quiet:
+                            logger.info(f"Converged on {bin_count} bins with SNR={target_snr:.1f}")
+                        break
+                else:
+                    # Invalid result, adjust SNR and continue
+                    max_snr = target_snr  # Try a lower SNR next time
+                    if not quiet:
+                        logger.warning("Invalid binning result, trying lower SNR")
+        except Exception as e:
+            # Error in binning, adjust SNR and continue
+            if not quiet:
+                logger.warning(f"Error in binning with SNR={target_snr:.1f}: {e}")
+            max_snr = target_snr  # Try a lower SNR next time
+    
+    # If we found a good result, return it
+    if best_result is not None:
+        if not quiet:
+            logger.info(f"Final optimization result: {best_bin_count} bins")
+        
+        # Map bin numbers back to original shape
+        bin_num_orig = np.full_like(x, -1, dtype=int)
+        if isinstance(best_result, tuple) and len(best_result) >= 1:
+            bin_num_orig[valid_mask] = best_result[0]
+            
+            # Prepare remaining outputs
+            if len(best_result) >= 8:
+                bin_num, x_gen, y_gen, x_bar, y_bar, sn, n_pixels, scale = best_result
+                return bin_num_orig, x_gen, y_gen, x_bar, y_bar, sn, n_pixels, scale
+            elif len(best_result) >= 6:
+                bin_num, x_gen, y_gen, sn, n_pixels, scale = best_result
+                # Create dummy x_bar, y_bar
+                x_bar, y_bar = x_gen.copy(), y_gen.copy()
+                return bin_num_orig, x_gen, y_gen, x_bar, y_bar, sn, n_pixels, scale
+    
+    # If optimization failed, try once more with a fixed target_snr
+    if not quiet:
+        logger.warning("Optimization failed, falling back to standard binning")
+    
+    # Use fallback target_snr based on median pixel SNR
+    fallback_snr = max(15, min(50, median_snr * 3))
+    if not quiet:
+        logger.info(f"Using fallback SNR={fallback_snr:.1f}")
+    
+    return run_voronoi_binning(x, y, signal, noise, fallback_snr, 0, False, 1.0)
 
 
 def run_voronoi_binning(
@@ -1277,6 +1519,117 @@ def calculate_radial_bins(
         bin_edges = np.array([np.nanmax(np.sqrt(x**2 + y**2))])
         bin_radii = np.array([0.0])
         return bin_num, bin_edges, bin_radii
+
+
+def calculate_radial_bins_re_based(x, y, center_x=None, center_y=None, pa=0, ellipticity=0,
+                               effective_radius=None, r_galaxy=None, max_radius_scale=3.0,
+                               n_bins=4):  # Default changed to 4 bins
+    """
+    Calculate radial bins using effective radius (Re) as the scaling factor.
+    Specifically creates 4 bins: 0-0.5 Re, 0.5-1 Re, 1-1.5 Re, >1.5 Re
+    
+    Parameters:
+    -----------
+    x, y : array-like
+        Pixel coordinates
+    center_x, center_y : float, optional
+        Center coordinates. If None, uses image center.
+    pa : float, optional
+        Position angle in degrees
+    ellipticity : float, optional
+        Ellipticity (1-b/a)
+    effective_radius : float, optional
+        Effective radius (Re) in arcseconds
+    r_galaxy : array-like, optional
+        Pre-calculated galaxy radii in arcsec
+    max_radius_scale : float, optional
+        Maximum radius as a multiple of Re (default: 3.0)
+    n_bins : int, optional
+        Number of radial bins (default: 4, fixed bin ranges used regardless)
+        
+    Returns:
+    --------
+    bin_num : ndarray
+        Array of bin numbers for each pixel
+    bin_edges : ndarray
+        Array of bin edges in arcseconds
+    bin_radii : ndarray
+        Array of bin radii (midpoints) in arcseconds
+    """
+    if center_x is None:
+        center_x = np.max(x) / 2
+    if center_y is None:
+        center_y = np.max(y) / 2
+        
+    # Ensure we have coordinates as numpy arrays
+    x = np.asarray(x)
+    y = np.asarray(y)
+    
+    # Use pre-calculated r_galaxy if provided
+    if r_galaxy is not None:
+        r = r_galaxy
+    else:
+        # Calculate radii in pixels
+        dx = x - center_x
+        dy = y - center_y
+        
+        # Convert to elliptical radius
+        pa_rad = np.radians(pa)
+        x_rot = dx * np.cos(pa_rad) + dy * np.sin(pa_rad)
+        y_rot = -dx * np.sin(pa_rad) + dy * np.cos(pa_rad)
+        
+        # Apply ellipticity
+        a = 1.0
+        b = 1.0 - ellipticity
+        
+        # Calculate elliptical radius
+        r = np.sqrt((x_rot / a) ** 2 + (y_rot / b) ** 2)
+    
+    # If effective radius is not provided, estimate it
+    if effective_radius is None or effective_radius <= 0:
+        # Estimate Re as half the 90th percentile radius
+        effective_radius = np.nanpercentile(r, 90) / 2
+        logger.warning(f"Effective radius not provided, estimated as {effective_radius:.2f}")
+    
+    # Create exactly 4 bins with specific Re fractions:
+    # 0-0.5 Re, 0.5-1 Re, 1-1.5 Re, >1.5 Re (up to max_radius_scale)
+    bin_edges = np.array([0.0, 0.5, 1.0, 1.5, max_radius_scale]) * effective_radius
+    
+    # Force 4 bins regardless of n_bins parameter
+    n_bins = 4 
+    
+    # Calculate bin radii (midpoints)
+    bin_radii = np.zeros(n_bins)
+    for i in range(n_bins):
+        if i < n_bins - 1:  # Normal bins
+            bin_radii[i] = (bin_edges[i] + bin_edges[i+1]) / 2
+        else:  # Last bin (open-ended)
+            # For last bin, use midpoint between lower edge and 90th percentile
+            r_in_bin = r[(r >= bin_edges[i]) & (r < bin_edges[i+1])]
+            if len(r_in_bin) > 0:
+                # Use percentile if we have enough points
+                radius_90 = np.nanpercentile(r_in_bin, 90)
+                bin_radii[i] = (bin_edges[i] + radius_90) / 2
+            else:
+                # Fallback to simple midpoint
+                bin_radii[i] = (bin_edges[i] + bin_edges[i+1]) / 2
+    
+    # Assign each pixel to a bin
+    bin_num = np.full_like(r, -1)  # Initialize with -1 (no bin)
+    
+    # For each bin, assign pixels within its radius range
+    for i in range(n_bins):
+        bin_mask = (r >= bin_edges[i]) & (r < bin_edges[i + 1])
+        bin_num[bin_mask] = i
+    
+    # Log the specific bin edges used
+    logger.info(f"Created 4 radial bins with Re={effective_radius:.2f}:")
+    logger.info(f"  Bin 0: 0-0.5 Re ({bin_edges[0]:.2f}-{bin_edges[1]:.2f} arcsec)")
+    logger.info(f"  Bin 1: 0.5-1 Re ({bin_edges[1]:.2f}-{bin_edges[2]:.2f} arcsec)")
+    logger.info(f"  Bin 2: 1-1.5 Re ({bin_edges[2]:.2f}-{bin_edges[3]:.2f} arcsec)")
+    logger.info(f"  Bin 3: >1.5 Re ({bin_edges[3]:.2f}-{bin_edges[4]:.2f} arcsec)")
+    
+    return bin_num, bin_edges, bin_radii
 
 
 def create_grid_binning(

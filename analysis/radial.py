@@ -18,6 +18,7 @@ from binning import (
     calculate_radial_bins,
     calculate_wavelength_intersection,
     combine_spectra_efficiently,
+    calculate_radial_bins_re_based
 )
 from utils.io import save_standardized_results
 
@@ -26,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 def run_rdb_analysis(args, cube, p2p_results=None):
     """
-    Run radial binning analysis on MUSE data cube
+    Run radial binning analysis on MUSE data cube with improved Re-based binning
     
     Parameters
     ----------
@@ -89,7 +90,9 @@ def run_rdb_analysis(args, cube, p2p_results=None):
     ellipticity = args.ellipticity if hasattr(args, "ellipticity") else 0.0
     center_x = args.center_x if hasattr(args, "center_x") else None
     center_y = args.center_y if hasattr(args, "center_y") else None
-    use_physical_radius = args.physical_radius if hasattr(args, "physical_radius") else False
+    # Force physical radius to true - improved version always uses physical radius
+    use_physical_radius = True
+    verbose = args.verbose if hasattr(args, "verbose") else False
 
     # Get cube coordinates, ensuring we use the original x,y coordinates from the cube
     x = cube.x if hasattr(cube, "x") else np.arange(cube._n_x * cube._n_y) % cube._n_x
@@ -99,66 +102,92 @@ def run_rdb_analysis(args, cube, p2p_results=None):
     r_galaxy = None
     ellipse_params = None
     Re_arcsec = None
-    if use_physical_radius:
-        try:
-            from physical_radius import calculate_galaxy_radius, calculate_effective_radius
-            
-            # Create flux map for radius calculation
-            flux_2d = np.nanmedian(cube._cube_data, axis=0)
-            
-            # Calculate physical radius and ellipse parameters
-            r_galaxy, ellipse_params = calculate_galaxy_radius(
-                flux_2d,
-                pixel_size_x=cube._pxl_size_x,
-                pixel_size_y=cube._pxl_size_y
-            )
-            
-            # Update parameters with calculated values
-            pa = ellipse_params["PA_degrees"]
-            ellipticity = ellipse_params["ellipticity"]
-            center_x = ellipse_params["center_x"]
-            center_y = ellipse_params["center_y"]
-            
-            logger.info(f"Using physical radius with PA={pa:.1f}°, ε={ellipticity:.2f}, "
-                        f"center=({center_x:.1f}, {center_y:.1f})")
-                        
-            # Store for later use
-            cube._physical_radius = r_galaxy
-            cube._ellipse_params = ellipse_params
-            
-            # Calculate effective radius (Re)
-            Re_arcsec = calculate_effective_radius(
-                flux_2d,
-                r_galaxy,
-                ellipse_params,
-                pixel_size_x=cube._pxl_size_x,
-                pixel_size_y=cube._pxl_size_y
-            )
-            
-            logger.info(f"Calculated effective radius Re = {Re_arcsec:.2f} arcsec")
-                        
-            # Store for later use
-            cube._effective_radius = Re_arcsec
-            
-        except Exception as e:
-            logger.warning(f"Error calculating physical radius: {e}")
-            use_physical_radius = False
+    try:
+        # Always try to calculate physical radius
+        from physical_radius import calculate_galaxy_radius, calculate_effective_radius, detect_sources
+        
+        # Simplified source detection without importing detect_sources
+        # Create flux map for radius calculation
+        flux_2d = np.nanmedian(cube._cube_data, axis=0)
 
-    # Run radial binning
-    logger.info(f"Running radial binning with {n_rings} rings, "
-                f"PA={pa:.1f}°, ellipticity={ellipticity:.2f}")
+        # Skip source detection if it's causing problems
+        # Calculate physical radius and ellipse parameters directly
+        r_galaxy, ellipse_params = calculate_galaxy_radius(
+            flux_2d,
+            pixel_size_x=cube._pxl_size_x,
+            pixel_size_y=cube._pxl_size_y,
+            focus_central=True  # Ensure we focus on the central galaxy
+        )
+        
+        # Update parameters with calculated values
+        pa = ellipse_params["PA_degrees"]
+        ellipticity = ellipse_params["ellipticity"]
+        center_x = ellipse_params["center_x"]
+        center_y = ellipse_params["center_y"]
+        
+        logger.info(f"Using physical radius with PA={pa:.1f}°, ε={ellipticity:.2f}, "
+                    f"center=({center_x:.1f}, {center_y:.1f})")
+                    
+        # Store for later use
+        cube._physical_radius = r_galaxy
+        cube._ellipse_params = ellipse_params
+        
+        # Calculate effective radius (Re)
+        Re_arcsec = calculate_effective_radius(
+            flux_2d,
+            r_galaxy,
+            ellipse_params,
+            pixel_size_x=cube._pxl_size_x,
+            pixel_size_y=cube._pxl_size_y
+        )
+        
+        logger.info(f"Calculated effective radius Re = {Re_arcsec:.2f} arcsec")
+                    
+        # Store for later use
+        cube._effective_radius = Re_arcsec
+        
+    except Exception as e:
+        logger.warning(f"Error calculating physical radius: {e}")
+        use_physical_radius = False
+
+    # Run radial binning - FORCE RE-BASED BINNING
+    logger.info(f"Running radial binning with PA={pa:.1f}°, ellipticity={ellipticity:.2f}")
     
-    # Calculate radial bins
-    bin_num, bin_edges, bin_radii = calculate_radial_bins(
-        x, y,
-        center_x=center_x,
-        center_y=center_y,
-        pa=pa,
-        ellipticity=ellipticity,
-        n_rings=n_rings,
-        log_spacing=log_spacing,
-        r_galaxy=r_galaxy.ravel() if r_galaxy is not None else None
-    )
+    # Use Re-based binning if effective radius is available - this is now the default
+    if use_physical_radius and Re_arcsec is not None and Re_arcsec > 0:
+        logger.info(f"Using Re-based binning with effective radius {Re_arcsec:.2f} arcsec")
+        
+        # Check if we have r_galaxy values to use
+        if r_galaxy is not None:
+            logger.info("Using provided R_galaxy values for radial binning")
+            
+        # Use 3 Re as the maximum radius as requested
+        max_radius_scale = 3.0  # 3 times Re as maximum radius
+        
+        bin_num, bin_edges, bin_radii = calculate_radial_bins_re_based(
+            x, y,
+            center_x=center_x,
+            center_y=center_y,
+            pa=pa,
+            ellipticity=ellipticity,
+            effective_radius=Re_arcsec,
+            r_galaxy=r_galaxy.ravel() if r_galaxy is not None else None,
+            max_radius_scale=max_radius_scale,  # Use 3 Re as maximum radius
+            n_bins=n_rings  # Still use the specified number of rings
+        )
+    else:
+        # Fallback to standard radial binning if Re-binning not available
+        logger.warning("Using standard radial binning as Re could not be calculated")
+        bin_num, bin_edges, bin_radii = calculate_radial_bins(
+            x, y,
+            center_x=center_x,
+            center_y=center_y,
+            pa=pa,
+            ellipticity=ellipticity,
+            n_rings=n_rings,
+            log_spacing=log_spacing,
+            r_galaxy=r_galaxy.ravel() if r_galaxy is not None else None
+        )
 
     # Create bin indices
     bin_indices = []
@@ -170,6 +199,8 @@ def run_rdb_analysis(args, cube, p2p_results=None):
 
     # Get velocity field from P2P results if available, for velocity correction
     velocity_field = None
+    gas_velocity_field = None  # Additional gas velocity field for separate correction
+    
     if p2p_results is not None:
         try:
             # Try standard format first
@@ -186,6 +217,19 @@ def run_rdb_analysis(args, cube, p2p_results=None):
                 logger.info(
                     "Using velocity field from P2P results for velocity correction"
                 )
+                
+                # Try to get gas velocity field as well
+                if "emission" in p2p_results and "velocity" in p2p_results["emission"]:
+                    # Try to extract a representative gas velocity field
+                    for line_name, vel_map in p2p_results["emission"]["velocity"].items():
+                        # Use the first gas velocity map with valid values
+                        if np.any(np.isfinite(vel_map)):
+                            gas_velocity_field = vel_map
+                            logger.info(f"Using {line_name} velocity field for gas")
+                            
+                            # Attach gas velocity field to the stellar field for easy access
+                            velocity_field.gas_velocity_field = gas_velocity_field
+                            break
         except Exception as e:
             logger.warning(f"Error extracting velocity field from P2P results: {e}")
 
@@ -204,9 +248,11 @@ def run_rdb_analysis(args, cube, p2p_results=None):
     wavelength = cube._lambda_gal[wave_mask]
     spectra = cube._spectra[wave_mask]
 
-    # Combine spectra into bins with velocity correction
+    # Combine spectra into bins with improved velocity correction
     binned_spectra = combine_spectra_efficiently(
-        spectra, wavelength, bin_indices, velocity_field, cube._n_x, cube._n_y
+        spectra, wavelength, bin_indices, velocity_field, cube._n_x, cube._n_y,
+        edge_treatment="extend",
+        use_separate_velocity=True  # Enable separate stellar and gas velocity handling
     )
 
     # Create metadata
@@ -221,6 +267,7 @@ def run_rdb_analysis(args, cube, p2p_results=None):
         "log_spacing": log_spacing,
         "bin_edges": bin_edges,
         "bin_radii": bin_radii,
+        "max_radius_scale": max_radius_scale if 'max_radius_scale' in locals() else None,
         "time": time.time(),
         "galaxy_name": galaxy_name,
         "analysis_type": "RDB",
@@ -255,6 +302,9 @@ def run_rdb_analysis(args, cube, p2p_results=None):
     if hasattr(cube, "setup_binning"):
         cube.setup_binning("RDB", binned_data)
     
+    # Log the number of bins actually created
+    logger.info(f"Cube set up for RDB analysis with {len(bin_indices)} bins")
+    
     # Run stellar component analysis
     logger.info("Fitting stellar kinematics for binned spectra...")
     
@@ -286,7 +336,7 @@ def run_rdb_analysis(args, cube, p2p_results=None):
     if hasattr(cube, "_bin_weights") and cube._bin_weights is not None:
         try:
             logger.info("Extracting stellar population parameters for bins...")
-            start_time = time.time()
+            start_sp_time = time.time()
 
             # Initialize weight parser
             from stellar_population import WeightParser
@@ -315,10 +365,92 @@ def run_rdb_analysis(args, cube, p2p_results=None):
                 except Exception as e:
                     logger.debug(f"Error calculating stellar params for bin {bin_idx}: {e}")
 
-            logger.info(f"Stellar population parameters extracted in {time.time() - start_time:.1f} seconds")
+            logger.info(f"Stellar population parameters extracted in {time.time() - start_sp_time:.1f} seconds")
         except Exception as e:
             logger.error(f"Failed to extract stellar population parameters: {e}")
             stellar_pop_params = None
+
+    # Calculate rotation or kinematic model if available
+    global_kinematics = None
+    if hasattr(args, "rotation_model") and args.rotation_model:
+        try:
+            logger.info("Calculating rotation model for radial velocity profile...")
+            
+            # Create GalaxyParameters object
+            gp = galaxy_params.GalaxyParameters(
+                velocity_field=stellar_velocity_field,
+                dispersion_field=stellar_dispersion_field,
+                pixelsize=cube._pxl_size_x,
+                radius=bin_radii,
+            )
+            
+            # Fit rotation curve
+            rotation_result = gp.fit_rotation_curve()
+            
+            # Calculate kinematics
+            kinematics_result = gp.calculate_kinematics()
+            
+            # Combine results
+            global_kinematics = {**rotation_result, **kinematics_result}
+            
+            logger.info("Rotation model completed")
+        except Exception as e:
+            logger.warning(f"Error calculating rotation model: {e}")
+    
+    # IMPORTANT: Create the rdb_results dictionary BEFORE accessing it
+    # This is the key fix to prevent the UnboundLocalError
+    rdb_results = {
+        "analysis_type": "RDB",
+        "binning": {
+            "bin_num": bin_num,
+            "n_rings": n_rings,
+            "pa": pa,
+            "ellipticity": ellipticity,
+            "center_x": center_x if center_x is not None else cube._n_x // 2,
+            "center_y": center_y if center_y is not None else cube._n_y // 2,
+            "log_spacing": log_spacing,
+            "bin_edges": bin_edges,
+            "bin_radii": bin_radii,
+            "max_radius_scale": max_radius_scale if 'max_radius_scale' in locals() else None,
+        },
+        "stellar_kinematics": {
+            "velocity": stellar_velocity_field,
+            "dispersion": stellar_dispersion_field,
+        },
+        "distance": {
+            "bin_distances": bin_radii,  # Use bin radii as distances
+            "effective_radius": Re_arcsec,  # Add effective radius
+            "pixelsize_x": cube._pxl_size_x,
+            "pixelsize_y": cube._pxl_size_y,
+        },
+        "meta_data": {
+            "nx": cube._n_x,
+            "ny": cube._n_y,
+            "n_rings": n_rings,
+            "pa": pa,
+            "ellipticity": ellipticity,
+            "center_x": center_x if center_x is not None else cube._n_x // 2,
+            "center_y": center_y if center_y is not None else cube._n_y // 2,
+            "log_spacing": log_spacing,
+            "bin_edges": bin_edges,
+            "bin_radii": bin_radii,
+            "max_radius_scale": max_radius_scale if 'max_radius_scale' in locals() else None,
+            "time": time.time(),
+            "galaxy_name": galaxy_name,
+            "analysis_type": "RDB",
+            "pixelsize_x": cube._pxl_size_x,
+            "pixelsize_y": cube._pxl_size_y,
+            "redshift": cube._redshift if hasattr(cube, "_redshift") else 0.0,
+        },
+    }
+
+    # Add stellar population parameters if available
+    if stellar_pop_params is not None:
+        rdb_results["stellar_population"] = stellar_pop_params
+
+    # Add global kinematics if available
+    if global_kinematics is not None:
+        rdb_results["global_kinematics"] = global_kinematics
 
     # Fit emission lines if requested
     emission_result = None
@@ -358,106 +490,38 @@ def run_rdb_analysis(args, cube, p2p_results=None):
             indices_list = None
             if hasattr(args, "configured_indices"):
                 indices_list = args.configured_indices
+                    
+            # Get methods list (continuum modes)
+            methods = ['auto', 'original', 'fit']
+            if hasattr(args, "indices_methods"):
+                methods = args.indices_methods
             
-            # print(indices_list)
-            # Calculate indices
-            indices_result = cube.calculate_spectral_indices(
+            # Calculate indices with multiple methods
+            indices_result = cube.calculate_spectral_indices_multi_method(
                 indices_list=indices_list,
                 n_jobs=args.n_jobs,
+                verbose=verbose,
                 save_mode='RDB',
-                save_path=plots_dir,
-                verbose=True
+                save_path=plots_dir
             )
             
             logger.info(f"Spectral indices calculation completed in {time.time() - start_idx_time:.1f} seconds")
         except Exception as e:
             logger.error(f"Error calculating spectral indices: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             indices_result = None
 
-    # Save binned data for later reuse
-    try:
-        binned_data.save(data_dir / f"{galaxy_name}_RDB_binned.npz")
-    except Exception as e:
-        logger.warning(f"Error saving binned data: {e}")
-
-    # Calculate rotation or kinematic model if available
-    global_kinematics = None
-    if hasattr(args, "rotation_model") and args.rotation_model:
-        try:
-            logger.info("Calculating rotation model for radial velocity profile...")
-            
-            # Create GalaxyParameters object
-            gp = galaxy_params.GalaxyParameters(
-                velocity_field=stellar_velocity_field,
-                dispersion_field=stellar_dispersion_field,
-                pixelsize=cube._pxl_size_x,
-                radius=bin_radii,
-            )
-            
-            # Fit rotation curve
-            rotation_result = gp.fit_rotation_curve()
-            
-            # Calculate kinematics
-            kinematics_result = gp.calculate_kinematics()
-            
-            # Combine results
-            global_kinematics = {**rotation_result, **kinematics_result}
-            
-            logger.info("Rotation model completed")
-        except Exception as e:
-            logger.warning(f"Error calculating rotation model: {e}")
-    
-    # Create standardized results dictionary
-    rdb_results = {
-        "analysis_type": "RDB",
-        "binning": {
-            "bin_num": bin_num,
-            "n_rings": n_rings,
-            "pa": pa,
-            "ellipticity": ellipticity,
-            "center_x": center_x if center_x is not None else cube._n_x // 2,
-            "center_y": center_y if center_y is not None else cube._n_y // 2,
-            "log_spacing": log_spacing,
-            "bin_edges": bin_edges,
-            "bin_radii": bin_radii,
-        },
-        "stellar_kinematics": {
-            "velocity": stellar_velocity_field,
-            "dispersion": stellar_dispersion_field,
-        },
-        "distance": {
-            "bin_distances": bin_radii,  # Use bin radii as distances
-            "effective_radius": Re_arcsec,  # Add effective radius
-            "pixelsize_x": cube._pxl_size_x,
-            "pixelsize_y": cube._pxl_size_y,
-        },
-        "meta_data":{
-            "nx": cube._n_x,
-            "ny": cube._n_y,
-            "n_rings": n_rings,
-            "pa": pa,
-            "ellipticity": ellipticity,
-            "center_x": center_x if center_x is not None else cube._n_x // 2,
-            "center_y": center_y if center_y is not None else cube._n_y // 2,
-            "log_spacing": log_spacing,
-            "bin_edges": bin_edges,
-            "bin_radii": bin_radii,
-            "time": time.time(),
-            "galaxy_name": galaxy_name,
-            "analysis_type": "RDB",
-            "pixelsize_x": cube._pxl_size_x,
-            "pixelsize_y": cube._pxl_size_y,
-            "redshift": cube._redshift if hasattr(cube, "_redshift") else 0.0,
-        },
-    }
-    
-    # Add stellar population parameters if available
-    if stellar_pop_params is not None:
-        rdb_results["stellar_population"] = stellar_pop_params
-    
-    # Add global kinematics if available
-    if global_kinematics is not None:
-        rdb_results["global_kinematics"] = global_kinematics
+    # Add spectral indices results if available - AFTER creating rdb_results
+    if indices_result is not None:
+        if isinstance(indices_result, dict) and "auto" in indices_result:
+            # Results with multiple methods format
+            rdb_results["bin_indices_multi"] = indices_result
+            # For backward compatibility, use auto method as default
+            rdb_results["bin_indices"] = indices_result["auto"]
+        else:
+            # Standard single-method format
+            rdb_results["bin_indices"] = indices_result
 
     # Add emission line results if available
     if emission_result is not None:
@@ -473,9 +537,11 @@ def run_rdb_analysis(args, cube, p2p_results=None):
             if key in emission_result and emission_result[key] is not None:
                 rdb_results[key] = emission_result[key]
 
-    # Add spectral indices results if available
-    if indices_result is not None:
-        rdb_results["bin_indices"] = indices_result
+    # Save binned data for later reuse
+    try:
+        binned_data.save(data_dir / f"{galaxy_name}_RDB_binned.npz")
+    except Exception as e:
+        logger.warning(f"Error saving binned data: {e}")
 
     # Save standardized results
     should_save = not hasattr(args, "no_save") or not args.no_save
@@ -485,11 +551,28 @@ def run_rdb_analysis(args, cube, p2p_results=None):
     # Create visualization plots
     should_plot = not hasattr(args, "no_plots") or not args.no_plots
     if should_plot:
+        try:
+            # Verify that the dimensions match before plotting to avoid errors
+            if 'bin_distances' in rdb_results['distance'] and 'velocity' in rdb_results['stellar_kinematics']:
+                distances = rdb_results['distance']['bin_distances']
+                velocity = rdb_results['stellar_kinematics']['velocity']
+                dispersion = rdb_results['stellar_kinematics']['dispersion']
+                
+                # Log the data shape to help debug dimension mismatches
+                logger.info(f"Expected data shape: distances={len(distances)}, velocity={len(velocity)}, dispersion={len(dispersion)}")
+                
+                if len(distances) != len(velocity):
+                    logger.warning(f"Dimension mismatch: distances={len(distances)}, velocity={len(velocity)}")
+                
+                if len(distances) != len(dispersion):
+                    logger.warning(f"Dimension mismatch: distances={len(distances)}, dispersion={len(dispersion)}")
+        except Exception as e:
+            logger.warning(f"Error checking dimensions: {e}")
+            
         create_rdb_plots(cube, rdb_results, galaxy_name, plots_dir, args)
 
     logger.info("Radial binning analysis completed")
     return rdb_results
-
 
 def create_rdb_plots(cube, rdb_results, galaxy_name, plots_dir, args):
     """

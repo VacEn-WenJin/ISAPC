@@ -56,6 +56,57 @@ def calculate_distance_to_center(x, y, pxl_size_x, pxl_size_y=None):
     return distance
 
 
+def create_radial_profile_plots_wrapper(results, galaxy_name, plots_dir, physical_scale=True, analysis_type="P2P"):
+    """
+    Wrapper for create_radial_profile_plots with signature matching how it's called in run_p2p_analysis
+    """
+    # We don't have access to the cube here, so we can't use physical scaling
+    logger.info(f"Creating radial profile plots for {galaxy_name} (no physical scaling)")
+    return create_radial_profile_plots(
+        results=results,
+        cube=None,  # We don't have cube here
+        galaxy_name=galaxy_name,
+        plots_dir=plots_dir,
+        physical_scale=False,  # Can't use physical scaling without cube
+        analysis_type=analysis_type
+    )
+
+
+def safe_extract(array, mask):
+    """
+    Safely extract values from an array using a mask
+    
+    Parameters
+    ----------
+    array : ndarray
+        Array to extract from
+    mask : ndarray
+        Boolean mask
+    
+    Returns
+    -------
+    ndarray
+        Extracted values
+    """
+    try:
+        # First convert to numeric if needed
+        if not isinstance(array, np.ndarray) or not np.issubdtype(array.dtype, np.number):
+            numeric_array = np.zeros(array.shape, dtype=float)
+            for i, val in enumerate(np.ravel(array)):
+                try:
+                    numeric_array.flat[i] = float(val)
+                except (ValueError, TypeError):
+                    numeric_array.flat[i] = np.nan
+            # Now safely extract using the mask
+            return numeric_array[mask]
+        else:
+            # Standard extraction for numeric arrays
+            return array[mask]
+    except Exception as e:
+        logger.debug(f"Error safely extracting values: {e}")
+        return np.array([])
+
+
 def run_p2p_analysis(args, cube, Pmode=False):
     """
     Run pixel-to-pixel analysis
@@ -612,11 +663,12 @@ def run_p2p_analysis(args, cube, Pmode=False):
             using_emission,
         )
         # Create radial profile plots
-        create_radial_profile_plots(
+        # In run_p2p_analysis, replace:
+        create_radial_profile_plots_wrapper(
             p2p_results,
-            plots_dir=plots_dir,
-            galaxy_name=galaxy_name,
-            analysis_type="P2P",
+            galaxy_name,
+            plots_dir,
+            analysis_type="P2P"
         )
 
     logger.info("Pixel-to-pixel analysis completed")
@@ -1382,433 +1434,404 @@ def create_indices_plots(cube, indices_result, plots_dir, galaxy_name, pixel_siz
             plt.close("all")  # Ensure all figures are closed
 
 
-def create_radial_profile_plots(results, plots_dir, galaxy_name, analysis_type="P2P"):
+def create_radial_profile_plots(
+    results, cube, galaxy_name, plots_dir, physical_scale=True, analysis_type="P2P"
+):
     """
-    Create radial profile plots showing parameters vs radius
-
+    Create radial profile plots for analysis results
+    
     Parameters
     ----------
     results : dict
-        Analysis results dictionary
-    plots_dir : Path
-        Directory to save plots
+        Analysis results
+    cube : MUSECube
+        MUSE data cube
     galaxy_name : str
         Galaxy name
-    analysis_type : str
-        Analysis type ("P2P", "VNB", "RDB")
+    plots_dir : str or Path
+        Directory to save plots
+    physical_scale : bool, default=True
+        Whether to use physical scale for radius
+    analysis_type : str, default="P2P"
+        Type of analysis (P2P, VNB, RDB)
     """
-    # Extract distance information
-    if analysis_type == "P2P":
-        # For P2P, need radial averaging
-        distance_field = results["distance"]["field"]
-        # Replace NaN values with large values so they'll be ignored
-        valid_mask = np.isfinite(distance_field)
-
-        # Create distance bins
-        max_dist = np.nanmax(distance_field)
-        r_bins = np.linspace(0, max_dist, 15)
-        r_centers = 0.5 * (r_bins[1:] + r_bins[:-1])
-
-        # Prepare dictionary to store radial parameters
-        radial_params = {}
-
-        # Process stellar kinematics parameters
-        if "stellar_kinematics" in results:
-            velocity = results["stellar_kinematics"]["velocity_field"]
-            dispersion = results["stellar_kinematics"]["dispersion_field"]
-
-            # Calculate average for each radial bin
-            vel_profile = []
-            disp_profile = []
-            vel_err = []
-            disp_err = []
-
-            for i in range(len(r_bins) - 1):
-                r_min, r_max = r_bins[i], r_bins[i + 1]
-                r_mask = (
-                    (distance_field >= r_min) & (distance_field < r_max) & valid_mask
-                )
-
-                if np.any(r_mask & ~np.isnan(velocity)):
-                    vel_values = velocity[r_mask & ~np.isnan(velocity)]
-                    vel_profile.append(np.nanmean(vel_values))
-                    vel_err.append(np.nanstd(vel_values) / np.sqrt(len(vel_values)))
-                else:
-                    vel_profile.append(np.nan)
-                    vel_err.append(np.nan)
-
-                if np.any(r_mask & ~np.isnan(dispersion)):
-                    disp_values = dispersion[r_mask & ~np.isnan(dispersion)]
-                    disp_profile.append(np.nanmean(disp_values))
-                    disp_err.append(np.nanstd(disp_values) / np.sqrt(len(disp_values)))
-                else:
-                    disp_profile.append(np.nan)
-                    disp_err.append(np.nan)
-
-            radial_params["velocity"] = (
-                r_centers,
-                np.array(vel_profile),
-                np.array(vel_err),
-            )
-            radial_params["dispersion"] = (
-                r_centers,
-                np.array(disp_profile),
-                np.array(disp_err),
-            )
-
-        # Process stellar population parameters
-        if "stellar_population" in results:
-            for param_name, param_map in results["stellar_population"].items():
-                param_profile = []
-                param_err = []
-
-                for i in range(len(r_bins) - 1):
-                    r_min, r_max = r_bins[i], r_bins[i + 1]
-                    r_mask = (
-                        (distance_field >= r_min)
-                        & (distance_field < r_max)
-                        & valid_mask
-                    )
-
-                    if np.any(r_mask & ~np.isnan(param_map)):
-                        param_values = param_map[r_mask & ~np.isnan(param_map)]
-                        param_profile.append(np.nanmean(param_values))
-                        param_err.append(
-                            np.nanstd(param_values) / np.sqrt(len(param_values))
-                        )
-                    else:
-                        param_profile.append(np.nan)
-                        param_err.append(np.nan)
-
-                radial_params[param_name] = (
-                    r_centers,
-                    np.array(param_profile),
-                    np.array(param_err),
-                )
-
-        # Process emission line parameters
-        if "emission" in results:
-            # Process emission line fluxes
-            for key, flux_map in results["emission"].items():
-                if key.startswith("flux_") and isinstance(flux_map, np.ndarray):
-                    flux_profile = []
-                    flux_err = []
-
-                    for i in range(len(r_bins) - 1):
-                        r_min, r_max = r_bins[i], r_bins[i + 1]
-                        r_mask = (
-                            (distance_field >= r_min)
-                            & (distance_field < r_max)
-                            & valid_mask
-                        )
-
-                        if np.any(r_mask & ~np.isnan(flux_map)):
-                            flux_values = flux_map[r_mask & ~np.isnan(flux_map)]
-                            flux_profile.append(np.nanmean(flux_values))
-                            flux_err.append(
-                                np.nanstd(flux_values) / np.sqrt(len(flux_values))
-                            )
-                        else:
-                            flux_profile.append(np.nan)
-                            flux_err.append(np.nan)
-
-                    radial_params[key] = (
-                        r_centers,
-                        np.array(flux_profile),
-                        np.array(flux_err),
-                    )
-
-            # Process line ratios
-            if "line_ratios" in results["emission"]:
-                for ratio_name, ratio_map in results["emission"]["line_ratios"].items():
-                    ratio_profile = []
-                    ratio_err = []
-
-                    for i in range(len(r_bins) - 1):
-                        r_min, r_max = r_bins[i], r_bins[i + 1]
-                        r_mask = (
-                            (distance_field >= r_min)
-                            & (distance_field < r_max)
-                            & valid_mask
-                        )
-
-                        if np.any(r_mask & ~np.isnan(ratio_map)):
-                            ratio_values = ratio_map[r_mask & ~np.isnan(ratio_map)]
-                            ratio_profile.append(np.nanmean(ratio_values))
-                            ratio_err.append(
-                                np.nanstd(ratio_values) / np.sqrt(len(ratio_values))
-                            )
-                        else:
-                            ratio_profile.append(np.nan)
-                            ratio_err.append(np.nan)
-
-                    radial_params[f"ratio_{ratio_name}"] = (
-                        r_centers,
-                        np.array(ratio_profile),
-                        np.array(ratio_err),
-                    )
-
-        # Process spectral indices
-        if "indices" in results:
-            for index_name, index_map in results["indices"].items():
-                index_profile = []
-                index_err = []
-
-                for i in range(len(r_bins) - 1):
-                    r_min, r_max = r_bins[i], r_bins[i + 1]
-                    r_mask = (
-                        (distance_field >= r_min)
-                        & (distance_field < r_max)
-                        & valid_mask
-                    )
-
-                    if np.any(r_mask & ~np.isnan(index_map)):
-                        index_values = index_map[r_mask & ~np.isnan(index_map)]
-                        index_profile.append(np.nanmean(index_values))
-                        index_err.append(
-                            np.nanstd(index_values) / np.sqrt(len(index_values))
-                        )
-                    else:
-                        index_profile.append(np.nan)
-                        index_err.append(np.nan)
-
-                radial_params[f"index_{index_name}"] = (
-                    r_centers,
-                    np.array(index_profile),
-                    np.array(index_err),
-                )
-
-    else:  # For VNB and RDB, use directly provided bin distances and parameters
-        if "distance" not in results or "bin_distances" not in results["distance"]:
-            logger.warning(f"No distance information in {analysis_type} results")
+    # Check if cube was provided for physical scaling
+    if physical_scale and cube is None:
+        logger.warning("No cube provided for physical scaling, using pixel units")
+        physical_scale = False
+    
+    # Create directory for radial profiles
+    radial_dir = Path(plots_dir) / "radial"
+    radial_dir.mkdir(exist_ok=True, parents=True)
+    
+    # Extract coordinates and velocity/dispersion fields
+    try:
+        # Get fields from results
+        vfield = results.get("velocity_field", None)
+        dfield = results.get("dispersion_field", None)
+        
+        # Check if we have velocity and dispersion fields
+        if vfield is None or dfield is None:
+            if "stellar_kinematics" in results:
+                vfield = results["stellar_kinematics"].get("velocity_field", None)
+                dfield = results["stellar_kinematics"].get("dispersion_field", None)
+        
+        # Skip if we don't have velocity and dispersion fields
+        if vfield is None or dfield is None:
+            logger.warning("No velocity or dispersion fields found for radial profiles")
             return
-
-        r_centers = results["distance"]["bin_distances"]
-
-        # Prepare radial parameters dictionary
-        radial_params = {}
-
-        # Process stellar kinematics parameters
-        if "stellar_kinematics" in results:
-            velocity = results["stellar_kinematics"]["velocity"]
-            dispersion = results["stellar_kinematics"]["dispersion"]
-
-            # For VNB and RDB, no direct error estimates, use zero error array
-            zero_err = np.zeros_like(r_centers)
-
-            radial_params["velocity"] = (r_centers, velocity, zero_err)
-            radial_params["dispersion"] = (r_centers, dispersion, zero_err)
-
-        # Process stellar population parameters
-        if "stellar_population" in results:
-            for param_name, param_values in results["stellar_population"].items():
-                zero_err = np.zeros_like(param_values)
-                radial_params[param_name] = (r_centers, param_values, zero_err)
-
-        # Process emission line parameters
-        if "emission" in results:
-            # Process line fluxes
-            for key, flux_values in results["emission"].items():
-                if key.startswith("flux_") and isinstance(flux_values, np.ndarray):
-                    zero_err = np.zeros_like(flux_values)
-                    radial_params[key] = (r_centers, flux_values, zero_err)
-
-            # Process line ratios
-            if "line_ratios" in results["emission"]:
-                for ratio_name, ratio_values in results["emission"][
-                    "line_ratios"
-                ].items():
-                    zero_err = np.zeros_like(ratio_values)
-                    radial_params[f"ratio_{ratio_name}"] = (
-                        r_centers,
-                        ratio_values,
-                        zero_err,
+            
+        # Get dimensions
+        ny, nx = vfield.shape
+        
+        # Calculate coordinates
+        y, x = np.indices((ny, nx))
+        center_y, center_x = ny // 2, nx // 2
+        
+        # Calculate radius in pixels
+        r_pix = np.sqrt((x - center_x)**2 + (y - center_y)**2)
+        
+        # Convert to physical units if requested
+        if physical_scale and hasattr(cube, "_pxl_size_x"):
+            radius = r_pix * cube._pxl_size_x
+        else:
+            radius = r_pix
+            
+        # Check for physical radius and use if available
+        r_galaxy = None
+        if hasattr(cube, "_physical_radius") and cube._physical_radius is not None:
+            r_galaxy = cube._physical_radius
+            radius = r_galaxy
+            
+        # Create mask for valid radius and valid values
+        # Use a safer approach for checking finite values
+        r_mask = np.ones_like(radius, dtype=bool)
+        try:
+            r_mask = np.isfinite(radius) & (radius > 0)
+        except TypeError:
+            # If isfinite fails, try to convert to float
+            try:
+                r_mask = np.isfinite(radius.astype(float)) & (radius.astype(float) > 0)
+            except:
+                logger.warning("Could not create radius mask, using all pixels")
+        
+        # Create safe masks for velocity and dispersion
+        v_mask = np.ones_like(vfield, dtype=bool) & r_mask
+        try:
+            v_mask = r_mask & np.isfinite(vfield)
+        except TypeError:
+            # Try to handle non-numeric arrays
+            try:
+                v_mask = r_mask & np.isfinite(vfield.astype(float))
+            except:
+                logger.warning("Could not create velocity mask, using radius mask only")
+                v_mask = r_mask
+        
+        d_mask = np.ones_like(dfield, dtype=bool) & r_mask
+        try:
+            d_mask = r_mask & np.isfinite(dfield)
+        except TypeError:
+            # Try to handle non-numeric arrays
+            try:
+                d_mask = r_mask & np.isfinite(dfield.astype(float))
+            except:
+                logger.warning("Could not create dispersion mask, using radius mask only")
+                d_mask = r_mask
+        
+        # Create velocity profile
+        if np.any(v_mask):
+            fig, ax = plt.subplots(figsize=(10, 6))
+            
+            # Get valid velocity values safely
+            valid_r = safe_extract(radius, v_mask)
+            valid_v = safe_extract(vfield, v_mask)
+            
+            if len(valid_r) > 0 and len(valid_v) > 0:
+                # Calculate binned statistics
+                try:
+                    from scipy.stats import binned_statistic
+                    
+                    # Bin data radially
+                    bin_centers, v_mean, v_std = radial_binning_statistics(
+                        valid_r, valid_v, n_bins=20
                     )
-
-        # Process spectral indices
-        if "indices" in results:
-            for index_name, index_values in results["indices"].items():
-                zero_err = np.zeros_like(index_values)
-                radial_params[f"index_{index_name}"] = (
-                    r_centers,
-                    index_values,
-                    zero_err,
+                    
+                    # Plot binned profile
+                    ax.errorbar(
+                        bin_centers, v_mean, yerr=v_std, 
+                        fmt='o-', capsize=4, markersize=6, lw=1.5,
+                        label="Binned profile"
+                    )
+                    
+                    # Plot scatter if not too many points
+                    if len(valid_r) <= 1000:
+                        ax.scatter(
+                            valid_r, valid_v, 
+                            alpha=0.3, s=5, color='gray',
+                            label="Individual pixels"
+                        )
+                except Exception as e:
+                    # Fallback to simple scatter plot
+                    logger.debug(f"Error in velocity binned statistics: {e}")
+                    ax.scatter(valid_r, valid_v, alpha=0.5, s=10)
+                
+                # Set labels and title
+                ax.set_xlabel(f"Radius {'(arcsec)' if physical_scale else '(pixels)'}")
+                ax.set_ylabel("Velocity (km/s)")
+                ax.set_title(f"{galaxy_name} - Radial Velocity Profile")
+                ax.grid(True, alpha=0.3)
+                ax.legend()
+                
+                # Save figure
+                visualization.standardize_figure_saving(
+                    fig, radial_dir / f"{galaxy_name}_velocity_profile.png",
+                    dpi=150
                 )
-
-    # Create radial profile plots
-    # 1. Stellar kinematics
-    if "velocity" in radial_params and "dispersion" in radial_params:
-        try:
-            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
-
-            # Velocity profile
-            r, vel, vel_err = radial_params["velocity"]
-            ax1.errorbar(r, vel, yerr=vel_err, fmt="o-", capsize=3)
-            ax1.set_xlabel("Radius (arcsec)")
-            ax1.set_ylabel("Velocity (km/s)")
-            ax1.set_title("Stellar Velocity Profile")
-            ax1.grid(True, alpha=0.3)
-
-            # Dispersion profile
-            r, disp, disp_err = radial_params["dispersion"]
-            ax2.errorbar(r, disp, yerr=disp_err, fmt="o-", capsize=3)
-            ax2.set_xlabel("Radius (arcsec)")
-            ax2.set_ylabel("Velocity Dispersion (km/s)")
-            ax2.set_title("Stellar Velocity Dispersion Profile")
-            ax2.grid(True, alpha=0.3)
-
-            plt.tight_layout()
-            fig.savefig(
-                plots_dir / f"{galaxy_name}_{analysis_type}_kinematics_profile.png",
-                dpi=150,
-            )
             plt.close(fig)
-        except Exception as e:
-            logger.error(f"Error creating kinematics profile plot: {e}")
-            plt.close("all")
-
-    # 2. Stellar population parameters
-    stellar_params = ["log_age", "age", "metallicity"]
-    present_params = [p for p in stellar_params if p in radial_params]
-
-    if present_params:
-        try:
-            n_plots = len(present_params)
-            fig, axes = plt.subplots(1, n_plots, figsize=(4 * n_plots, 5))
-            if n_plots == 1:
-                axes = [axes]
-
-            for i, param_name in enumerate(present_params):
-                r, values, errors = radial_params[param_name]
-
-                # For age, convert to Gyr
-                if param_name == "age":
-                    values = values * 1e-9  # Convert to Gyr
-                    errors = errors * 1e-9  # Convert to Gyr
-                    param_title = "Age (Gyr)"
-                elif param_name == "log_age":
-                    param_title = "Log Age (yr)"
-                elif param_name == "metallicity":
-                    param_title = "Metallicity [Z/H]"
+            
+        # Create dispersion profile
+        if np.any(d_mask):
+            fig, ax = plt.subplots(figsize=(10, 6))
+            
+            # Get valid dispersion values safely
+            valid_r = safe_extract(radius, d_mask)
+            valid_d = safe_extract(dfield, d_mask)
+            
+            if len(valid_r) > 0 and len(valid_d) > 0:
+                # Calculate binned statistics
+                try:
+                    from scipy.stats import binned_statistic
+                    
+                    # Bin data radially
+                    bin_centers, d_mean, d_std = radial_binning_statistics(
+                        valid_r, valid_d, n_bins=20
+                    )
+                    
+                    # Plot binned profile
+                    ax.errorbar(
+                        bin_centers, d_mean, yerr=d_std, 
+                        fmt='o-', capsize=4, markersize=6, lw=1.5,
+                        label="Binned profile"
+                    )
+                    
+                    # Plot scatter if not too many points
+                    if len(valid_r) <= 1000:
+                        ax.scatter(
+                            valid_r, valid_d, 
+                            alpha=0.3, s=5, color='gray',
+                            label="Individual pixels"
+                        )
+                except Exception as e:
+                    # Fallback to simple scatter plot
+                    logger.debug(f"Error in dispersion binned statistics: {e}")
+                    ax.scatter(valid_r, valid_d, alpha=0.5, s=10)
+                
+                # Set labels and title
+                ax.set_xlabel(f"Radius {'(arcsec)' if physical_scale else '(pixels)'}")
+                ax.set_ylabel("Dispersion (km/s)")
+                ax.set_title(f"{galaxy_name} - Radial Dispersion Profile")
+                ax.grid(True, alpha=0.3)
+                ax.legend()
+                
+                # Save figure
+                visualization.standardize_figure_saving(
+                    fig, radial_dir / f"{galaxy_name}_dispersion_profile.png",
+                    dpi=150
+                )
+            plt.close(fig)
+            
+        # Create spectral indices profiles
+        if "spectral_indices" in results:
+            indices_dir = radial_dir / "indices"
+            indices_dir.mkdir(exist_ok=True, parents=True)
+            
+            # Process each index and method
+            for method_key in ["auto", "original", "fit"]:
+                # Check if this method exists in the results
+                if method_key not in results["spectral_indices"]:
+                    # Skip if this method isn't in the results
+                    continue
+                    
+                # Get indices for this method
+                method_indices = results["spectral_indices"][method_key]
+                
+                # Handle both dict and non-dict formats
+                if isinstance(method_indices, dict):
+                    indices_dict = method_indices
                 else:
-                    param_title = param_name
+                    # Skip if not a dictionary
+                    logger.warning(f"Spectral indices for method {method_key} not in expected format")
+                    continue
+                
+                # Process each index
+                for idx_name, index_map in indices_dict.items():
+                    try:
+                        # Create safe mask for this index
+                        idx_mask = np.ones_like(r_mask, dtype=bool) & r_mask
+                        
+                        # Convert index_map to a numeric array if possible
+                        numeric_index_map = safe_convert_to_numeric(index_map)
+                        
+                        # Skip if conversion failed
+                        if numeric_index_map is None:
+                            logger.error(f"Could not convert {idx_name} to numeric values for {method_key}")
+                            continue
+                            
+                        # Apply isnan safely now
+                        try:
+                            idx_mask = r_mask & ~np.isnan(numeric_index_map)
+                        except:
+                            logger.warning(f"Couldn't create mask for {idx_name}, using radius mask")
+                            
+                        # Extract valid values safely
+                        valid_r = safe_extract(radius, idx_mask)
+                        valid_idx = safe_extract(numeric_index_map, idx_mask)
+                        
+                        if len(valid_r) > 0 and len(valid_idx) > 0:
+                            fig, ax = plt.subplots(figsize=(10, 6))
+                            
+                            # Calculate binned statistics
+                            try:
+                                bin_centers, idx_mean, idx_std = radial_binning_statistics(
+                                    valid_r, valid_idx, n_bins=15
+                                )
+                                
+                                # Plot binned profile
+                                ax.errorbar(
+                                    bin_centers, idx_mean, yerr=idx_std, 
+                                    fmt='o-', capsize=4, markersize=6, lw=1.5,
+                                    label="Binned profile"
+                                )
+                                
+                                # Plot scatter if not too many points
+                                if len(valid_r) <= 1000:
+                                    ax.scatter(
+                                        valid_r, valid_idx, 
+                                        alpha=0.3, s=5, color='gray',
+                                        label="Individual pixels"
+                                    )
+                            except Exception as e:
+                                # Fallback to simple scatter plot
+                                logger.debug(f"Error in index binned statistics for {idx_name}: {e}")
+                                ax.scatter(valid_r, valid_idx, alpha=0.5, s=10)
+                            
+                            # Set labels and title
+                            ax.set_xlabel(f"Radius {'(arcsec)' if physical_scale else '(pixels)'}")
+                            ax.set_ylabel(f"{idx_name} Index")
+                            ax.set_title(f"{galaxy_name} - {idx_name} Radial Profile ({method_key})")
+                            ax.grid(True, alpha=0.3)
+                            ax.legend()
+                            
+                            # Save figure
+                            visualization.standardize_figure_saving(
+                                fig, indices_dir / f"{galaxy_name}_{idx_name}_{method_key}_profile.png",
+                                dpi=150
+                            )
+                            plt.close(fig)
+                        else:
+                            logger.warning(f"No valid data for {idx_name} with method {method_key}")
+                    except Exception as e:
+                        logger.error(f"Error creating index map for {method_key}: {e}")
+                        plt.close("all")
+        
+    except Exception as e:
+        logger.error(f"Error creating radial profile plots: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        plt.close("all")
 
-                axes[i].errorbar(r, values, yerr=errors, fmt="o-", capsize=3)
-                axes[i].set_xlabel("Radius (arcsec)")
-                axes[i].set_ylabel(param_title)
-                axes[i].set_title(f"Stellar {param_title} Profile")
-                axes[i].grid(True, alpha=0.3)
 
-            plt.tight_layout()
-            fig.savefig(
-                plots_dir / f"{galaxy_name}_{analysis_type}_stellar_pop_profile.png",
-                dpi=150,
-            )
-            plt.close(fig)
-        except Exception as e:
-            logger.error(f"Error creating stellar population profile plot: {e}")
-            plt.close("all")
+def radial_binning_statistics(radius, values, n_bins=20):
+    """
+    Calculate binned statistics for radial profiles
+    
+    Parameters
+    ----------
+    radius : ndarray
+        Radius values
+    values : ndarray
+        Data values
+    n_bins : int, default=20
+        Number of bins
+    
+    Returns
+    -------
+    tuple
+        (bin_centers, mean_values, std_values)
+    """
+    from scipy.stats import binned_statistic
+    
+    # Calculate reasonable bin edges
+    rmin, rmax = np.min(radius), np.max(radius)
+    bin_edges = np.linspace(rmin, rmax, n_bins + 1)
+    
+    # Calculate statistics
+    mean_values, bin_edges, bin_number = binned_statistic(
+        radius, values, statistic='mean', bins=bin_edges
+    )
+    
+    # Calculate standard deviation in each bin
+    std_values, _, _ = binned_statistic(
+        radius, values, statistic='std', bins=bin_edges
+    )
+    
+    # Calculate bin centers
+    bin_centers = 0.5 * (bin_edges[1:] + bin_edges[:-1])
+    
+    return bin_centers, mean_values, std_values
 
-    # 3. Emission line flux profiles
-    flux_params = [p for p in radial_params if p.startswith("flux_")]
 
-    if flux_params:
-        try:
-            n_plots = min(len(flux_params), 3)  # Maximum 3 lines
-            fig, axes = plt.subplots(1, n_plots, figsize=(4 * n_plots, 5))
-            if n_plots == 1:
-                axes = [axes]
+def safe_convert_to_numeric(array):
+    """
+    Safely convert an array to numeric values
+    
+    Parameters
+    ----------
+    array : any
+        Array to convert
+    
+    Returns
+    -------
+    ndarray or None
+        Numeric array or None if conversion failed
+    """
+    # Check if already a numeric array
+    if isinstance(array, np.ndarray) and np.issubdtype(array.dtype, np.number):
+        return array
+    
+    # Try to convert
+    try:
+        # First, convert to a flat list if it's an array-like object
+        if hasattr(array, 'flatten'):
+            try:
+                flat_list = array.flatten()
+            except:
+                flat_list = array
+        elif hasattr(array, 'tolist'):
+            try:
+                flat_list = array.tolist()
+            except:
+                flat_list = array
+        else:
+            flat_list = array
+        
+        # Try to convert each element
+        numeric_list = []
+        for item in flat_list:
+            try:
+                numeric_list.append(float(item))
+            except (ValueError, TypeError):
+                numeric_list.append(np.nan)
+        
+        # Convert back to an array with original shape if possible
+        if hasattr(array, 'shape'):
+            try:
+                return np.array(numeric_list, dtype=float).reshape(array.shape)
+            except:
+                return np.array(numeric_list, dtype=float)
+        else:
+            return np.array(numeric_list, dtype=float)
+    except Exception as e:
+        logger.debug(f"Error converting to numeric: {e}")
+        return None
 
-            for i, param_name in enumerate(flux_params[:n_plots]):
-                r, values, errors = radial_params[param_name]
-                line_name = param_name[5:]  # Remove 'flux_' prefix
-
-                axes[i].errorbar(r, values, yerr=errors, fmt="o-", capsize=3)
-                axes[i].set_xlabel("Radius (arcsec)")
-                axes[i].set_ylabel("Flux")
-                axes[i].set_title(f"{line_name} Flux Profile")
-                axes[i].grid(True, alpha=0.3)
-
-                # Try log scale
-                try:
-                    if np.all(values[~np.isnan(values)] > 0):
-                        axes[i].set_yscale("log")
-                except:
-                    pass
-
-            plt.tight_layout()
-            fig.savefig(
-                plots_dir / f"{galaxy_name}_{analysis_type}_emission_flux_profile.png",
-                dpi=150,
-            )
-            plt.close(fig)
-        except Exception as e:
-            logger.error(f"Error creating emission flux profile plot: {e}")
-            plt.close("all")
-
-    # 4. Line ratio profiles
-    ratio_params = [p for p in radial_params if p.startswith("ratio_")]
-
-    if ratio_params:
-        try:
-            n_plots = len(ratio_params)
-            fig, axes = plt.subplots(1, n_plots, figsize=(4 * n_plots, 5))
-            if n_plots == 1:
-                axes = [axes]
-
-            for i, param_name in enumerate(ratio_params):
-                r, values, errors = radial_params[param_name]
-                ratio_name = param_name[6:]  # Remove 'ratio_' prefix
-
-                axes[i].errorbar(r, values, yerr=errors, fmt="o-", capsize=3)
-                axes[i].set_xlabel("Radius (arcsec)")
-                axes[i].set_ylabel("Ratio")
-                axes[i].set_title(f"{ratio_name} Ratio Profile")
-                axes[i].grid(True, alpha=0.3)
-
-                # Try log scale
-                try:
-                    if np.all(values[~np.isnan(values)] > 0):
-                        axes[i].set_yscale("log")
-                except:
-                    pass
-
-            plt.tight_layout()
-            fig.savefig(
-                plots_dir / f"{galaxy_name}_{analysis_type}_line_ratios_profile.png",
-                dpi=150,
-            )
-            plt.close(fig)
-        except Exception as e:
-            logger.error(f"Error creating line ratios profile plot: {e}")
-            plt.close("all")
-
-    # 5. Spectral indices profiles
-    index_params = [p for p in radial_params if p.startswith("index_")]
-
-    if index_params:
-        try:
-            n_plots = min(len(index_params), 3)  # Maximum 3 indices
-            fig, axes = plt.subplots(1, n_plots, figsize=(4 * n_plots, 5))
-            if n_plots == 1:
-                axes = [axes]
-
-            for i, param_name in enumerate(index_params[:n_plots]):
-                r, values, errors = radial_params[param_name]
-                index_name = param_name[6:]  # Remove 'index_' prefix
-
-                axes[i].errorbar(r, values, yerr=errors, fmt="o-", capsize=3)
-                axes[i].set_xlabel("Radius (arcsec)")
-                axes[i].set_ylabel("Index Value")
-                axes[i].set_title(f"{index_name} Index Profile")
-                axes[i].grid(True, alpha=0.3)
-
-            plt.tight_layout()
-            fig.savefig(
-                plots_dir / f"{galaxy_name}_{analysis_type}_indices_profile.png",
-                dpi=150,
-            )
-            plt.close(fig)
-        except Exception as e:
-            logger.error(f"Error creating indices profile plot: {e}")
-            plt.close("all")

@@ -2240,11 +2240,11 @@ class MUSECube:
             )
 
     def _calculate_spectral_indices_original(
-        self, indices_list=None, n_jobs=-1, verbose=False
+        self, indices_list=None, n_jobs=-1, verbose=False, methods=None
     ):
         """
-        Calculate spectral indices for each spaxel using LineIndexCalculator
-
+        Calculate spectral indices for each spaxel using LineIndexCalculator with multiple methods
+        
         Parameters
         ----------
         indices_list : list of str, optional
@@ -2253,216 +2253,149 @@ class MUSECube:
             Number of parallel jobs
         verbose : bool, default=False
             Whether to display detailed information
-
+        methods : list, optional
+            List of continuum modes to use. Default is ['auto', 'original', 'fit']
+            
         Returns
         -------
         dict
-            Dictionary of spectral indices
+            Dictionary of spectral indices with multiple methods
         """
         # Import LineIndexCalculator
-        from spectral_indices import LineIndexCalculator
-
-        # Set log level
-        original_level = logger.level
-        if not verbose:
-            logger.setLevel(logging.WARNING)
-        else:
-            logger.setLevel(logging.INFO)
-
+        from spectral_indices import LineIndexCalculator, set_warnings
+        
+        # Set warnings level
+        set_warnings(verbose)
+        
+        # Default methods if none provided
+        if methods is None:
+            methods = ['auto', 'original', 'fit']
+        
         try:
             # Define standard spectral indices if not provided
-            # Default is now Hbeta, Fe5015, and Mgb as requested
             if indices_list is None:
                 indices_list = ["Hbeta", "Fe5015", "Mgb"]
-
-            # Get min/max wavelength from original data
-            orig_wave_min = np.min(self._lambda_gal)
-            orig_wave_max = np.max(self._lambda_gal)
-            logger.info(
-                f"Original wavelength range: {orig_wave_min:.2f} - {orig_wave_max:.2f} Å"
-            )
-
-            # Complete index definitions including blue and red bands
-            full_index_definitions = {
-                "Hbeta": {
-                    "blue": (4827.875, 4847.875),
-                    "band": (4847.875, 4876.625),
-                    "red": (4876.625, 4891.625),
-                },
-                "Mgb": {
-                    "blue": (5142.625, 5161.375),
-                    "band": (5160.125, 5192.625),
-                    "red": (5191.375, 5206.375),
-                },
-                "Fe5015": {
-                    "blue": (4946.500, 4977.750),
-                    "band": (4977.750, 5054.000),
-                    "red": (5054.000, 5065.250),
-                },
-            }
-
-            valid_indices = []
-            for index_name in indices_list:
-                if index_name in full_index_definitions:
-                    windows = full_index_definitions[index_name]
-                    # Check if index overlaps with data wavelength range
-                    # Relaxed condition: only need some overlap between index range and data range
-                    if (
-                        orig_wave_min <= windows["red"][1]
-                        and orig_wave_max >= windows["blue"][0]
-                    ):
-                        valid_indices.append(index_name)
-                        logger.info(f"Index {index_name} is within wavelength range")
-                    else:
-                        logger.warning(
-                            f"Index {index_name} outside wavelength range: blue={windows['blue']}, red={windows['red']} vs range={orig_wave_min:.2f}-{orig_wave_max:.2f}"
-                        )
-
-            if not valid_indices:
-                logger.warning(
-                    "No valid spectral indices to calculate within wavelength range"
-                )
-                return {}
-
-            # Update indices list
-            indices_list = valid_indices
-
-            # Initialize spectral indices
-            self._spectral_indices = {
-                index_name: np.full((self._n_y, self._n_x), np.nan)
-                for index_name in indices_list
-            }
-
+                
+            # Initialize results dictionary for each method
+            self._spectral_indices = {}
+            for method in methods:
+                self._spectral_indices[method] = {
+                    index_name: np.full((self._n_y, self._n_x), np.nan)
+                    for index_name in indices_list
+                }
+                
             # Check if we have emission line fitting results
-            has_emission_lines = self._gas_bestfit_field is not None and np.any(
+            has_emission_lines = hasattr(self, "_gas_bestfit_field") and self._gas_bestfit_field is not None and np.any(
                 ~np.isnan(self._gas_bestfit_field)
             )
-
+                
             # Store calculators for later plotting if needed
             self._index_calculators = {}
-
+            
             n_wvl, n_spaxel = self._spectra.shape
-
+            
             def calculate_index(idx):
-                """
-                Calculate spectral indices for a single spaxel
-                Optimized for better multiprocessing performance
-                """
+                """Calculate spectral indices for a single spaxel with multiple methods"""
                 i, j = np.unravel_index(idx, (self._n_y, self._n_x))
-
-                # Skip if first-time fitting failed - quick early return
+                
+                # Skip if first-time fitting failed
                 if np.isnan(self._velocity_field[i, j]):
-                    return i, j, {index_name: np.nan for index_name in indices_list}
-
-                # Get all data at once to minimize Python-level operations
+                    return i, j, {method: {index_name: np.nan for index_name in indices_list} for method in methods}
+                    
+                # Get all data at once
                 observed_spectrum = self._spectra[:, idx]
                 optimal_template = self._optimal_tmpls[:, i, j]
                 stellar_velocity = self._velocity_field[i, j]
-
-                # Get gas velocity if available - separate from stellar velocity
+                
+                # Get gas velocity if available
                 gas_velocity = None
                 if has_emission_lines and hasattr(self, "_emission_vel"):
-                    # Try to find gas velocity from available emission lines
                     for line_name, vel_map in self._emission_vel.items():
                         if np.isfinite(vel_map[i, j]):
                             gas_velocity = vel_map[i, j]
                             break
-
-                # Get gas model if available - only once
+                            
+                # Get gas model if available
                 gas_model = None
                 if has_emission_lines:
                     gas_model = self._gas_bestfit_field[:, i, j]
-                    # Verify gas model has valid values
                     if not np.any(np.isfinite(gas_model)) or np.all(gas_model == 0):
                         gas_model = None
-
-                # Create LineIndexCalculator with warning suppression
-                with warnings.catch_warnings():
-                    warnings.filterwarnings(
-                        "ignore",
-                        category=RuntimeWarning,
-                        message="invalid value encountered in",
-                    )
-                    warnings.filterwarnings(
-                        "ignore", category=RuntimeWarning, message="divide by zero"
-                    )
-
+                        
+                # Calculate indices with multiple methods
+                indices_values = {}
+                
+                # Try each method
+                for method in methods:
                     try:
                         calculator = LineIndexCalculator(
-                            wave=self._lambda_gal,  # Observation wavelength grid
-                            flux=observed_spectrum,  # Observed spectrum
-                            fit_wave=self._sps.lam_temp,  # Template wavelength grid
-                            fit_flux=optimal_template,  # Template spectrum
-                            em_wave=self._lambda_gal
-                            if gas_model is not None
-                            else None,  # Emission line wavelength grid
-                            em_flux_list=gas_model,  # Emission line spectrum
-                            velocity_correction=stellar_velocity,  # Stellar velocity correction
-                            gas_velocity_correction=gas_velocity,  # Gas velocity correction - key change
-                            continuum_mode="auto",  # Auto select continuum mode
+                            wave=self._lambda_gal,
+                            flux=observed_spectrum,
+                            fit_wave=self._sps.lam_temp,
+                            fit_flux=optimal_template,
+                            em_wave=self._lambda_gal if gas_model is not None else None,
+                            em_flux_list=gas_model,
+                            velocity_correction=stellar_velocity,
+                            gas_velocity_correction=gas_velocity,
+                            continuum_mode=method,
+                            show_warnings=False
                         )
+                        
+                        # Calculate all indices
+                        method_results = {}
+                        for index_name in indices_list:
+                            try:
+                                index_value = calculator.calculate_index(index_name)
+                                method_results[index_name] = index_value
+                            except Exception:
+                                method_results[index_name] = np.nan
+                                
+                        indices_values[method] = method_results
+                        
+                        # Store calculator for central spaxel
+                        if i == self._n_y // 2 and j == self._n_x // 2:
+                            self._index_calculators[f"central_{method}"] = calculator
+                            
                     except Exception as e:
-                        logger.debug(
-                            f"Error creating LineIndexCalculator at ({i},{j}): {str(e)}"
-                        )
-                        return i, j, {index_name: np.nan for index_name in indices_list}
-
-                    # Calculate all indices at once to minimize function calls
-                    indices_values = {}
-                    for index_name in indices_list:
-                        try:
-                            index_value = calculator.calculate_index(index_name)
-                            indices_values[index_name] = index_value
-                        except Exception as e:
-                            indices_values[index_name] = np.nan
-
-                    # Only store calculator for specific positions (central and some samples)
-                    # to reduce memory usage
-                    central_i, central_j = self._n_y // 2, self._n_x // 2
-                    if i == central_i and j == central_j:
-                        self._index_calculators["central"] = calculator
-                    elif i % (self._n_y // 4) == 0 and j % (self._n_x // 4) == 0:
-                        key = f"sample_{i}_{j}"
-                        self._index_calculators[key] = calculator
-
-                    return i, j, indices_values
-
-            # Calculate optimal chunk size for better parallelization
-            # This reduces thread management overhead
+                        indices_values[method] = {index_name: np.nan for index_name in indices_list}
+                        if verbose:
+                            logger.debug(f"Error with method {method} at ({i},{j}): {e}")
+                            
+                return i, j, indices_values
+                
+            # Calculate indices in parallel with optimized chunk size
             chunksize = max(
                 1, n_spaxel // (4 * max(1, n_jobs if n_jobs > 0 else os.cpu_count()))
             )
-
-            logger.info(
-                f"Using chunk size {chunksize} for spectral indices calculation"
-            )
-
-            # Run calculations in parallel with optimized backend and chunk size
+            
+            logger.info(f"Using chunk size {chunksize} for spectral indices calculation")
+            
             index_results = ParallelTqdm(
                 n_jobs=n_jobs,
                 desc="Calculating spectral indices",
                 total_tasks=n_spaxel,
-                backend="threading",  # 'threading' often works better for I/O bound tasks
+                backend="threading",
             )(delayed(calculate_index)(idx) for idx in range(n_spaxel))
-
+            
             # Process results
             for result in index_results:
                 if result is None or result[2] is None:
                     continue
-
-                row, col, indices_values = result
-                for index_name, value in indices_values.items():
-                    if index_name in self._spectral_indices:
-                        self._spectral_indices[index_name][row, col] = value
-
-            # Restore original log level
-            logger.setLevel(original_level)
-
+                    
+                row, col, method_indices = result
+                
+                # Store indices for each method
+                for method, indices_values in method_indices.items():
+                    for index_name, value in indices_values.items():
+                        if method in self._spectral_indices and index_name in self._spectral_indices[method]:
+                            self._spectral_indices[method][index_name][row, col] = value
+                            
             return self._spectral_indices
-
+            
         except Exception as e:
             logger.error(f"Error calculating spectral indices: {str(e)}")
-            logger.setLevel(original_level)
+            import traceback
+            logger.error(traceback.format_exc())
             return {}
 
     def _calculate_spectral_indices_binned(
@@ -2713,6 +2646,62 @@ class MUSECube:
             logger.error(traceback.format_exc())
             return {}
 
+    def calculate_spectral_indices_multi_method(
+        self, indices_list=None, n_jobs=-1, verbose=False, save_mode=None, save_path=None
+    ):
+        """
+        Calculate spectral indices with multiple continuum modes (auto, original, fit)
+        
+        Parameters
+        ----------
+        indices_list : list, optional
+            List of indices to calculate
+        n_jobs : int, default=-1
+            Number of parallel jobs
+        verbose : bool, default=False
+            Whether to display verbose information
+        save_mode : str, optional
+            Mode for saving indices plots
+        save_path : str, optional
+            Path for saving indices plots
+            
+        Returns
+        -------
+        dict
+            Dictionary of indices with multiple methods
+        """
+        # Define methods to use
+        methods = ['auto', 'original', 'fit']
+        
+        # Calculate indices with each method
+        result = {}
+        for method in methods:
+            try:
+                # Temporarily modify _continuum_mode to use this method
+                original_mode = getattr(self, '_continuum_mode', 'auto')
+                setattr(self, '_continuum_mode', method)
+                
+                # Calculate indices with this method
+                method_result = self.calculate_spectral_indices(
+                    indices_list=indices_list,
+                    n_jobs=n_jobs,
+                    verbose=verbose,
+                    save_mode=f"{save_mode}_{method}" if save_mode else None,
+                    save_path=save_path
+                )
+                
+                # Store results
+                result[method] = method_result
+                
+                # Restore original mode
+                setattr(self, '_continuum_mode', original_mode)
+                
+            except Exception as e:
+                logger.error(f"Error calculating indices with method {method}: {e}")
+                result[method] = {}
+        
+        return result
+
     def plot_spectral_indices(
         self, spaxel_position=None, mode="MUSE", number=0, save_path=None
     ):
@@ -2851,6 +2840,65 @@ class MUSECube:
         except Exception as e:
             logger.error(f"Error in plot_spectral_indices: {str(e)}")
             return None
+
+# Add this after the calculate_spectral_indices function in muse.py
+
+    def calculate_spectral_indices_multi_method(
+        self, indices_list=None, n_jobs=-1, verbose=False, save_mode=None, save_path=None
+    ):
+        """
+        Calculate spectral indices with multiple continuum modes (auto, original, fit)
+        
+        Parameters
+        ----------
+        indices_list : list, optional
+            List of indices to calculate
+        n_jobs : int, default=-1
+            Number of parallel jobs
+        verbose : bool, default=False
+            Whether to display verbose information
+        save_mode : str, optional
+            Mode for saving indices plots
+        save_path : str, optional
+            Path for saving indices plots
+            
+        Returns
+        -------
+        dict
+            Dictionary of indices with multiple methods
+        """
+        # Define methods to use
+        methods = ['auto', 'original', 'fit']
+        
+        # Calculate indices with each method
+        result = {}
+        for method in methods:
+            try:
+                # Temporarily modify _continuum_mode to use this method
+                original_mode = getattr(self, '_continuum_mode', 'auto')
+                setattr(self, '_continuum_mode', method)
+                
+                # Calculate indices with this method
+                method_result = self.calculate_spectral_indices(
+                    indices_list=indices_list,
+                    n_jobs=n_jobs,
+                    verbose=verbose,
+                    save_mode=f"{save_mode}_{method}" if save_mode else None,
+                    save_path=save_path
+                )
+                
+                # Store results
+                result[method] = method_result
+                
+                # Restore original mode
+                setattr(self, '_continuum_mode', original_mode)
+                
+            except Exception as e:
+                logger.error(f"Error calculating indices with method {method}: {e}")
+                result[method] = {}
+        
+        return result
+
 
     def plot_emission_maps(
         self,
