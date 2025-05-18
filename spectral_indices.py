@@ -585,14 +585,15 @@ class LineIndexCalculator:
         fig, axes : Figure and Axes objects for further customization
         """
         # Validate mode and number parameters
+        # print(mode,number)
         if mode is not None and number is not None:
-            valid_modes = ["P2P", "VNB", "RDB", "MUSE"]
-            if mode not in valid_modes:
-                self._warn(f"Mode must be one of {valid_modes}, got {mode}")
-                mode = None
-            if not isinstance(number, int):
-                self._warn(f"Number must be an integer, got {type(number)}")
-                number = 0
+            # valid_modes = ["P2P", "VNB", "RDB", "MUSE"]
+            # if mode not in valid_modes:
+            #     self._warn(f"Mode must be one of {valid_modes}, got {mode}")
+            #     mode = None
+            # if not isinstance(number, int):
+            #     self._warn(f"Number must be an integer, got {type(number)}")
+            #     number = 0
             mode_title = f"{mode}{number}" if mode is not None else None
         else:
             mode_title = None
@@ -1134,6 +1135,7 @@ class LineIndexCalculator:
             plt.subplots_adjust(hspace=0.3, wspace=0.3)
 
         # Save figure if path provided
+        # print(save_path, mode_title)
         if save_path and mode_title:
             # print('!')
             # Ensure save_path exists
