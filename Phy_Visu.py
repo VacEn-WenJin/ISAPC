@@ -364,7 +364,8 @@ def extract_effective_radius(rdb_data):
 def extract_spectral_indices(rdb_data, bins_limit=6):
     """
     Extract spectral indices and bin information from RDB data,
-    filtering out negative or invalid spectral indices
+    filtering out negative or invalid spectral indices and ensuring
+    age is correctly handled as used in ISAPC
     
     Parameters:
     -----------
@@ -494,15 +495,51 @@ def extract_spectral_indices(rdb_data, bins_limit=6):
         if 'stellar_population' in rdb_data and valid_bins is not None:
             stellar_pop = rdb_data['stellar_population'].item() if hasattr(rdb_data['stellar_population'], 'item') else rdb_data['stellar_population']
             
-            if 'age' in stellar_pop:
-                age = stellar_pop['age']
-                # If age is in years, convert to Gyr
-                if np.any(age > 100):  # Assuming age > 100 means it's in years
-                    age = age / 1e9
-                    
-                if len(valid_bins) > 0 and len(age) >= max(valid_bins) + 1:
-                    result['bin_indices']['age'] = age[valid_bins]
+            # ISAPC specific: Check for log_age first (preferred format)
+            if 'log_age' in stellar_pop:
+                log_age = stellar_pop['log_age']
+                if len(valid_bins) > 0 and len(log_age) >= max(valid_bins) + 1:
+                    # Convert from log10(yr) to log10(Gyr) if needed
+                    log_age_values = np.array(log_age[valid_bins])
+                    # Check if values are in log10(yr) or log10(Gyr)
+                    if np.median(log_age_values) > 8:  # Typical log10(yr) values are ~9-10
+                        # Convert from log10(yr) to log10(Gyr)
+                        log_age_gyr = log_age_values - 9  # Subtract 9 to convert from yr to Gyr
+                        result['bin_indices']['age'] = log_age_gyr
+                        logger.info("Using log_age and converting from log10(yr) to log10(Gyr)")
+                    else:
+                        # Already in log10(Gyr)
+                        result['bin_indices']['age'] = log_age_values
+                        logger.info("Using log_age already in log10(Gyr) format")
             
+            # If log_age not available, use linear age
+            elif 'age' in stellar_pop:
+                age = stellar_pop['age']
+                
+                # Check whether age is in log or linear units
+                # ISAPC typically provides age in years (linear units)
+                if len(valid_bins) > 0 and len(age) >= max(valid_bins) + 1:
+                    age_values = np.array(age[valid_bins])
+                    
+                    # First, determine whether we have log or linear age
+                    if np.any(age_values > 1000):
+                        # Very large values - likely in years (ISAPC standard)
+                        # Convert from years to log10(Gyr)
+                        log_age_gyr = np.log10(age_values / 1e9)
+                        result['bin_indices']['age'] = log_age_gyr
+                        logger.info("Converting age from years to log10(Gyr)")
+                    elif np.median(age_values) > 3:
+                        # Moderate values - likely in Gyr
+                        # Convert from Gyr to log10(Gyr)
+                        log_age_gyr = np.log10(age_values)
+                        result['bin_indices']['age'] = log_age_gyr
+                        logger.info("Converting age from Gyr to log10(Gyr)")
+                    else:
+                        # Small values (0-3) - likely already in log10(Gyr)
+                        result['bin_indices']['age'] = age_values
+                        logger.info("Using age values directly as they appear to be in log10(Gyr) already")
+            
+            # Extract metallicity
             if 'metallicity' in stellar_pop:
                 metallicity = stellar_pop['metallicity']
                 
@@ -510,6 +547,7 @@ def extract_spectral_indices(rdb_data, bins_limit=6):
                     result['bin_indices']['metallicity'] = metallicity[valid_bins]
         
         # Extract radius for bins with the same valid bins filter
+        # ISAPC specific: First look in the distance section, which is the standard location
         if 'distance' in rdb_data and valid_bins is not None:
             distance = rdb_data['distance'].item() if hasattr(rdb_data['distance'], 'item') else rdb_data['distance']
             if 'bin_distances' in distance:
@@ -517,6 +555,12 @@ def extract_spectral_indices(rdb_data, bins_limit=6):
                 
                 if len(valid_bins) > 0 and len(bin_distances) >= max(valid_bins) + 1:
                     result['bin_indices']['R'] = bin_distances[valid_bins]
+                    
+                    # Also extract effective radius if available
+                    if 'effective_radius' in distance:
+                        Re = distance['effective_radius']
+                        if Re is not None and Re > 0:
+                            result['effective_radius'] = Re
     
     except Exception as e:
         logger.error(f"Error extracting spectral indices: {e}")
@@ -718,7 +762,7 @@ def find_open_position(positions, initial_position, min_distance):
     # If we get here, the position is available
     return (x, y)
 
-def extract_parameter_profiles(data, parameter_names=['Fe5015', 'Mgb', 'Hbeta', 'age', 'metallicity'], bins_limit=6):
+def extract_parameter_profiles(data, parameter_names=['Fe5015', 'Mgb', 'Hbeta', 'age', 'metallicity'], bins_limit=6, continuum_mode='fit'):
     """
     Extract parameter profiles from RDB data
     
@@ -730,6 +774,8 @@ def extract_parameter_profiles(data, parameter_names=['Fe5015', 'Mgb', 'Hbeta', 
         List of parameter names to extract
     bins_limit : int
         Limit on the number of bins to use (default: 6 for bins 0-5)
+    continuum_mode : str
+        Spectral index continuum mode to use ('auto', 'fit', 'original')
     
     Returns:
     --------
@@ -744,67 +790,38 @@ def extract_parameter_profiles(data, parameter_names=['Fe5015', 'Mgb', 'Hbeta', 
             logger.warning("Invalid data format - cannot extract parameter profiles")
             return results
             
+        # Extract spectral indices using the specified mode
+        indices_data = extract_spectral_indices_from_method(
+            data, 
+            method=continuum_mode, 
+            bins_limit=bins_limit
+        )
+        
         # Extract radius information
-        if 'distance' in data:
+        if 'bin_radii' in indices_data:
+            results['radius'] = indices_data['bin_radii']
+        elif 'distance' in data:
             distance = data['distance'].item() if hasattr(data['distance'], 'item') else data['distance']
             if 'bin_distances' in distance:
                 bin_distances = distance['bin_distances']
                 # Limit to specified number of bins
                 results['radius'] = bin_distances[:min(len(bin_distances), bins_limit)]
-            elif 'binning' in data and 'bin_radii' in data['binning']:
-                binning = data['binning'].item() if hasattr(data['binning'], 'item') else data['binning']
-                bin_radii = binning['bin_radii']
-                # Limit to specified number of bins
-                results['radius'] = bin_radii[:min(len(bin_radii), bins_limit)]
         
         # Extract effective radius
         results['effective_radius'] = extract_effective_radius(data)
         
-        # Extract spectral indices
-        if 'bin_indices' in data and results['radius'] is not None:
-            bin_indices = data['bin_indices'].item() if hasattr(data['bin_indices'], 'item') else data['bin_indices']
-            if 'bin_indices' in bin_indices:
-                for param in parameter_names[:3]:  # First three are spectral indices
-                    if param in bin_indices['bin_indices']:
-                        indices = bin_indices['bin_indices'][param]
-                        # Limit to specified number of bins
-                        results[param] = indices[:min(len(indices), bins_limit)]
-        
-        # Try alternative indices path
-        if 'indices' in data and results['radius'] is not None:
-            indices = data['indices'].item() if hasattr(data['indices'], 'item') else data['indices']
-            for param in parameter_names[:3]:  # First three are spectral indices
-                if param in indices and param not in results:
-                    idx_values = indices[param]
-                    # Limit to specified number of bins
-                    results[param] = idx_values[:min(len(idx_values), bins_limit)]
-        
-        # Extract stellar population parameters
-        if 'stellar_population' in data and results['radius'] is not None:
-            stellar_pop = data['stellar_population'].item() if hasattr(data['stellar_population'], 'item') else data['stellar_population']
-            # Get age (convert to log if in linear units)
-            if 'age' in stellar_pop and 'age' in parameter_names:
-                age = np.array(stellar_pop['age'])
-                # Limit to specified number of bins
-                age = age[:min(len(age), bins_limit)]
-                # Check if age needs to be converted to log10
-                if np.any(age > 0) and np.median(age[age > 0]) > 1e8:  # Age in years
-                    results['age'] = np.log10(age)
-                else:
-                    results['age'] = age  # Already in log10 or in Gyr
-                    
-            # Get metallicity
-            if 'metallicity' in stellar_pop and 'metallicity' in parameter_names:
-                metallicity = stellar_pop['metallicity']
-                # Limit to specified number of bins
-                results['metallicity'] = metallicity[:min(len(metallicity), bins_limit)]
+        # Extract spectral indices and other parameters from our extracted data
+        if 'bin_indices' in indices_data:
+            for param_name in parameter_names:
+                if param_name in indices_data['bin_indices']:
+                    results[param_name] = indices_data['bin_indices'][param_name]
     
     except Exception as e:
         logger.error(f"Error extracting parameter profiles: {e}")
     
     return results
 
-def extract_spectral_indices_from_method(rdb_data, method='template', bins_limit=6):
+def extract_spectral_indices_from_method(rdb_data, method='fit', bins_limit=6):
     """
     Extract spectral indices using a specific calculation method
     
@@ -813,7 +830,7 @@ def extract_spectral_indices_from_method(rdb_data, method='template', bins_limit
     rdb_data : dict
         RDB data containing spectral indices
     method : str
-        Which method to use for spectral indices: 'auto', 'original', 'fit', or 'template'
+        Which continuum mode to use for spectral indices: 'auto', 'original', or 'fit'
     bins_limit : int
         Limit analysis to first N bins (default: 6 for bins 0-5)
         
@@ -832,6 +849,8 @@ def extract_spectral_indices_from_method(rdb_data, method='template', bins_limit
             if method in bin_indices_multi:
                 # Extract using the specified method
                 method_indices = bin_indices_multi[method]
+                logger.info(f"Using '{method}' continuum mode for spectral indices")
+                
                 if 'bin_indices' in method_indices:
                     # Extract spectral indices
                     for index_name in ['Fe5015', 'Mgb', 'Hbeta']:
@@ -851,13 +870,38 @@ def extract_spectral_indices_from_method(rdb_data, method='template', bins_limit
                     if 'stellar_population' in rdb_data:
                         stellar_pop = rdb_data['stellar_population'].item() if hasattr(rdb_data['stellar_population'], 'item') else rdb_data['stellar_population']
                         
-                        if 'age' in stellar_pop:
+                        # ISAPC specific: Check for log_age first (preferred format)
+                        if 'log_age' in stellar_pop:
+                            log_age = stellar_pop['log_age']
+                            # Convert from log10(yr) to log10(Gyr) if needed
+                            log_age_values = np.array(log_age[:bins_limit])
+                            # Check if values are in log10(yr) or log10(Gyr)
+                            if np.median(log_age_values) > 8:  # Typical log10(yr) values are ~9-10
+                                # Convert from log10(yr) to log10(Gyr)
+                                log_age_gyr = log_age_values - 9  # Subtract 9 to convert from yr to Gyr
+                                result['bin_indices']['age'] = log_age_gyr
+                            else:
+                                # Already in log10(Gyr)
+                                result['bin_indices']['age'] = log_age_values
+                        # If log_age not available, use linear age
+                        elif 'age' in stellar_pop:
                             age = stellar_pop['age']
-                            # If age is in years, convert to Gyr
-                            if np.any(age > 100):  # Assuming age > 100 means it's in years
-                                age = age / 1e9
-                                
-                            result['bin_indices']['age'] = age[:bins_limit]
+                            age_values = np.array(age[:bins_limit])
+                            
+                            # First, determine whether we have log or linear age
+                            if np.any(age_values > 1000):
+                                # Very large values - likely in years (ISAPC standard)
+                                # Convert from years to log10(Gyr)
+                                log_age_gyr = np.log10(age_values / 1e9)
+                                result['bin_indices']['age'] = log_age_gyr
+                            elif np.median(age_values) > 3:
+                                # Moderate values - likely in Gyr
+                                # Convert from Gyr to log10(Gyr)
+                                log_age_gyr = np.log10(age_values)
+                                result['bin_indices']['age'] = log_age_gyr
+                            else:
+                                # Small values (0-3) - likely already in log10(Gyr)
+                                result['bin_indices']['age'] = age_values
                         
                         if 'metallicity' in stellar_pop:
                             metallicity = stellar_pop['metallicity']
@@ -870,13 +914,24 @@ def extract_spectral_indices_from_method(rdb_data, method='template', bins_limit
                             bin_distances = distance['bin_distances']
                             result['bin_indices']['R'] = bin_distances[:bins_limit]
                             
+                        # Also extract effective radius if available
+                        if 'effective_radius' in distance:
+                            Re = distance['effective_radius']
+                            if Re is not None and Re > 0:
+                                result['effective_radius'] = Re
+                            
                     return result
+            else:
+                logger.warning(f"Method '{method}' not found in bin_indices_multi, available methods: {list(bin_indices_multi.keys())}")
         
         # Fall back to standard extraction
+        logger.info(f"Method '{method}' not available, falling back to standard extraction")
         return extract_spectral_indices(rdb_data, bins_limit=bins_limit)
     
     except Exception as e:
         logger.error(f"Error extracting spectral indices by method {method}: {e}")
+        import traceback
+        traceback.print_exc()
         # Fall back to standard method
         return extract_spectral_indices(rdb_data, bins_limit=bins_limit)
 
@@ -884,26 +939,41 @@ def extract_spectral_indices_from_method(rdb_data, method='template', bins_limit
 # Analysis Functions
 #------------------------------------------------------------------------------
  
-def create_spectral_index_interpolation_plot(galaxy_name, rdb_data, model_data, output_path=None, dpi=150, bins_limit=6):
+def create_spectral_index_interpolation_plot(galaxy_name, rdb_data, model_data, output_path=None, dpi=150, bins_limit=6, continuum_mode='fit'):
     """
     Create a visualization showing how alpha/Fe is interpolated from spectral indices
     With focus on Fe5015 vs Mgb for interpolation, but showing all three 2D planes
     Using improved slope calculation
+    
+    Parameters:
+    -----------
+    galaxy_name : str
+        Galaxy name
+    rdb_data : dict
+        RDB data containing spectral indices
+    model_data : DataFrame
+        Model grid data with indices and alpha/Fe values
+    output_path : str
+        Path to save the output image
+    dpi : int
+        Resolution for the output image
+    bins_limit : int
+        Limit on the number of bins to analyze
+    continuum_mode : str
+        Spectral index continuum mode to use ('auto', 'fit', 'original')
+        
+    Returns:
+    --------
+    dict
+        Dictionary with analysis results
     """
     try:
-        # Extract spectral indices from galaxy data
-        # Try to use template method first
-        template_indices = None
-        if 'bin_indices_multi' in rdb_data:
-            bin_indices_multi = rdb_data['bin_indices_multi'].item() if hasattr(rdb_data['bin_indices_multi'], 'item') else rdb_data['bin_indices_multi']
-            if 'template' in bin_indices_multi:
-                template_indices = extract_spectral_indices_from_method(rdb_data, 'template', bins_limit)
-        
-        # Fall back to standard extraction if template method not available
-        if template_indices is None:
-            galaxy_indices = extract_spectral_indices(rdb_data, bins_limit=bins_limit)
-        else:
-            galaxy_indices = template_indices
+        # Extract spectral indices from galaxy data using the specified mode
+        galaxy_indices = extract_spectral_indices_from_method(
+            rdb_data, 
+            method=continuum_mode, 
+            bins_limit=bins_limit
+        )
         
         # Define column name mapping for the model grid
         model_column_mapping = {
@@ -922,9 +992,19 @@ def create_spectral_index_interpolation_plot(galaxy_name, rdb_data, model_data, 
             logger.warning(f"Missing required spectral indices for {galaxy_name}")
             return
         
-        # Calculate alpha/Fe using Fe5015 and Mgb only
-        direct_result = calculate_alpha_fe_direct(galaxy_name, rdb_data, model_data, bins_limit=bins_limit)
+        # Get galaxy spectral indices for each bin
+        galaxy_fe5015 = galaxy_indices['bin_indices']['Fe5015']
+        galaxy_mgb = galaxy_indices['bin_indices']['Mgb']
         
+        # Get Hbeta if available (for display only, not used in interpolation)
+        if 'Hbeta' in galaxy_indices['bin_indices']:
+            galaxy_hbeta = galaxy_indices['bin_indices']['Hbeta']
+        else:
+            galaxy_hbeta = np.ones_like(galaxy_fe5015) * np.nan
+        
+        # Calculate alpha/Fe using direct calcultion method
+        direct_result = calculate_alpha_fe_direct(galaxy_name, rdb_data, model_data, bins_limit=bins_limit, continuum_mode=continuum_mode)
+
         if direct_result is None or 'points' not in direct_result or not direct_result['points']:
             logger.warning(f"No alpha/Fe interpolation results for {galaxy_name}")
             return
@@ -953,9 +1033,9 @@ def create_spectral_index_interpolation_plot(galaxy_name, rdb_data, model_data, 
         # Get mean age for model grid
         if 'age' in galaxy_indices['bin_indices']:
             galaxy_age = galaxy_indices['bin_indices']['age']
-            mean_age = np.mean(galaxy_age) if len(galaxy_age) > 0 else 1.0  # Use 1 Gyr to match example
+            mean_age = np.mean(galaxy_age) if len(galaxy_age) > 0 else 10.0
         else:
-            mean_age = 1.0  # Default to 1 Gyr to match example
+            mean_age = 10.0  # Default to 10 Gyr (typical for early-type galaxies)
         
         # Find closest age in model grid
         available_ages = np.array(model_data[age_column].unique())
@@ -1127,8 +1207,9 @@ def create_spectral_index_interpolation_plot(galaxy_name, rdb_data, model_data, 
         ax4.set_ylim(min_alpha, max_alpha)
         
         # Add overall title
-        plt.suptitle(f"Galaxy {galaxy_name}: [α/Fe] Interpolation from Spectral Indices\nModel Age: {closest_age} Gyr", 
-                   fontsize=16, y=0.98)
+        plt.suptitle(f"Galaxy {galaxy_name}: [α/Fe] Interpolation from Spectral Indices\n"
+           f"Model Age: {closest_age} Gyr | Continuum Mode: {continuum_mode}", 
+           fontsize=16, y=0.98)
         
         # Add explanation text - match exactly to example
         plt.figtext(0.5, 0.01, 
@@ -1150,9 +1231,10 @@ def create_spectral_index_interpolation_plot(galaxy_name, rdb_data, model_data, 
         return {
             'alpha_fe': alpha_fe_values,
             'radius': radius_values,
-            'slope': slope if 'slope' in locals() else np.nan,  # Return improved slope if calculated
+            'slope': slope if 'slope' in locals() else np.nan,
             'p_value': p_value if 'p_value' in locals() else np.nan,
-            'r_squared': r_squared if 'r_squared' in locals() else np.nan
+            'r_squared': r_squared if 'r_squared' in locals() else np.nan,
+            'continuum_mode': continuum_mode  # Add this line
         }
         
     except Exception as e:
@@ -1339,7 +1421,7 @@ def calculate_improved_alpha_fe_slope(radius_values, alpha_fe_values):
         logger.error(f"Error in improved slope calculation: {e}")
         return np.nan, np.nan, np.nan, np.nan, np.nan
 
-def extract_alpha_fe_radius(galaxy_name, rdb_data, model_data, config=None):
+def extract_alpha_fe_radius(galaxy_name, rdb_data, model_data, config=None, continuum_mode='fit'):
     """
     Extract the alpha/Fe ratio as a function of radius for a galaxy using specified bins
     
@@ -1353,6 +1435,8 @@ def extract_alpha_fe_radius(galaxy_name, rdb_data, model_data, config=None):
         Model grid data with ages, metallicities, and spectral indices
     config : dict, optional
         Bin configuration dictionary
+    continuum_mode : str
+        Spectral index continuum mode to use ('auto', 'fit', 'original')
         
     Returns:
     --------
@@ -1376,8 +1460,14 @@ def extract_alpha_fe_radius(galaxy_name, rdb_data, model_data, config=None):
         max_bin_idx = max(bins_to_use) + 1 if bins_to_use else 6
             
         # Extract spectral indices from galaxy data with necessary bin limit
-        galaxy_indices = extract_spectral_indices(rdb_data, bins_limit=max_bin_idx)
+        # Use the specified continuum mode
+        galaxy_indices = extract_spectral_indices_from_method(
+            rdb_data, 
+            method=continuum_mode,
+            bins_limit=max_bin_idx
+        )
         
+        # Rest of the function remains the same...
         # Define column name mapping for the model grid
         model_column_mapping = {
             'Fe5015': find_matching_column(model_data, ['Fe5015', 'Fe5015_SI', 'Fe5015_Index']),
@@ -1423,13 +1513,16 @@ def extract_alpha_fe_radius(galaxy_name, rdb_data, model_data, config=None):
         galaxy_radius = None
         if 'R' in galaxy_indices['bin_indices'] and hasattr(galaxy_indices['bin_indices']['R'], '__len__'):
             galaxy_radius = galaxy_indices['bin_indices']['R'][:min_len]
+        elif 'bin_radii' in galaxy_indices:
+            galaxy_radius = galaxy_indices['bin_radii'][:min_len]
         elif 'distance' in rdb_data:
             distance = rdb_data['distance'].item() if hasattr(rdb_data['distance'], 'item') else rdb_data['distance']
             if 'bin_distances' in distance:
                 galaxy_radius = distance['bin_distances'][:min_len]
-            elif 'bin_radii' in rdb_data['binning']:
+            elif 'binning' in rdb_data:
                 binning = rdb_data['binning'].item() if hasattr(rdb_data['binning'], 'item') else rdb_data['binning']
-                galaxy_radius = binning['bin_radii'][:min_len]
+                if 'bin_radii' in binning:
+                    galaxy_radius = binning['bin_radii'][:min_len]
         
         if galaxy_radius is None:
             logger.warning(f"No radius information found for {galaxy_name}")
@@ -1546,7 +1639,8 @@ def extract_alpha_fe_radius(galaxy_name, rdb_data, model_data, config=None):
                 'r_squared': r_squared, # Improved R²
                 'std_err': std_err,
                 'bins_used': ','.join(map(str, used_bins)) if used_bins else "",  # Ensure it's always a string
-                'radial_bin_limit': max_radius  # Add max radius to the results
+                'radial_bin_limit': max_radius,  # Add max radius to the results
+                'continuum_mode': continuum_mode  # Record which continuum mode was used
             }
         else:
             logger.warning(f"Could not calculate alpha/Fe for any bins in {galaxy_name}")
@@ -1558,8 +1652,7 @@ def extract_alpha_fe_radius(galaxy_name, rdb_data, model_data, config=None):
         traceback.print_exc()
         return None
 
-
-def calculate_alpha_fe_direct(galaxy_name, rdb_data, model_data, config=None):
+def calculate_alpha_fe_direct(galaxy_name, rdb_data, model_data, config=None, continuum_mode='fit'):
     """
     Calculate alpha/Fe for each data point using interpolation from the model grid
     with specified bins only
@@ -1574,6 +1667,8 @@ def calculate_alpha_fe_direct(galaxy_name, rdb_data, model_data, config=None):
         Model grid data with indices and alpha/Fe values
     config : dict, optional
         Bin configuration dictionary
+    continuum_mode : str
+        Spectral index continuum mode to use ('auto', 'fit', 'original')
         
     Returns:
     --------
@@ -1591,8 +1686,12 @@ def calculate_alpha_fe_direct(galaxy_name, rdb_data, model_data, config=None):
         # Find the maximum bin index to extract
         max_bin_idx = max(bins_to_use) + 1 if bins_to_use else 6
         
-        # Extract spectral indices from galaxy data
-        galaxy_indices = extract_spectral_indices(rdb_data, bins_limit=max_bin_idx)
+        # Extract spectral indices using the specified mode
+        galaxy_indices = extract_spectral_indices_from_method(
+            rdb_data, 
+            method=continuum_mode, 
+            bins_limit=max_bin_idx
+        )
         
         # Define column name mapping for the model grid
         model_column_mapping = {
@@ -1639,6 +1738,8 @@ def calculate_alpha_fe_direct(galaxy_name, rdb_data, model_data, config=None):
         galaxy_radius = None
         if 'R' in galaxy_indices['bin_indices'] and hasattr(galaxy_indices['bin_indices']['R'], '__len__'):
             galaxy_radius = galaxy_indices['bin_indices']['R'][:min_len]
+        elif 'bin_radii' in galaxy_indices:
+            galaxy_radius = galaxy_indices['bin_radii'][:min_len]
         elif 'distance' in rdb_data:
             distance = rdb_data['distance'].item() if hasattr(rdb_data['distance'], 'item') else rdb_data['distance']
             if 'bin_distances' in distance:
@@ -1780,7 +1881,8 @@ def calculate_alpha_fe_direct(galaxy_name, rdb_data, model_data, config=None):
             'galaxy': galaxy_name,
             'effective_radius': Re,
             'points': points,
-            'bins_used': ','.join(map(str, [p['bin_index'] for p in points]))
+            'bins_used': ','.join(map(str, [p['bin_index'] for p in points])),
+            'continuum_mode': continuum_mode  # Record which continuum mode was used
         }
         
     except Exception as e:
@@ -1789,7 +1891,7 @@ def calculate_alpha_fe_direct(galaxy_name, rdb_data, model_data, config=None):
         traceback.print_exc()
         return None
 
-def process_all_galaxies(all_galaxy_data, model_data, config_path='bins_config.yaml'):
+def process_all_galaxies(all_galaxy_data, model_data, config_path='bins_config.yaml', continuum_mode='fit'):
     """
     Process all galaxies with the bin configuration
     
@@ -1801,6 +1903,8 @@ def process_all_galaxies(all_galaxy_data, model_data, config_path='bins_config.y
         Model grid data with indices and alpha/Fe values
     config_path : str
         Path to the bin configuration file
+    continuum_mode : str
+        Spectral index continuum mode to use ('auto', 'fit', 'original')
         
     Returns:
     --------
@@ -1813,6 +1917,8 @@ def process_all_galaxies(all_galaxy_data, model_data, config_path='bins_config.y
     # Process each galaxy
     results = []
     slope_results = {}  # Dictionary to store slope results
+    
+    logger.info(f"Using '{continuum_mode}' mode for spectral indices")
     
     for galaxy_name, galaxy_data in all_galaxy_data.items():
         logger.info(f"Processing {galaxy_name}...")
@@ -1836,7 +1942,8 @@ def process_all_galaxies(all_galaxy_data, model_data, config_path='bins_config.y
             model_data,
             output_path=interp3d_path, 
             dpi=150, 
-            bins_limit=max_bin_idx
+            bins_limit=max_bin_idx,
+            continuum_mode=continuum_mode  # Pass the continuum mode
         )
         
         # If 3D interpolation worked, use these values for the other visualizations
@@ -1876,22 +1983,19 @@ def process_all_galaxies(all_galaxy_data, model_data, config_path='bins_config.y
             output_path=params_plot_path, 
             dpi=150, 
             bins_limit=max_bin_idx,
-            interpolated_data=interpolated_data
+            interpolated_data=interpolated_data,
+            continuum_mode=continuum_mode  # Pass the continuum mode
         )
         
-        # Special cases for specific galaxies with known slopes
-        if galaxy_name == "VCC1588":
-            # Use values from the parameter-radius plot
-            slope_results[galaxy_name] = {
-                'slope': 0.085,
-                'p_value': 0.009,
-                'r_squared': 0.982
-            }
-            logger.info(f"  Using corrected slope for VCC1588: 0.085")
-        
-        # Use traditional method to extract other information
-        # But use the improved slopes from our calculations
-        result = extract_alpha_fe_radius(galaxy_name, galaxy_data, model_data, config)
+        # Use traditional method to extract alpha/Fe information
+        # But ensure we use the specified continuum mode
+        result = extract_alpha_fe_radius(
+            galaxy_name, 
+            galaxy_data, 
+            model_data, 
+            config,
+            continuum_mode=continuum_mode  # Pass the continuum mode
+        )
         
         # Overwrite slope in the result with our stored value if available
         if result and galaxy_name in slope_results:
@@ -1934,7 +2038,21 @@ def process_all_galaxies(all_galaxy_data, model_data, config_path='bins_config.y
             model_data,
             output_path=interp_path, 
             dpi=150, 
-            bins_limit=max_bin_idx
+            bins_limit=max_bin_idx,
+            continuum_mode=continuum_mode  # Pass the continuum mode
+        )
+        
+        # Create model grid plots part 1
+        model_grid_path = f"{output_dir}/{galaxy_name}_model_grid_part1.png"
+        create_model_grid_plots_part1(
+            galaxy_name, 
+            galaxy_data, 
+            model_data,
+            age=10,  # Use 10 Gyr as a good choice for early-type galaxies
+            output_path=model_grid_path, 
+            dpi=150, 
+            bins_limit=max_bin_idx,
+            continuum_mode=continuum_mode  # Pass the continuum mode
         )
     
     return results
@@ -2589,8 +2707,29 @@ def create_combined_flux_and_binning(galaxy_name, p2p_data, rdb_data, cube_info,
         import traceback
         traceback.print_exc()
 
-def create_parameter_radius_plots(galaxy_name, rdb_data, model_data=None, output_path=None, dpi=150, bins_limit=6, interpolated_data=None):
-    """Create parameter vs. radius plots with linear fits, using Re and including interpolated alpha/Fe"""
+def create_parameter_radius_plots(galaxy_name, rdb_data, model_data=None, output_path=None, dpi=150, bins_limit=6, interpolated_data=None, continuum_mode='fit'):
+    """
+    Create parameter vs. radius plots with linear fits, using Re and including interpolated alpha/Fe
+    
+    Parameters:
+    -----------
+    galaxy_name : str
+        Galaxy name
+    rdb_data : dict
+        RDB data containing spectral indices
+    model_data : DataFrame, optional
+        Model grid data for reference
+    output_path : str
+        Path to save the output image
+    dpi : int
+        Resolution for the output image
+    bins_limit : int
+        Limit on the number of bins to analyze
+    interpolated_data : dict, optional
+        Pre-calculated interpolated values
+    continuum_mode : str
+        Spectral index continuum mode to use ('auto', 'fit', 'original')
+    """
     try:
         # Check if RDB data is valid
         if rdb_data is None or not isinstance(rdb_data, dict):
@@ -2603,10 +2742,13 @@ def create_parameter_radius_plots(galaxy_name, rdb_data, model_data=None, output
             # Flag that we'll need to use the corrected value
             vcc1588_correction = True
         
-        # Extract parameters with bin limit
-        params = extract_parameter_profiles(rdb_data, 
-                                          parameter_names=['Fe5015', 'Mgb', 'Hbeta', 'age', 'metallicity'],
-                                          bins_limit=bins_limit)
+        # Extract parameters with bin limit using the specified mode
+        params = extract_parameter_profiles(
+            rdb_data, 
+            parameter_names=['Fe5015', 'Mgb', 'Hbeta', 'age', 'metallicity'],
+            bins_limit=bins_limit,
+            continuum_mode=continuum_mode
+        )
         
         if params['radius'] is None:
             logger.error(f"No radius information found for {galaxy_name}")
@@ -2882,7 +3024,7 @@ def create_parameter_radius_plots(galaxy_name, rdb_data, model_data=None, output
         else:
             # If no interpolated data, try to use direct calculation method
             if model_data is not None:
-                direct_result = calculate_alpha_fe_direct(galaxy_name, rdb_data, model_data, bins_limit=bins_limit)
+                direct_result = calculate_alpha_fe_direct(galaxy_name, rdb_data, model_data, bins_limit=bins_limit, continuum_mode=continuum_mode)
                 if direct_result is not None and 'points' in direct_result:
                     points = direct_result['points']
                     
@@ -2996,7 +3138,8 @@ def create_parameter_radius_plots(galaxy_name, rdb_data, model_data=None, output
         
         # Add overall title
         re_info = f" (Re = {Re:.2f} arcsec)" if Re is not None else ""
-        plt.suptitle(f"Galaxy {galaxy_name}: Parameter-Radius Relations{re_info}", fontsize=16, y=0.98)
+        plt.suptitle(f"Galaxy {galaxy_name}: Parameter-Radius Relations{re_info}\nContinuum Mode: {continuum_mode}", 
+                   fontsize=16, y=0.98)
         
         # Add note about alpha/Fe interpolation
         if model_data is not None:
@@ -3020,10 +3163,10 @@ def create_parameter_radius_plots(galaxy_name, rdb_data, model_data=None, output
         import traceback
         traceback.print_exc()
 
-def create_model_grid_plots_part1(galaxy_name, rdb_data, model_data, age=1, output_path=None, dpi=150, bins_limit=6):
+def create_model_grid_plots_part1(galaxy_name, rdb_data, model_data, age=10, output_path=None, dpi=150, bins_limit=6, continuum_mode='fit'):
     """
     Create first set of model grid plots colored by R, log Age, and M/H
-    Part 1: Fe5015 vs Mgb, Fe5015 vs Hbeta, Mgb vs Hbeta - Colored by R
+    Part 1: Fe5015 vs Mgb, Fe5015 vs Hbeta, Mgb vs Hbeta - Colored by different parameters
     
     Parameters:
     -----------
@@ -3041,10 +3184,16 @@ def create_model_grid_plots_part1(galaxy_name, rdb_data, model_data, age=1, outp
         Resolution for the output image
     bins_limit : int
         Limit analysis to first N bins (default: 6 for bins 0-5)
+    continuum_mode : str
+        Spectral index continuum mode to use ('auto', 'fit', 'original')
     """
     try:
-        # Extract spectral indices from galaxy data with bin limit
-        galaxy_indices = extract_spectral_indices(rdb_data, bins_limit=bins_limit)  # Limit to specified bins
+        # Extract spectral indices from galaxy data with bin limit using the specified mode
+        galaxy_indices = extract_spectral_indices_from_method(
+            rdb_data, 
+            method=continuum_mode, 
+            bins_limit=bins_limit
+        )
         
         # Define column name mapping for the model grid
         # Maps our standard names to whatever is in the model data
@@ -3220,7 +3369,9 @@ def create_model_grid_plots_part1(galaxy_name, rdb_data, model_data, age=1, outp
         fig.legend(handles=legend_elements, loc='upper center', ncol=3, bbox_to_anchor=(0.5, 0.03))
         
         # Add overall title
-        plt.suptitle(f'Galaxy {galaxy_name}: Spectral Indices vs. Model Grid (Age = {closest_age} Gyr)', fontsize=16, y=0.98)
+        plt.suptitle(f'Galaxy {galaxy_name}: Spectral Indices vs. Model Grid\n'
+                   f'Age = {closest_age} Gyr | Continuum Mode: {continuum_mode}', 
+                   fontsize=16, y=0.98)
         
         # Adjust layout
         plt.tight_layout(rect=[0, 0.05, 1, 0.95])
@@ -3459,7 +3610,7 @@ def create_model_grid_plots_part2(galaxy_name, rdb_data, model_data, ages=[1, 2,
         import traceback
         traceback.print_exc()
 
-def extract_alpha_fe_radius(galaxy_name, rdb_data, model_data, bins_limit=6):
+def extract_alpha_fe_radius(galaxy_name, rdb_data, model_data, config=None, continuum_mode='fit'):
     """
     Extract the alpha/Fe ratio as a function of radius for a galaxy
     
@@ -3638,7 +3789,8 @@ def extract_alpha_fe_radius(galaxy_name, rdb_data, model_data, bins_limit=6):
                 'slope': slope,  # Slope of alpha/Fe vs. radius
                 'p_value': p_value,
                 'r_squared': r_value**2 if not np.isnan(r_value) else np.nan,
-                'std_err': std_err
+                'std_err': std_err,
+                'continuum_mode': continuum_mode
             }
         else:
             logger.warning(f"Could not calculate alpha/Fe for any bins in {galaxy_name}")
@@ -3650,7 +3802,7 @@ def extract_alpha_fe_radius(galaxy_name, rdb_data, model_data, bins_limit=6):
         traceback.print_exc()
         return None
 
-def calculate_alpha_fe_direct(galaxy_name, rdb_data, model_data, bins_limit=6):
+def calculate_alpha_fe_direct(galaxy_name, rdb_data, model_data, bins_limit=6, continuum_mode='fit'):
     """
     Calculate alpha/Fe for each data point using interpolation from the model grid
     Using only Fe5015 and Mgb indices for interpolation
@@ -3673,7 +3825,11 @@ def calculate_alpha_fe_direct(galaxy_name, rdb_data, model_data, bins_limit=6):
     """
     try:
         # Direct extraction - no need to check for template method
-        galaxy_indices = extract_spectral_indices(rdb_data, bins_limit=bins_limit)
+        galaxy_indices = extract_spectral_indices_from_method(
+            rdb_data, 
+            method=continuum_mode, 
+            bins_limit=bins_limit
+        )
         
         # Define column name mapping for the model grid
         model_column_mapping = {
@@ -3846,7 +4002,8 @@ def calculate_alpha_fe_direct(galaxy_name, rdb_data, model_data, bins_limit=6):
             'galaxy': galaxy_name,
             'effective_radius': Re,
             'points': points,
-            'bins_used': ','.join(map(str, [p['bin_index'] for p in points]))
+            'bins_used': ','.join(map(str, [p['bin_index'] for p in points])),
+            'continuum_mode': continuum_mode  # Add this line
         }
         
     except Exception as e:
@@ -5562,7 +5719,7 @@ def create_virgo_cluster_visualizations(results_list, coordinates, output_dir=".
     
     logger.info(f"Created two Virgo Cluster visualizations in {output_dir}")
 
-def create_3d_alpha_fe_interpolation(galaxy_name, rdb_data, model_data, output_path=None, dpi=150, bins_limit=6):
+def create_3d_alpha_fe_interpolation(galaxy_name, rdb_data, model_data, output_path=None, dpi=150, bins_limit=6, continuum_mode='fit'):
     """
     Create a 3D visualization of alpha/Fe interpolation across spectral index space
     
@@ -5580,6 +5737,8 @@ def create_3d_alpha_fe_interpolation(galaxy_name, rdb_data, model_data, output_p
         Resolution for the output image
     bins_limit : int
         Limit on the number of bins to analyze
+    continuum_mode : str
+        Spectral index continuum mode to use ('auto', 'fit', 'original')
     
     Returns:
     --------
@@ -5593,18 +5752,12 @@ def create_3d_alpha_fe_interpolation(galaxy_name, rdb_data, model_data, output_p
         from scipy.interpolate import LinearNDInterpolator, griddata
         import scipy.spatial as spatial
         
-        # Extract spectral indices from galaxy data
-        template_indices = None
-        if 'bin_indices_multi' in rdb_data:
-            bin_indices_multi = rdb_data['bin_indices_multi'].item() if hasattr(rdb_data['bin_indices_multi'], 'item') else rdb_data['bin_indices_multi']
-            if 'template' in bin_indices_multi:
-                template_indices = extract_spectral_indices_from_method(rdb_data, 'template', bins_limit)
-        
-        # Fall back to standard extraction if template method not available
-        if template_indices is None:
-            galaxy_indices = extract_spectral_indices(rdb_data, bins_limit=bins_limit)
-        else:
-            galaxy_indices = template_indices
+        # Extract spectral indices using the specified mode
+        galaxy_indices = extract_spectral_indices_from_method(
+            rdb_data, 
+            method=continuum_mode, 
+            bins_limit=bins_limit
+        )
         
         # Define column name mapping for the model grid
         model_column_mapping = {
@@ -5849,8 +6002,9 @@ def create_3d_alpha_fe_interpolation(galaxy_name, rdb_data, model_data, output_p
         ax2.view_init(30, 225)
         
         # Add overall title
-        plt.suptitle(f"Galaxy {galaxy_name}: 3D Spectral Index Analysis with α/Fe Interpolation\nModel Age: {closest_age} Gyr", 
-                   fontsize=20, y=0.98)
+        plt.suptitle(f"Galaxy {galaxy_name}: 3D Spectral Index Analysis with α/Fe Interpolation\n"
+           f"Model Age: {closest_age} Gyr | Continuum Mode: {continuum_mode}", 
+           fontsize=20, y=0.98)
         
         # Add explanation text
         plt.figtext(0.5, 0.01, 
@@ -5899,7 +6053,8 @@ def create_3d_alpha_fe_interpolation(galaxy_name, rdb_data, model_data, output_p
                 'Mgb_grid': mgb_grid,
                 'Hbeta_grid': hbeta_grid,
                 'alpha_fe_vol': alpha_fe_vol
-            }
+            },
+            'continuum_mode': continuum_mode  # Add this line
         }
         
     except Exception as e:
@@ -5938,6 +6093,13 @@ def fit_3d_alpha_fe(indices, index_errors, model_data):
             'AoFe': find_matching_column(model_data, ['AoFe', 'alpha/Fe', '[alpha/Fe]', 'A/Fe', '[A/Fe]', 'alpha'])
         }
         
+        # Check if we found all required columns
+        missing_columns = [k for k, v in model_column_mapping.items() if v is None]
+        if missing_columns:
+            logger.error(f"Missing required columns in model data: {missing_columns}")
+            logger.info(f"Available columns in model data: {list(model_data.columns)}")
+            raise ValueError(f"Model data missing required columns: {missing_columns}")
+        
         # Dictionary to store chi-square values for each model point
         chi_square_values = {}
         
@@ -5968,6 +6130,9 @@ def fit_3d_alpha_fe(indices, index_errors, model_data):
             if chi_square == min_chi_square:
                 best_params = params
                 break
+        
+        if best_params is None:
+            raise ValueError("Could not find best-fit parameters")
         
         # Calculate the reduced chi-square (3 indices - 3 parameters = 0 degrees of freedom)
         # In practice, we'd add a regularization term or a minimum dof value
@@ -6046,6 +6211,22 @@ def monte_carlo_error_estimation(indices, index_errors, model_data, n_trials=100
                 logger.warning(f"Error in Monte Carlo trial {i}: {e}")
                 continue
         
+        # Check if we have enough successful trials
+        if len(mc_ages) < 10:
+            logger.warning(f"Too few successful Monte Carlo trials: {len(mc_ages)}")
+            return {
+                'age': np.nan,
+                'age_lower': np.nan,
+                'age_upper': np.nan,
+                'Z/H': np.nan,
+                'Z/H_lower': np.nan,
+                'Z/H_upper': np.nan,
+                'alpha/Fe': np.nan,
+                'alpha/Fe_lower': np.nan,
+                'alpha/Fe_upper': np.nan,
+                'mc_trials': len(mc_ages)
+            }
+        
         # Convert to numpy arrays
         mc_ages = np.array(mc_ages)
         mc_metallicities = np.array(mc_metallicities)
@@ -6077,7 +6258,8 @@ def monte_carlo_error_estimation(indices, index_errors, model_data, n_trials=100
             'alpha/Fe_upper': alpha_upper - alpha_median,
             'mc_ages': mc_ages,
             'mc_metallicities': mc_metallicities,
-            'mc_alphas': mc_alphas
+            'mc_alphas': mc_alphas,
+            'mc_trials': len(mc_ages)
         }
         
         logger.info(f"Monte Carlo results: Age={age_median:.1f}+{age_upper-age_median:.1f}-{age_median-age_lower:.1f} Gyr")
@@ -6092,7 +6274,7 @@ def monte_carlo_error_estimation(indices, index_errors, model_data, n_trials=100
         traceback.print_exc()
         return None
 
-def calculate_alpha_fe_3d(galaxy_name, rdb_data, model_data, bins_limit=6):
+def calculate_alpha_fe_3d(galaxy_name, rdb_data, model_data, bins_limit=6, continuum_mode='fit'):
     """
     Calculate alpha/Fe for all bins of a galaxy using 3D chi-square fitting
     
@@ -6106,6 +6288,8 @@ def calculate_alpha_fe_3d(galaxy_name, rdb_data, model_data, bins_limit=6):
         Model grid data with indices and alpha/Fe values
     bins_limit : int
         Limit analysis to first N bins (default: 6 for bins 0-5)
+    continuum_mode : str
+        Spectral index continuum mode to use ('auto', 'fit', 'original')
     
     Returns:
     --------
@@ -6113,8 +6297,14 @@ def calculate_alpha_fe_3d(galaxy_name, rdb_data, model_data, bins_limit=6):
         Dictionary containing alpha/Fe values and uncertainties for each bin
     """
     try:
-        # Extract spectral indices from galaxy data
-        galaxy_indices = extract_spectral_indices(rdb_data, bins_limit=bins_limit)
+        logger.info(f"Starting 3D alpha/Fe calculation for {galaxy_name} with {continuum_mode} mode")
+        
+        # Extract spectral indices using the specified mode
+        galaxy_indices = extract_spectral_indices_from_method(
+            rdb_data, 
+            method=continuum_mode,
+            bins_limit=bins_limit
+        )
         
         # Check if we have the required data
         if ('bin_indices' not in galaxy_indices or
@@ -6124,7 +6314,7 @@ def calculate_alpha_fe_3d(galaxy_name, rdb_data, model_data, bins_limit=6):
             logger.warning(f"Missing required spectral indices for {galaxy_name}")
             return None
         
-        # Get galaxy spectral indices
+        # Get galaxy spectral indices for each bin
         fe5015_values = galaxy_indices['bin_indices']['Fe5015']
         mgb_values = galaxy_indices['bin_indices']['Mgb']
         hbeta_values = galaxy_indices['bin_indices']['Hbeta']
@@ -6139,6 +6329,10 @@ def calculate_alpha_fe_3d(galaxy_name, rdb_data, model_data, bins_limit=6):
             distance = rdb_data['distance'].item() if hasattr(rdb_data['distance'], 'item') else rdb_data['distance']
             if 'bin_distances' in distance:
                 radius_values = distance['bin_distances'][:bins_limit]
+            elif 'binning' in rdb_data:
+                binning = rdb_data['binning'].item() if hasattr(rdb_data['binning'], 'item') else rdb_data['binning']
+                if 'bin_radii' in binning:
+                    radius_values = binning['bin_radii'][:bins_limit]
         
         # Get effective radius
         Re = extract_effective_radius(rdb_data)
@@ -6146,8 +6340,10 @@ def calculate_alpha_fe_3d(galaxy_name, rdb_data, model_data, bins_limit=6):
         # Scale radius by effective radius if available
         if Re is not None and Re > 0 and radius_values is not None:
             r_scaled = radius_values / Re
+            logger.info(f"Scaling radius by Re = {Re:.2f} arcsec")
         else:
             r_scaled = radius_values
+            logger.info(f"Using raw radius values (Re not available)")
         
         # Results for each bin
         bin_results = []
@@ -6160,14 +6356,23 @@ def calculate_alpha_fe_3d(galaxy_name, rdb_data, model_data, bins_limit=6):
             'Hb': 0.15
         }
         
+        # Check bin limit against actual data length
+        effective_bins_limit = min(bins_limit, len(fe5015_values))
+        if effective_bins_limit < bins_limit:
+            logger.warning(f"Actual data has fewer bins ({effective_bins_limit}) than requested ({bins_limit})")
+        
         # Process each bin
-        for i in range(min(bins_limit, len(fe5015_values))):
+        active_bins = []  # Track which bins are actually used
+        
+        for i in range(effective_bins_limit):
             # Skip bins with missing or invalid data
-            if (np.isnan(fe5015_values[i]) or np.isnan(mgb_values[i]) or 
-                np.isnan(hbeta_values[i]) or fe5015_values[i] <= 0 or 
-                mgb_values[i] <= 0 or hbeta_values[i] <= 0):
-                logger.warning(f"Skipping bin {i} due to invalid data")
+            if (i >= len(fe5015_values) or i >= len(mgb_values) or i >= len(hbeta_values) or 
+                np.isnan(fe5015_values[i]) or np.isnan(mgb_values[i]) or np.isnan(hbeta_values[i]) or 
+                fe5015_values[i] <= 0 or mgb_values[i] <= 0 or hbeta_values[i] <= 0):
+                logger.warning(f"Skipping bin {i} due to invalid or missing data")
                 continue
+            
+            logger.info(f"Processing bin {i}: Fe5015={fe5015_values[i]:.2f}, Mgb={mgb_values[i]:.2f}, Hβ={hbeta_values[i]:.2f}")
             
             # Measured indices for this bin
             bin_indices = {
@@ -6185,31 +6390,49 @@ def calculate_alpha_fe_3d(galaxy_name, rdb_data, model_data, bins_limit=6):
             }
             
             # Fit using 3D chi-square
-            best_fit = fit_3d_alpha_fe(bin_indices, bin_errors, model_data)
-            
-            # Calculate uncertainties using Monte Carlo
-            uncertainties = monte_carlo_error_estimation(bin_indices, bin_errors, model_data, n_trials=500)
-            
-            # Combine best fit with uncertainties
-            bin_result = {
-                'bin': i,
-                'radius': r_scaled[i] if r_scaled is not None else None,
-                'Fe5015': fe5015_values[i],
-                'Mgb': mgb_values[i],
-                'Hbeta': hbeta_values[i],
-                'age': uncertainties['age'],
-                'age_lower': uncertainties['age_lower'],
-                'age_upper': uncertainties['age_upper'],
-                'Z/H': uncertainties['Z/H'],
-                'Z/H_lower': uncertainties['Z/H_lower'],
-                'Z/H_upper': uncertainties['Z/H_upper'],
-                'alpha/Fe': uncertainties['alpha/Fe'],
-                'alpha/Fe_lower': uncertainties['alpha/Fe_lower'],
-                'alpha/Fe_upper': uncertainties['alpha/Fe_upper'],
-                'chi_square': best_fit['chi_square']
-            }
-            
-            bin_results.append(bin_result)
+            try:
+                best_fit = fit_3d_alpha_fe(bin_indices, bin_errors, model_data)
+                
+                # Calculate uncertainties using Monte Carlo
+                uncertainties = monte_carlo_error_estimation(bin_indices, bin_errors, model_data, n_trials=500)
+                
+                # Skip bins with failed Monte Carlo
+                if uncertainties is None or 'alpha/Fe' not in uncertainties or np.isnan(uncertainties['alpha/Fe']):
+                    logger.warning(f"Monte Carlo failed for bin {i}, skipping")
+                    continue
+                
+                # Determine radius
+                bin_radius = r_scaled[i] if r_scaled is not None and i < len(r_scaled) else None
+                
+                # Combine best fit with uncertainties
+                bin_result = {
+                    'bin': i,
+                    'radius': bin_radius,
+                    'Fe5015': fe5015_values[i],
+                    'Mgb': mgb_values[i],
+                    'Hbeta': hbeta_values[i],
+                    'age': uncertainties['age'],
+                    'age_lower': uncertainties['age_lower'],
+                    'age_upper': uncertainties['age_upper'],
+                    'Z/H': uncertainties['Z/H'],
+                    'Z/H_lower': uncertainties['Z/H_lower'],
+                    'Z/H_upper': uncertainties['Z/H_upper'],
+                    'alpha/Fe': uncertainties['alpha/Fe'],
+                    'alpha/Fe_lower': uncertainties['alpha/Fe_lower'],
+                    'alpha/Fe_upper': uncertainties['alpha/Fe_upper'],
+                    'chi_square': best_fit['chi_square'],
+                    'mc_trials': uncertainties.get('mc_trials', 0)
+                }
+                
+                # Add to results
+                bin_results.append(bin_result)
+                active_bins.append(i)
+                
+                logger.info(f"Bin {i} results: [α/Fe]={uncertainties['alpha/Fe']:.2f}+{uncertainties['alpha/Fe_upper']:.2f}-{uncertainties['alpha/Fe_lower']:.2f}")
+                
+            except Exception as bin_err:
+                logger.warning(f"Error processing bin {i}: {bin_err}")
+                continue
         
         # Calculate overall results
         if bin_results:
@@ -6219,14 +6442,16 @@ def calculate_alpha_fe_3d(galaxy_name, rdb_data, model_data, bins_limit=6):
             
             # Calculate median values
             median_alpha_fe = np.median(alpha_fe_values)
-            median_radius = np.median(radius_values) if radius_values[0] is not None else None
+            median_radius = np.median([r for r in radius_values if r is not None]) if any(r is not None for r in radius_values) else None
             
-            # Calculate slope if we have multiple points
-            if len(bin_results) > 1:
+            # Calculate slope if we have multiple points with valid radii
+            if len(bin_results) > 1 and all(r is not None for r in radius_values):
                 slope, intercept, r_squared, p_value, std_err = calculate_improved_alpha_fe_slope(
                     radius_values, alpha_fe_values)
+                logger.info(f"Alpha/Fe gradient: slope={slope:.3f}, p-value={p_value:.3f}, R²={r_squared:.3f}")
             else:
                 slope, intercept, r_squared, p_value, std_err = np.nan, np.nan, np.nan, np.nan, np.nan
+                logger.warning("Not enough valid points to calculate alpha/Fe gradient")
             
             # Return compiled results
             return {
@@ -6234,11 +6459,15 @@ def calculate_alpha_fe_3d(galaxy_name, rdb_data, model_data, bins_limit=6):
                 'bin_results': bin_results,
                 'alpha_fe_median': median_alpha_fe,
                 'radius_median': median_radius,
+                'effective_radius': Re,
                 'slope': slope,
                 'p_value': p_value,
                 'r_squared': r_squared,
+                'std_err': std_err,
+                'intercept': intercept,
                 'method': '3D chi-square fitting',
-                'bins_used': ','.join([str(result['bin']) for result in bin_results])
+                'bins_used': ','.join(map(str, active_bins)),
+                'continuum_mode': continuum_mode  # Record which continuum mode was used
             }
         else:
             logger.warning(f"No valid bin results for {galaxy_name}")
@@ -6250,7 +6479,7 @@ def calculate_alpha_fe_3d(galaxy_name, rdb_data, model_data, bins_limit=6):
         traceback.print_exc()
         return None
 
-def update_alpha_fe_with_3d_method(results_list, all_galaxy_data, model_data):
+def update_alpha_fe_with_3d_method(results_list, all_galaxy_data, model_data, continuum_mode='fit'):
     """
     Update existing alpha/Fe results with values from 3D interpolation method
     
@@ -6262,6 +6491,8 @@ def update_alpha_fe_with_3d_method(results_list, all_galaxy_data, model_data):
         Dictionary mapping galaxy names to their RDB data
     model_data : DataFrame
         Model grid data with indices and alpha/Fe values
+    continuum_mode : str
+        Spectral index continuum mode to use ('auto', 'fit', 'original')
     
     Returns:
     --------
@@ -6269,6 +6500,8 @@ def update_alpha_fe_with_3d_method(results_list, all_galaxy_data, model_data):
         Updated results list with 3D interpolation values
     """
     updated_results = []
+    
+    logger.info(f"Updating alpha/Fe with 3D method using '{continuum_mode}' mode for spectral indices")
     
     for i, result in enumerate(results_list):
         if result is None:
@@ -6294,12 +6527,13 @@ def update_alpha_fe_with_3d_method(results_list, all_galaxy_data, model_data):
         
         bin_limit = max(bins_to_use) + 1 if bins_to_use else 6
         
-        # Calculate alpha/Fe using 3D method
+        # Calculate alpha/Fe using 3D method with the specified continuum mode
         result_3d = calculate_alpha_fe_3d(
             galaxy_name, 
             all_galaxy_data[galaxy_name], 
             model_data, 
-            bins_limit=bin_limit
+            bins_limit=bin_limit,
+            continuum_mode=continuum_mode
         )
         
         # If 3D method was successful, update the original result
@@ -6315,6 +6549,7 @@ def update_alpha_fe_with_3d_method(results_list, all_galaxy_data, model_data):
             new_result['p_value'] = result_3d['p_value']
             new_result['r_squared'] = result_3d['r_squared']
             new_result['method'] = '3D chi-square fitting'
+            new_result['continuum_mode'] = continuum_mode  # Record which continuum mode was used
             
             updated_results.append(new_result)
             logger.info(f"Updated {galaxy_name}: old α/Fe={result['alpha_fe_median']:.3f}, new α/Fe={new_result['alpha_fe_median']:.3f}")
@@ -6325,7 +6560,6 @@ def update_alpha_fe_with_3d_method(results_list, all_galaxy_data, model_data):
             logger.warning(f"3D method failed for {galaxy_name}, keeping original values")
     
     return updated_results
-
 
 #------------------------------------------------------------------------------
 # Main Analysis Function
@@ -6628,6 +6862,10 @@ if __name__ == "__main__":
     # Define bin limit for all analyses
     bins_limit = 6  # Analyze bins 0-5
     
+    # Define spectral index continuum mode to use globally
+    # Options: 'auto', 'fit', 'original'
+    continuum_mode = 'fit'  # Set your preferred mode here
+    
     # Define galaxies to process
     galaxies = [
         "VCC0308", "VCC0667", "VCC0688", "VCC0990", "VCC1049", "VCC1146", 
@@ -6653,11 +6891,12 @@ if __name__ == "__main__":
         if rdb_data is not None and isinstance(rdb_data, dict) and len(rdb_data) > 0:
             all_galaxy_data[galaxy_name] = rdb_data
     
-    # Process all galaxies with the bin configuration
-    results = process_all_galaxies(all_galaxy_data, model_data, 'bins_config.yaml')
-    # Update results with 3D interpolation method
-    results = update_alpha_fe_with_3d_method(results, all_galaxy_data, model_data)
-    logger.info("Updated alpha/Fe values using 3D interpolation method")
+    # Process all galaxies with the bin configuration and specified mode
+    results = process_all_galaxies(all_galaxy_data, model_data, 'bins_config.yaml', continuum_mode)
+    
+    # Update results with 3D interpolation method (using same continuum mode)
+    results = update_alpha_fe_with_3d_method(results, all_galaxy_data, model_data, continuum_mode)
+    logger.info(f"Updated alpha/Fe values using 3D interpolation with '{continuum_mode}' mode")
     
     # Define emission line galaxies
     emission_line_galaxies = [
@@ -6665,61 +6904,36 @@ if __name__ == "__main__":
         "VCC1410", "VCC667", "VCC1811", "VCC688", "VCC1193", "VCC1486"
     ]
     
-    # Create summary table
-    summary_df = create_alpha_fe_results_summary(results, emission_line_galaxies, f"{output_dir}/alpha_fe_results.csv")
-    
     # Get galaxy coordinates
     coordinates = get_ifu_coordinates(galaxies)
     
-    # Create Virgo Cluster map visualization
-    create_virgo_cluster_map_with_vectors(results, coordinates, f"{output_dir}/virgo_cluster_map.png", dpi=300)
+    # Create Alpha/Fe vs. radius plot
+    create_alpha_radius_plot_improved(results, 
+                                    output_path=f"{output_dir}/alpha_fe_vs_radius_improved.png", 
+                                    dpi=300)
     
-    logger.info("Galaxy α/Fe radial gradient analysis complete")
-
-    # Create individual galaxy visualizations
-    output_base = "./galaxy_visualizations"
-    os.makedirs(output_base, exist_ok=True)
-
-
-    coordinates = get_ifu_coordinates(galaxies)
+    # Create direct interpolation plots
+    create_alpha_radius_direct_plot(results, 
+                                   output_path=f"{output_dir}/alpha_fe_vs_radius_direct.png", 
+                                   dpi=300)
     
-    # Create separate visualizations for the Virgo Cluster map and distance plots
-    cluster_viz_dir = f"{output_base}/virgo_cluster"
+    # Create spectral index space plot
+    create_fe5015_mgb_plot(results, 
+                         output_path=f"{output_dir}/fe5015_vs_mgb.png", 
+                         dpi=300,
+                         model_data=model_data)
+    
+    # Create Virgo Cluster map
+    create_virgo_cluster_map_with_vectors(results, coordinates, 
+                                        output_path=f"{output_dir}/virgo_cluster_map.png", 
+                                        dpi=300)
+    
+    # Create separate visualizations
+    cluster_viz_dir = f"{output_dir}/virgo_cluster"
     os.makedirs(cluster_viz_dir, exist_ok=True)
     create_virgo_cluster_visualizations(results, coordinates, output_dir=cluster_viz_dir, dpi=300)
     
-    # # Also create the combined visualization for comparison
-    # combined_viz_path = f"{cluster_viz_dir}/virgo_cluster_combined.png"
-    # create_virgo_cluster_map_with_vectors(results, coordinates, output_path=combined_viz_path, dpi=300)
+    # Save summary info to file
+    summary_df = create_alpha_fe_results_summary(results, emission_line_galaxies, f"{output_dir}/alpha_fe_results.csv")
     
-    # logger.info("All Virgo Cluster visualizations complete!")
-    
-    for galaxy_name in galaxies:
-        try:
-            # Load galaxy data
-            p2p_data, vnb_data, rdb_data = Read_Galaxy(galaxy_name)
-            
-            # Check if RDB data is valid before proceeding
-            rdb_valid = rdb_data is not None and isinstance(rdb_data, dict) and len(rdb_data) > 0
-            if not rdb_valid:
-                logger.warning(f"No valid RDB data for {galaxy_name}, skipping visualization")
-                continue
-            
-            # Extract cube information
-            cube_info = extract_cube_info(galaxy_name)
-            
-            # Create output directory for this galaxy
-            output_dir = f"{output_base}/{galaxy_name}"
-            
-            # Create visualizations including model grid plots - pass bins_limit
-            create_galaxy_visualization(galaxy_name, p2p_data, rdb_data, cube_info, 
-                                       model_data=model_data,
-                                       output_dir=output_dir, dpi=300,
-                                       bins_limit=bins_limit)  # Pass bins_limit
-                                       
-            logger.info(f"Completed visualization for {galaxy_name}")
-        except Exception as e:
-            logger.error(f"Failed to process {galaxy_name}: {e}")
-            continue
-    
-    logger.info("All visualizations complete!")
+    logger.info(f"Analysis complete using '{continuum_mode}' continuum mode for spectral indices")
