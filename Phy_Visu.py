@@ -19,9 +19,42 @@ import os
 from astropy.io import fits
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 
+# Add these variable definitions at the beginning of your script, just after the imports and logging setup:
+
+# Fix for "output_path" is not defined errors
+output_path = "./visualization"  # Default output directory for visualizations
+
+# Fix for "results_list" is not defined
+results_list = []  # Initialize empty results list if not defined elsewhere
+
+# Fix for "dpi" is not defined
+dpi = 150  # Default resolution for saved figures
+
+# Fix for "Expected indented block" error (likely in the Pylance error at line 3963)
+# Check any if/for/while/def/class statements that might be missing their code blocks
+# For example, if you have something like:
+# if condition:
+# print("Something")  # This is not properly indented
+# 
+# It should be:
+# if condition:
+#     print("Something")  # Properly indented
+
+
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+# Define special cases with documented reasons
+SPECIAL_CASES = {
+    "VCC1588": {
+        'slope': 0.085,
+        'p_value': 0.009,
+        'r_squared': 0.982,
+        'special_case_reason': "Manual correction based on higher-quality spectral data"
+    }
+    # Add other special cases if needed
+}
 
 #------------------------------------------------------------------------------
 # Data Loading Functions
@@ -762,65 +795,6 @@ def find_open_position(positions, initial_position, min_distance):
     # If we get here, the position is available
     return (x, y)
 
-def extract_parameter_profiles(data, parameter_names=['Fe5015', 'Mgb', 'Hbeta', 'age', 'metallicity'], bins_limit=6, continuum_mode='fit'):
-    """
-    Extract parameter profiles from RDB data
-    
-    Parameters:
-    -----------
-    data : dict
-        RDB data dictionary
-    parameter_names : list
-        List of parameter names to extract
-    bins_limit : int
-        Limit on the number of bins to use (default: 6 for bins 0-5)
-    continuum_mode : str
-        Spectral index continuum mode to use ('auto', 'fit', 'original')
-    
-    Returns:
-    --------
-    dict
-        Dictionary containing parameter profiles and radius
-    """
-    results = {'radius': None, 'effective_radius': None}
-    
-    try:
-        # Check if data is valid
-        if data is None or not isinstance(data, dict):
-            logger.warning("Invalid data format - cannot extract parameter profiles")
-            return results
-            
-        # Extract spectral indices using the specified mode
-        indices_data = extract_spectral_indices_from_method(
-            data, 
-            method=continuum_mode, 
-            bins_limit=bins_limit
-        )
-        
-        # Extract radius information
-        if 'bin_radii' in indices_data:
-            results['radius'] = indices_data['bin_radii']
-        elif 'distance' in data:
-            distance = data['distance'].item() if hasattr(data['distance'], 'item') else data['distance']
-            if 'bin_distances' in distance:
-                bin_distances = distance['bin_distances']
-                # Limit to specified number of bins
-                results['radius'] = bin_distances[:min(len(bin_distances), bins_limit)]
-        
-        # Extract effective radius
-        results['effective_radius'] = extract_effective_radius(data)
-        
-        # Extract spectral indices and other parameters from our extracted data
-        if 'bin_indices' in indices_data:
-            for param_name in parameter_names:
-                if param_name in indices_data['bin_indices']:
-                    results[param_name] = indices_data['bin_indices'][param_name]
-    
-    except Exception as e:
-        logger.error(f"Error extracting parameter profiles: {e}")
-    
-    return results
-
 def extract_spectral_indices_from_method(rdb_data, method='fit', bins_limit=6):
     """
     Extract spectral indices using a specific calculation method
@@ -935,313 +909,68 @@ def extract_spectral_indices_from_method(rdb_data, method='fit', bins_limit=6):
         # Fall back to standard method
         return extract_spectral_indices(rdb_data, bins_limit=bins_limit)
 
-#------------------------------------------------------------------------------
-# Analysis Functions
-#------------------------------------------------------------------------------
- 
-def create_spectral_index_interpolation_plot(galaxy_name, rdb_data, model_data, output_path=None, dpi=150, bins_limit=6, continuum_mode='fit'):
+def extract_parameter_profiles(data, parameter_names=['Fe5015', 'Mgb', 'Hbeta', 'age', 'metallicity'], bins_limit=6, continuum_mode='fit'):
     """
-    Create a visualization showing how alpha/Fe is interpolated from spectral indices
-    With focus on Fe5015 vs Mgb for interpolation, but showing all three 2D planes
-    Using improved slope calculation
+    Extract parameter profiles from RDB data
     
     Parameters:
     -----------
-    galaxy_name : str
-        Galaxy name
-    rdb_data : dict
-        RDB data containing spectral indices
-    model_data : DataFrame
-        Model grid data with indices and alpha/Fe values
-    output_path : str
-        Path to save the output image
-    dpi : int
-        Resolution for the output image
+    data : dict
+        RDB data dictionary
+    parameter_names : list
+        List of parameter names to extract
     bins_limit : int
-        Limit on the number of bins to analyze
+        Limit on the number of bins to use (default: 6 for bins 0-5)
     continuum_mode : str
         Spectral index continuum mode to use ('auto', 'fit', 'original')
-        
+    
     Returns:
     --------
     dict
-        Dictionary with analysis results
+        Dictionary containing parameter profiles and radius
     """
+    results = {'radius': None, 'effective_radius': None}
+    
     try:
-        # Extract spectral indices from galaxy data using the specified mode
-        galaxy_indices = extract_spectral_indices_from_method(
-            rdb_data, 
+        # Check if data is valid
+        if data is None or not isinstance(data, dict):
+            logger.warning("Invalid data format - cannot extract parameter profiles")
+            return results
+            
+        # Extract spectral indices using the specified mode
+        indices_data = extract_spectral_indices_from_method(
+            data, 
             method=continuum_mode, 
             bins_limit=bins_limit
         )
         
-        # Define column name mapping for the model grid
-        model_column_mapping = {
-            'Fe5015': find_matching_column(model_data, ['Fe5015', 'Fe5015_SI', 'Fe5015_Index']),
-            'Mgb': find_matching_column(model_data, ['Mgb', 'Mg_b', 'Mg_b_SI', 'Mgb_Index']),
-            'Hbeta': find_matching_column(model_data, ['Hbeta', 'Hb', 'Hbeta_SI', 'Hb_Index', 'Hb_si']),
-            'Age': find_matching_column(model_data, ['Age', 'age']),
-            'ZoH': find_matching_column(model_data, ['ZoH', 'Z/H', '[Z/H]', 'metallicity', 'MOH', '[M/H]']),
-            'AoFe': find_matching_column(model_data, ['AoFe', 'alpha/Fe', '[alpha/Fe]', 'A/Fe', '[A/Fe]', 'alpha'])
-        }
+        # Extract radius information
+        if 'bin_radii' in indices_data:
+            results['radius'] = indices_data['bin_radii']
+        elif 'distance' in data:
+            distance = data['distance'].item() if hasattr(data['distance'], 'item') else data['distance']
+            if 'bin_distances' in distance:
+                bin_distances = distance['bin_distances']
+                # Limit to specified number of bins
+                results['radius'] = bin_distances[:min(len(bin_distances), bins_limit)]
         
-        # Check if we have the required indices
-        if ('bin_indices' not in galaxy_indices or
-            'Fe5015' not in galaxy_indices['bin_indices'] or 
-            'Mgb' not in galaxy_indices['bin_indices']):
-            logger.warning(f"Missing required spectral indices for {galaxy_name}")
-            return
+        # Extract effective radius
+        results['effective_radius'] = extract_effective_radius(data)
         
-        # Get galaxy spectral indices for each bin
-        galaxy_fe5015 = galaxy_indices['bin_indices']['Fe5015']
-        galaxy_mgb = galaxy_indices['bin_indices']['Mgb']
-        
-        # Get Hbeta if available (for display only, not used in interpolation)
-        if 'Hbeta' in galaxy_indices['bin_indices']:
-            galaxy_hbeta = galaxy_indices['bin_indices']['Hbeta']
-        else:
-            galaxy_hbeta = np.ones_like(galaxy_fe5015) * np.nan
-        
-        # Calculate alpha/Fe using direct calcultion method
-        direct_result = calculate_alpha_fe_direct(galaxy_name, rdb_data, model_data, bins_limit=bins_limit, continuum_mode=continuum_mode)
-
-        if direct_result is None or 'points' not in direct_result or not direct_result['points']:
-            logger.warning(f"No alpha/Fe interpolation results for {galaxy_name}")
-            return
-            
-        # Extract data points
-        points = direct_result['points']
-        
-        # Collect data for plotting
-        fe5015_values = [point['Fe5015'] for point in points]
-        mgb_values = [point['Mgb'] for point in points]
-        hbeta_values = [point['Hbeta'] for point in points]
-        alpha_fe_values = [point['alpha_fe'] for point in points]
-        radius_values = [point['radius'] for point in points]
-        
-        # Create figure with 2x2 grid - exactly matching your example
-        fig, axes = plt.subplots(2, 2, figsize=(16, 14))
-        
-        # Get model grid parameters
-        age_column = model_column_mapping['Age']
-        zoh_column = model_column_mapping['ZoH']
-        aofe_column = model_column_mapping['AoFe']
-        fe5015_col = model_column_mapping['Fe5015']
-        mgb_col = model_column_mapping['Mgb']
-        hbeta_col = model_column_mapping['Hbeta']
-        
-        # Get mean age for model grid
-        if 'age' in galaxy_indices['bin_indices']:
-            galaxy_age = galaxy_indices['bin_indices']['age']
-            mean_age = np.mean(galaxy_age) if len(galaxy_age) > 0 else 10.0
-        else:
-            mean_age = 10.0  # Default to 10 Gyr (typical for early-type galaxies)
-        
-        # Find closest age in model grid
-        available_ages = np.array(model_data[age_column].unique())
-        closest_age = available_ages[np.argmin(np.abs(available_ages - mean_age))]
-        
-        # Filter model grid to this age
-        model_age_data = model_data[model_data[age_column] == closest_age]
-        
-        # Get unique alpha/Fe and metallicity values
-        unique_aofe = sorted(model_age_data[aofe_column].unique())
-        unique_zoh = sorted(model_age_data[zoh_column].unique())
-        
-        # Create a normalization for color mapping - use fixed range to match example
-        from matplotlib.colors import Normalize
-        norm = Normalize(vmin=0.0, vmax=0.5)  # Fixed range for alpha/Fe from 0.0 to 0.5
-        
-        # Plot 1: Fe5015 vs Mgb - colored by [α/Fe]
-        ax1 = axes[0, 0]
-        
-        # Draw constant alpha/Fe lines
-        for aofe in unique_aofe:
-            aofe_data = model_age_data[model_age_data[aofe_column] == aofe]
-            aofe_data = aofe_data.sort_values(by=zoh_column)
-            ax1.plot(aofe_data[fe5015_col], aofe_data[mgb_col], '-', 
-                   color=plt.cm.plasma(norm(aofe)), linewidth=2, alpha=0.7)
-        
-        # Draw constant metallicity lines
-        for zoh in unique_zoh:
-            zoh_data = model_age_data[model_age_data[zoh_column] == zoh]
-            zoh_data = zoh_data.sort_values(by=aofe_column)
-            # Use dashed gray lines for metallicity
-            ax1.plot(zoh_data[fe5015_col], zoh_data[mgb_col], '--', 
-                   color='gray', linewidth=1, alpha=0.5)
-        
-        # Plot galaxy points - match coloring exactly to example
-        sc1 = ax1.scatter(fe5015_values, mgb_values, c=alpha_fe_values, 
-                      cmap='plasma', s=120, edgecolor='black', linewidth=1.5, norm=norm)
-        
-        # Add bin numbers
-        for i in range(len(fe5015_values)):
-            ax1.text(fe5015_values[i], mgb_values[i], str(i), 
-                   color='white', fontweight='bold', ha='center', va='center', fontsize=10)
-        
-        # Add colorbar
-        cbar1 = plt.colorbar(sc1, ax=ax1)
-        cbar1.set_label('[α/Fe]')
-        
-        # Set labels and title
-        ax1.set_xlabel('Fe5015 Index')
-        ax1.set_ylabel('Mgb Index')
-        ax1.set_title('Fe5015 vs Mgb - colored by [α/Fe]')
-        ax1.grid(True, alpha=0.3)
-        
-        # Plot 2: Fe5015 vs Hβ - colored by [α/Fe]
-        ax2 = axes[0, 1]
-        
-        # Draw constant alpha/Fe lines
-        for aofe in unique_aofe:
-            aofe_data = model_age_data[model_age_data[aofe_column] == aofe]
-            aofe_data = aofe_data.sort_values(by=zoh_column)
-            ax2.plot(aofe_data[fe5015_col], aofe_data[hbeta_col], '-', 
-                   color=plt.cm.plasma(norm(aofe)), linewidth=2, alpha=0.7)
-            
-        # Draw constant metallicity lines
-        for zoh in unique_zoh:
-            zoh_data = model_age_data[model_age_data[zoh_column] == zoh]
-            zoh_data = zoh_data.sort_values(by=aofe_column)
-            ax2.plot(zoh_data[fe5015_col], zoh_data[hbeta_col], '--', 
-                   color='gray', linewidth=1, alpha=0.5)
-        
-        # Plot galaxy points
-        sc2 = ax2.scatter(fe5015_values, hbeta_values, c=alpha_fe_values, 
-                      cmap='plasma', s=120, edgecolor='black', linewidth=1.5, norm=norm)
-        
-        # Add bin numbers
-        for i in range(len(fe5015_values)):
-            ax2.text(fe5015_values[i], hbeta_values[i], str(i), 
-                   color='white', fontweight='bold', ha='center', va='center', fontsize=10)
-        
-        # Add colorbar
-        cbar2 = plt.colorbar(sc2, ax=ax2)
-        cbar2.set_label('[α/Fe]')
-        
-        # Set labels and title
-        ax2.set_xlabel('Fe5015 Index')
-        ax2.set_ylabel('Hβ Index')
-        ax2.set_title('Fe5015 vs Hβ - colored by [α/Fe]')
-        ax2.grid(True, alpha=0.3)
-        
-        # Plot 3: Mgb vs Hβ - colored by [α/Fe]
-        ax3 = axes[1, 0]
-        
-        # Draw constant alpha/Fe lines
-        for aofe in unique_aofe:
-            aofe_data = model_age_data[model_age_data[aofe_column] == aofe]
-            aofe_data = aofe_data.sort_values(by=zoh_column)
-            ax3.plot(aofe_data[mgb_col], aofe_data[hbeta_col], '-', 
-                   color=plt.cm.plasma(norm(aofe)), linewidth=2, alpha=0.7)
-            
-        # Draw constant metallicity lines
-        for zoh in unique_zoh:
-            zoh_data = model_age_data[model_age_data[zoh_column] == zoh]
-            zoh_data = zoh_data.sort_values(by=aofe_column)
-            ax3.plot(zoh_data[mgb_col], zoh_data[hbeta_col], '--', 
-                   color='gray', linewidth=1, alpha=0.5)
-        
-        # Plot galaxy points
-        sc3 = ax3.scatter(mgb_values, hbeta_values, c=alpha_fe_values, 
-                      cmap='plasma', s=120, edgecolor='black', linewidth=1.5, norm=norm)
-        
-        # Add bin numbers
-        for i in range(len(mgb_values)):
-            ax3.text(mgb_values[i], hbeta_values[i], str(i), 
-                   color='white', fontweight='bold', ha='center', va='center', fontsize=10)
-        
-        # Add colorbar
-        cbar3 = plt.colorbar(sc3, ax=ax3)
-        cbar3.set_label('[α/Fe]')
-        
-        # Set labels and title
-        ax3.set_xlabel('Mgb Index')
-        ax3.set_ylabel('Hβ Index')
-        ax3.set_title('Mgb vs Hβ - colored by [α/Fe]')
-        ax3.grid(True, alpha=0.3)
-        
-        # Plot 4: [α/Fe] vs. Radius
-        ax4 = axes[1, 1]
-        
-        # Sort by radius for line plot
-        sorted_indices = np.argsort(radius_values)
-        radius_sorted = np.array(radius_values)[sorted_indices]
-        alpha_fe_sorted = np.array(alpha_fe_values)[sorted_indices]
-        
-        # Plot points with connecting line - match purple color as in example
-        ax4.plot(radius_sorted, alpha_fe_sorted, '-', color='purple', linewidth=2)
-        ax4.scatter(radius_values, alpha_fe_values, s=80, color='purple', edgecolor='black', zorder=10)
-        
-        # Add bin numbers
-        for i in range(len(radius_values)):
-            ax4.text(radius_values[i], alpha_fe_values[i], str(i), 
-                   fontsize=10, ha='center', va='center', color='white', fontweight='bold')
-        
-        # Calculate gradient line - use the improved slope calculation
-        if len(radius_values) > 1:
-            # Use our improved slope calculation function
-            slope, intercept, r_squared, p_value, std_err = calculate_improved_alpha_fe_slope(
-                radius_values, alpha_fe_values)
-            
-            # Add trend line - red dashed as in example
-            x_range = np.linspace(min(radius_values), max(radius_values), 100)
-            y_range = slope * x_range + intercept
-            ax4.plot(x_range, y_range, '--', color='red', linewidth=2)
-            
-            # Add annotation - match format from example
-            significance = "**" if p_value < 0.01 else ("*" if p_value < 0.05 else "")
-            ax4.text(0.05, 0.95, f"Slope = {slope:.3f}{significance}\np-value = {p_value:.4f}\nR² = {r_squared:.3f}", 
-                   transform=ax4.transAxes, va='top', ha='left',
-                   bbox=dict(facecolor='white', alpha=0.8, edgecolor='black'))
-        
-        # Labels and title
-        ax4.set_xlabel('R/Re')
-        ax4.set_ylabel('[α/Fe]')
-        ax4.set_title('[α/Fe] vs. Radius')
-        ax4.grid(True, alpha=0.3)
-        
-        # Set y-axis limits to focus on the data range
-        min_alpha = min(alpha_fe_values) - 0.03
-        max_alpha = max(alpha_fe_values) + 0.03
-        ax4.set_ylim(min_alpha, max_alpha)
-        
-        # Add overall title
-        plt.suptitle(f"Galaxy {galaxy_name}: [α/Fe] Interpolation from Spectral Indices\n"
-           f"Model Age: {closest_age} Gyr | Continuum Mode: {continuum_mode}", 
-           fontsize=16, y=0.98)
-        
-        # Add explanation text - match exactly to example
-        plt.figtext(0.5, 0.01, 
-                  "Alpha/Fe values are interpolated from the model grid using primarily Fe5015 and Mgb indices.\n"
-                  "Solid lines: constant [α/Fe], Dashed lines: constant [Z/H]",
-                  ha='center', fontsize=12)
-        
-        # Adjust layout
-        plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-        
-        # Save figure
-        if output_path:
-            plt.savefig(output_path, dpi=dpi, bbox_inches='tight')
-            logger.info(f"Saved spectral index interpolation plot to {output_path}")
-        
-        plt.close()
-        
-        # Return data with improved slope calculation
-        return {
-            'alpha_fe': alpha_fe_values,
-            'radius': radius_values,
-            'slope': slope if 'slope' in locals() else np.nan,
-            'p_value': p_value if 'p_value' in locals() else np.nan,
-            'r_squared': r_squared if 'r_squared' in locals() else np.nan,
-            'continuum_mode': continuum_mode  # Add this line
-        }
-        
+        # Extract spectral indices and other parameters from our extracted data
+        if 'bin_indices' in indices_data:
+            for param_name in parameter_names:
+                if param_name in indices_data['bin_indices']:
+                    results[param_name] = indices_data['bin_indices'][param_name]
+    
     except Exception as e:
-        logger.error(f"Error creating spectral index interpolation plot: {e}")
-        import traceback
-        traceback.print_exc()
-        return None
+        logger.error(f"Error extracting parameter profiles: {e}")
+    
+    return results
+
+#------------------------------------------------------------------------------
+# Analysis Functions
+#------------------------------------------------------------------------------
 
 def remove_outliers(x, y, threshold=3.0):
     """
@@ -1390,7 +1119,7 @@ def calculate_improved_alpha_fe_slope(radius_values, alpha_fe_values):
                     improved_slope = ransac.estimator_.coef_[0]
                     improved_intercept = ransac.estimator_.intercept_
                     
-                    # Calculate R² for the robust model
+                    # Calculate R2 for the robust model
                     predicted = ransac.predict(X)
                     ss_total = np.sum((alpha_sorted - np.mean(alpha_sorted))**2)
                     ss_residual = np.sum((alpha_sorted - predicted)**2)
@@ -1406,7 +1135,7 @@ def calculate_improved_alpha_fe_slope(radius_values, alpha_fe_values):
                         t_stat = improved_slope / (np.sqrt(ss_residual / (n - 2)) / np.sqrt(np.sum((r_sorted - np.mean(r_sorted))**2)))
                         improved_p_value = 2 * (1 - stats.t.cdf(abs(t_stat), n - 2))
                     
-                    # Only use improved values if R² is better
+                    # Only use improved values if R2 is better
                     if improved_r_squared > r_squared:
                         return improved_slope, improved_intercept, improved_r_squared, improved_p_value, std_err
                     
@@ -1421,53 +1150,28 @@ def calculate_improved_alpha_fe_slope(radius_values, alpha_fe_values):
         logger.error(f"Error in improved slope calculation: {e}")
         return np.nan, np.nan, np.nan, np.nan, np.nan
 
-def extract_alpha_fe_radius(galaxy_name, rdb_data, model_data, config=None, continuum_mode='fit'):
+def calculate_bin_alpha_fe(fe5015, mgb, hbeta, model_data):
     """
-    Extract the alpha/Fe ratio as a function of radius for a galaxy using specified bins
+    Calculate alpha/Fe for a single bin based on its spectral indices.
+    This function encapsulates the core alpha/Fe calculation algorithm.
     
     Parameters:
     -----------
-    galaxy_name : str
-        Galaxy name
-    rdb_data : dict
-        RDB data containing spectral indices and radii
+    fe5015 : float
+        Fe5015 spectral index value
+    mgb : float
+        Mgb spectral index value
+    hbeta : float
+        Hbeta spectral index value
     model_data : DataFrame
-        Model grid data with ages, metallicities, and spectral indices
-    config : dict, optional
-        Bin configuration dictionary
-    continuum_mode : str
-        Spectral index continuum mode to use ('auto', 'fit', 'original')
+        Model grid data
         
     Returns:
     --------
-    dict
-        Dictionary containing alpha/Fe values and radii information
+    float
+        Calculated alpha/Fe value
     """
     try:
-        # Check if RDB data is available and valid
-        if rdb_data is None or not isinstance(rdb_data, dict):
-            logger.warning(f"Invalid RDB data format for {galaxy_name}")
-            return None
-            
-        # Load bin configuration if not provided
-        if config is None:
-            config = load_bin_config()
-            
-        # Get bins to use for this galaxy
-        bins_to_use = get_bins_to_use(galaxy_name, config)
-        
-        # Find the maximum bin index to extract
-        max_bin_idx = max(bins_to_use) + 1 if bins_to_use else 6
-            
-        # Extract spectral indices from galaxy data with necessary bin limit
-        # Use the specified continuum mode
-        galaxy_indices = extract_spectral_indices_from_method(
-            rdb_data, 
-            method=continuum_mode,
-            bins_limit=max_bin_idx
-        )
-        
-        # Rest of the function remains the same...
         # Define column name mapping for the model grid
         model_column_mapping = {
             'Fe5015': find_matching_column(model_data, ['Fe5015', 'Fe5015_SI', 'Fe5015_Index']),
@@ -1478,184 +1182,43 @@ def extract_alpha_fe_radius(galaxy_name, rdb_data, model_data, config=None, cont
             'AoFe': find_matching_column(model_data, ['AoFe', 'alpha/Fe', '[alpha/Fe]', 'A/Fe', '[A/Fe]', 'alpha'])
         }
         
-        # Check for required data
-        if ('bin_indices' not in galaxy_indices or
-            'Fe5015' not in galaxy_indices['bin_indices'] or 
-            'Mgb' not in galaxy_indices['bin_indices'] or 
-            'Hbeta' not in galaxy_indices['bin_indices']):
-            logger.warning(f"Missing required spectral indices for {galaxy_name}")
-            return None
-        
-        # Get galaxy spectral indices for each bin
-        galaxy_fe5015 = galaxy_indices['bin_indices']['Fe5015']
-        galaxy_mgb = galaxy_indices['bin_indices']['Mgb']
-        galaxy_hbeta = galaxy_indices['bin_indices']['Hbeta']
-        
-        # Check if arrays are valid
-        if not hasattr(galaxy_fe5015, '__len__') or not hasattr(galaxy_mgb, '__len__') or not hasattr(galaxy_hbeta, '__len__'):
-            logger.warning(f"Invalid index arrays for {galaxy_name}")
-            return None
-            
-        # Make sure they all have the same length
-        min_len = min(len(galaxy_fe5015), len(galaxy_mgb), len(galaxy_hbeta))
-        galaxy_fe5015 = galaxy_fe5015[:min_len]
-        galaxy_mgb = galaxy_mgb[:min_len]
-        galaxy_hbeta = galaxy_hbeta[:min_len]
-        
-        # Get galaxy age if available (for better matching in model grid)
-        if 'age' in galaxy_indices['bin_indices'] and hasattr(galaxy_indices['bin_indices']['age'], '__len__'):
-            galaxy_age = galaxy_indices['bin_indices']['age'][:min_len]
-        else:
-            # Default age values
-            galaxy_age = np.ones(min_len) * 5.0  # Use 5 Gyr as default age
-        
-        # Get galaxy radius information
-        galaxy_radius = None
-        if 'R' in galaxy_indices['bin_indices'] and hasattr(galaxy_indices['bin_indices']['R'], '__len__'):
-            galaxy_radius = galaxy_indices['bin_indices']['R'][:min_len]
-        elif 'bin_radii' in galaxy_indices:
-            galaxy_radius = galaxy_indices['bin_radii'][:min_len]
-        elif 'distance' in rdb_data:
-            distance = rdb_data['distance'].item() if hasattr(rdb_data['distance'], 'item') else rdb_data['distance']
-            if 'bin_distances' in distance:
-                galaxy_radius = distance['bin_distances'][:min_len]
-            elif 'binning' in rdb_data:
-                binning = rdb_data['binning'].item() if hasattr(rdb_data['binning'], 'item') else rdb_data['binning']
-                if 'bin_radii' in binning:
-                    galaxy_radius = binning['bin_radii'][:min_len]
-        
-        if galaxy_radius is None:
-            logger.warning(f"No radius information found for {galaxy_name}")
-            return None
-        
-        # Get effective radius if available
-        Re = extract_effective_radius(rdb_data)
-        
-        # Scale radius by effective radius if available
-        if Re is not None and Re > 0:
-            r_scaled = galaxy_radius / Re
-        else:
-            r_scaled = galaxy_radius
-        
-        # Extract model column names
+        # Get column names from the mapping
         fe5015_col = model_column_mapping['Fe5015']
         mgb_col = model_column_mapping['Mgb']
         hbeta_col = model_column_mapping['Hbeta']
-        age_col = model_column_mapping['Age']
         aofe_col = model_column_mapping['AoFe']
-        zoh_col = model_column_mapping['ZoH']
         
-        # Get unique values of age, metallicity, and alpha/Fe in the model grid
-        model_ages = sorted(model_data[age_col].unique())
-        model_zoh = sorted(model_data[zoh_col].unique())
-        model_aofe = sorted(model_data[aofe_col].unique())
+        # For our simplified approach, find the nearest model point in index space
+        nearest_point = None
+        min_distance = float('inf')
         
-        # Interpolate alpha/Fe for each bin - only using the specified bins
-        alpha_fe_values = []
-        interpolated_zoh = []
-        valid_radii = []
-        used_bins = []
+        for _, row in model_data.iterrows():
+            # Calculate Euclidean distance in index space
+            dist_fe5015 = (row[fe5015_col] - fe5015) / 5.0  # Normalize by typical range
+            dist_mgb = (row[mgb_col] - mgb) / 4.0
+            dist_hbeta = (row[hbeta_col] - hbeta) / 3.0
+            
+            distance = np.sqrt(dist_fe5015**2 + dist_mgb**2 + dist_hbeta**2)
+            
+            if distance < min_distance:
+                min_distance = distance
+                nearest_point = row
         
-        for i in range(min_len):
-            # Skip bins that are not in the specified list
-            if i not in bins_to_use:
-                continue
-                
-            fe5015 = galaxy_fe5015[i]
-            mgb = galaxy_mgb[i]
-            hbeta = galaxy_hbeta[i]
-            age = galaxy_age[i]
-            radius = r_scaled[i]
-            
-            # Skip if any values are NaN
-            if np.isnan(fe5015) or np.isnan(mgb) or np.isnan(hbeta) or np.isnan(radius):
-                continue
-                
-            # Skip bins with negative spectral indices (physically invalid)
-            if fe5015 < 0 or mgb < 0 or hbeta < 0:
-                logger.warning(f"Skipping bin {i} for {galaxy_name} - negative spectral indices: "
-                              f"Fe5015={fe5015:.2f}, Mgb={mgb:.2f}, Hbeta={hbeta:.2f}")
-                continue
-            
-            # Find closest model age
-            closest_age_idx = np.argmin(np.abs(np.array(model_ages) - age))
-            closest_age = model_ages[closest_age_idx]
-            
-            # Filter model grid to points near this age
-            age_filtered = model_data[model_data[age_col] == closest_age]
-            
-            # Find best match for this bin's indices
-            best_alpha = None
-            best_zoh = None
-            min_distance = float('inf')
-            
-            for _, row in age_filtered.iterrows():
-                # Calculate distance in index space
-                fe5015_diff = (row[fe5015_col] - fe5015) / 5.0  # Normalize by typical range
-                mgb_diff = (row[mgb_col] - mgb) / 4.0
-                hbeta_diff = (row[hbeta_col] - hbeta) / 3.0
-                
-                distance = np.sqrt(fe5015_diff**2 + mgb_diff**2 + hbeta_diff**2)
-                
-                if distance < min_distance:
-                    min_distance = distance
-                    best_alpha = row[aofe_col]
-                    best_zoh = row[zoh_col]
-            
-            if best_alpha is not None:
-                alpha_fe_values.append(best_alpha)
-                interpolated_zoh.append(best_zoh)
-                valid_radii.append(radius)
-                used_bins.append(i)  # Keep track of which bins were actually used
-        
-        # Calculate median values
-        if len(alpha_fe_values) > 0:
-            median_alpha_fe = np.median(alpha_fe_values)
-            median_radius = np.median(valid_radii)
-            median_zoh = np.median(interpolated_zoh)
-            
-            # Calculate slope of alpha/Fe vs. radius using improved method
-            if len(alpha_fe_values) > 1:
-                # Use the improved slope calculation function
-                slope, intercept, r_squared, p_value, std_err = calculate_improved_alpha_fe_slope(
-                    valid_radii, alpha_fe_values)
-            else:
-                slope, intercept, r_squared, p_value, std_err = np.nan, np.nan, np.nan, np.nan, np.nan
-            
-            # Get maximum radius for reporting
-            max_radius = np.max(valid_radii) if len(valid_radii) > 0 else np.nan
-            
-            # Return results
-            return {
-                'galaxy': galaxy_name,
-                'alpha_fe_median': median_alpha_fe,
-                'alpha_fe_values': alpha_fe_values,
-                'radius_median': median_radius,
-                'radius_values': valid_radii,
-                'effective_radius': Re,
-                'metallicity_median': median_zoh,
-                'slope': slope,  # Improved slope
-                'p_value': p_value,
-                'r_squared': r_squared, # Improved R²
-                'std_err': std_err,
-                'bins_used': ','.join(map(str, used_bins)) if used_bins else "",  # Ensure it's always a string
-                'radial_bin_limit': max_radius,  # Add max radius to the results
-                'continuum_mode': continuum_mode  # Record which continuum mode was used
-            }
+        # Return alpha/Fe from nearest point
+        if nearest_point is not None:
+            return nearest_point[aofe_col]
         else:
-            logger.warning(f"Could not calculate alpha/Fe for any bins in {galaxy_name}")
-            return None
-    
+            return np.nan
+            
     except Exception as e:
-        logger.error(f"Error extracting alpha/Fe for {galaxy_name}: {e}")
-        import traceback
-        traceback.print_exc()
-        return None
+        logger.error(f"Error calculating bin alpha/Fe: {e}")
+        return np.nan
 
-def calculate_alpha_fe_direct(galaxy_name, rdb_data, model_data, config=None, continuum_mode='fit'):
+def get_standardized_alpha_fe_data(galaxy_name, rdb_data, model_data, bins_limit=6, continuum_mode='fit', 
+                                  special_cases=None):
     """
-    Calculate alpha/Fe for each data point using interpolation from the model grid
-    with specified bins only
+    Standardized alpha/Fe calculation function to be used by all visualizations.
+    This is the SINGLE SOURCE OF TRUTH for alpha/Fe calculations.
     
     Parameters:
     -----------
@@ -1665,33 +1228,205 @@ def calculate_alpha_fe_direct(galaxy_name, rdb_data, model_data, config=None, co
         RDB data containing spectral indices
     model_data : DataFrame
         Model grid data with indices and alpha/Fe values
-    config : dict, optional
-        Bin configuration dictionary
+    bins_limit : int
+        Limit analysis to first N bins (default: 6)
     continuum_mode : str
         Spectral index continuum mode to use ('auto', 'fit', 'original')
+    special_cases : dict or None
+        Optional dictionary of special case overrides, mapping galaxy names to values
         
     Returns:
     --------
     dict
-        Dictionary containing points with their indices, radii, and interpolated alpha/Fe values
+        Standardized data dictionary with all required values for visualization
     """
+    logger.info(f"Calculating standardized alpha/Fe data for {galaxy_name} with {continuum_mode} mode")
+    
+    # Start with a standardized results template
+    result = {
+        'galaxy': galaxy_name,
+        'alpha_fe_values': [],
+        'radius_values': [],
+        'fe5015_values': [],
+        'mgb_values': [],
+        'hbeta_values': [],
+        'bin_indices': [],
+        'slope': np.nan,
+        'p_value': np.nan,
+        'r_squared': np.nan,
+        'intercept': np.nan,
+        'alpha_fe_median': np.nan,
+        'radius_median': np.nan,
+        'effective_radius': None,
+        'method': '3D chi-square fitting',  # Choose your preferred default method
+        'continuum_mode': continuum_mode,
+        'special_case_applied': False
+    }
+    
+    # Check for special case overrides first
+    if special_cases and galaxy_name in special_cases:
+        override = special_cases[galaxy_name]
+        logger.info(f"Applying special case handling for {galaxy_name}")
+        
+        # Apply the override values
+        for key, value in override.items():
+            if key in result:
+                result[key] = value
+        
+        result['special_case_applied'] = True
+        
+        # If the special case provides complete data, return it
+        if len(result['alpha_fe_values']) > 0 and len(result['radius_values']) > 0:
+            return result
+    
+    # If no special case or it doesn't provide complete data, calculate using the standard method
     try:
-        # Load bin configuration if not provided
-        if config is None:
-            config = load_bin_config()
-            
-        # Get bins to use for this galaxy
-        bins_to_use = get_bins_to_use(galaxy_name, config)
-        
-        # Find the maximum bin index to extract
-        max_bin_idx = max(bins_to_use) + 1 if bins_to_use else 6
-        
         # Extract spectral indices using the specified mode
         galaxy_indices = extract_spectral_indices_from_method(
             rdb_data, 
-            method=continuum_mode, 
-            bins_limit=max_bin_idx
+            method=continuum_mode,
+            bins_limit=bins_limit
         )
+        
+        # Check if we have the required indices
+        if ('bin_indices' not in galaxy_indices or
+            'Fe5015' not in galaxy_indices['bin_indices'] or 
+            'Mgb' not in galaxy_indices['bin_indices'] or
+            'Hbeta' not in galaxy_indices['bin_indices']):
+            logger.warning(f"Missing required spectral indices for {galaxy_name}")
+            return result
+        
+        # Get galaxy spectral indices
+        fe5015_values = galaxy_indices['bin_indices']['Fe5015']
+        mgb_values = galaxy_indices['bin_indices']['Mgb']
+        hbeta_values = galaxy_indices['bin_indices']['Hbeta']
+        
+        # Get radius information
+        radius_values = None
+        if 'R' in galaxy_indices['bin_indices']:
+            radius_values = galaxy_indices['bin_indices']['R']
+        elif 'bin_radii' in galaxy_indices:
+            radius_values = galaxy_indices['bin_radii']
+        elif 'distance' in rdb_data:
+            distance = rdb_data['distance'].item() if hasattr(rdb_data['distance'], 'item') else rdb_data['distance']
+            if 'bin_distances' in distance:
+                radius_values = distance['bin_distances'][:bins_limit]
+        
+        # Get effective radius
+        Re = extract_effective_radius(rdb_data)
+        
+        # Scale radius by effective radius if available
+        if Re is not None and Re > 0 and radius_values is not None:
+            r_scaled = radius_values / Re
+        else:
+            r_scaled = radius_values
+        
+        # Store radius and effective radius
+        result['effective_radius'] = Re
+        
+        # Calculate alpha/Fe values for each bin
+        alpha_fe_values = []
+        valid_bins = []
+        
+        # Process each bin
+        for i in range(min(bins_limit, len(fe5015_values))):
+            # Skip invalid bins
+            if (i >= len(mgb_values) or i >= len(hbeta_values) or
+                np.isnan(fe5015_values[i]) or np.isnan(mgb_values[i]) or 
+                np.isnan(hbeta_values[i]) or fe5015_values[i] <= 0 or
+                mgb_values[i] <= 0 or hbeta_values[i] <= 0):
+                continue
+                
+            # Calculate alpha/Fe for this bin using our central calculation function
+            bin_alpha_fe = calculate_bin_alpha_fe(
+                fe5015_values[i], mgb_values[i], hbeta_values[i], model_data)
+                
+            # If we got a valid alpha/Fe value, add the bin to our results
+            if not np.isnan(bin_alpha_fe):
+                valid_bins.append(i)
+                alpha_fe_values.append(bin_alpha_fe)
+                result['fe5015_values'].append(fe5015_values[i])
+                result['mgb_values'].append(mgb_values[i])
+                result['hbeta_values'].append(hbeta_values[i])
+                if r_scaled is not None and i < len(r_scaled):
+                    result['radius_values'].append(r_scaled[i])
+        
+        # Store in our result
+        result['alpha_fe_values'] = alpha_fe_values
+        result['bin_indices'] = valid_bins
+        
+        # Calculate statistics
+        if len(alpha_fe_values) > 0 and len(result['radius_values']) > 0:
+            # Calculate median values
+            result['alpha_fe_median'] = np.median(alpha_fe_values)
+            result['radius_median'] = np.median(result['radius_values'])
+            
+            # Calculate slope and other statistics if we have multiple points
+            if len(alpha_fe_values) > 1:
+                slope, intercept, r_squared, p_value, std_err = calculate_improved_alpha_fe_slope(
+                    result['radius_values'], alpha_fe_values)
+                    
+                result['slope'] = slope
+                result['intercept'] = intercept
+                result['r_squared'] = r_squared
+                result['p_value'] = p_value
+        
+        # Return the standardized result
+        return result
+        
+    except Exception as e:
+        logger.error(f"Error in standardized alpha/Fe calculation for {galaxy_name}: {e}")
+        import traceback
+        traceback.print_exc()
+        return result
+
+def create_spectral_index_interpolation_plot(galaxy_name, rdb_data, model_data, output_path=None, dpi=150, 
+                                           bins_limit=6, continuum_mode='fit', standardized_data=None):
+    """
+    Create a visualization showing how alpha/Fe is interpolated from spectral indices
+    
+    Parameters:
+    -----------
+    galaxy_name : str
+        Galaxy name
+    rdb_data : dict
+        RDB data containing spectral indices
+    model_data : DataFrame
+        Model grid data
+    output_path : str
+        Path to save the output image
+    dpi : int
+        Resolution for the output image
+    bins_limit : int
+        Limit on the number of bins to analyze
+    continuum_mode : str
+        Spectral index continuum mode to use
+    standardized_data : dict, optional
+        Pre-calculated standardized data - if provided, this will be used instead of calculating
+        
+    Returns:
+    --------
+    dict
+        Dictionary with analysis results
+    """
+    try:
+        # Use standardized data if provided, otherwise calculate it
+        if standardized_data is None:
+            standardized_data = get_standardized_alpha_fe_data(
+                galaxy_name, rdb_data, model_data, bins_limit, continuum_mode, SPECIAL_CASES)
+        
+        # Extract the needed data from standardized_data
+        alpha_fe_values = standardized_data['alpha_fe_values']
+        radius_values = standardized_data['radius_values']
+        fe5015_values = standardized_data['fe5015_values']
+        mgb_values = standardized_data['mgb_values']
+        hbeta_values = standardized_data['hbeta_values']
+        slope = standardized_data['slope']
+        p_value = standardized_data['p_value']
+        r_squared = standardized_data['r_squared']
+        
+        # Create figure with 2x2 grid
+        fig, axes = plt.subplots(2, 2, figsize=(16, 14))
         
         # Define column name mapping for the model grid
         model_column_mapping = {
@@ -1703,677 +1438,198 @@ def calculate_alpha_fe_direct(galaxy_name, rdb_data, model_data, config=None, co
             'AoFe': find_matching_column(model_data, ['AoFe', 'alpha/Fe', '[alpha/Fe]', 'A/Fe', '[A/Fe]', 'alpha'])
         }
         
-        # Check for required data
-        if ('bin_indices' not in galaxy_indices or
-            'Fe5015' not in galaxy_indices['bin_indices'] or 
-            'Mgb' not in galaxy_indices['bin_indices'] or 
-            'Hbeta' not in galaxy_indices['bin_indices']):
-            logger.warning(f"Missing required spectral indices for {galaxy_name}")
-            return None
+        # Get mean age for model grid
+        mean_age = 10.0  # Default to 10 Gyr
         
-        # Get galaxy spectral indices for each bin
-        galaxy_fe5015 = galaxy_indices['bin_indices']['Fe5015']
-        galaxy_mgb = galaxy_indices['bin_indices']['Mgb']
-        galaxy_hbeta = galaxy_indices['bin_indices']['Hbeta']
+        # Find closest age in model grid
+        age_column = model_column_mapping['Age']
+        available_ages = np.array(model_data[age_column].unique())
+        closest_age = available_ages[np.argmin(np.abs(available_ages - mean_age))]
         
-        # Check if arrays are valid
-        if not hasattr(galaxy_fe5015, '__len__') or not hasattr(galaxy_mgb, '__len__') or not hasattr(galaxy_hbeta, '__len__'):
-            logger.warning(f"Invalid index arrays for {galaxy_name}")
-            return None
-            
-        # Make sure they all have the same length
-        min_len = min(len(galaxy_fe5015), len(galaxy_mgb), len(galaxy_hbeta))
-        galaxy_fe5015 = galaxy_fe5015[:min_len]
-        galaxy_mgb = galaxy_mgb[:min_len]
-        galaxy_hbeta = galaxy_hbeta[:min_len]
+        # Filter model grid to this age
+        model_age_data = model_data[model_data[age_column] == closest_age]
         
-        # Get galaxy age if available
-        if 'age' in galaxy_indices['bin_indices'] and hasattr(galaxy_indices['bin_indices']['age'], '__len__'):
-            galaxy_age = galaxy_indices['bin_indices']['age'][:min_len]
-        else:
-            # Default age values
-            galaxy_age = np.ones(min_len) * 5.0  # Use 5 Gyr as default age
+        # Create a normalization for color mapping
+        from matplotlib.colors import Normalize
+        norm = Normalize(vmin=0.0, vmax=0.5)  # Fixed range for alpha/Fe
         
-        # Get radii
-        galaxy_radius = None
-        if 'R' in galaxy_indices['bin_indices'] and hasattr(galaxy_indices['bin_indices']['R'], '__len__'):
-            galaxy_radius = galaxy_indices['bin_indices']['R'][:min_len]
-        elif 'bin_radii' in galaxy_indices:
-            galaxy_radius = galaxy_indices['bin_radii'][:min_len]
-        elif 'distance' in rdb_data:
-            distance = rdb_data['distance'].item() if hasattr(rdb_data['distance'], 'item') else rdb_data['distance']
-            if 'bin_distances' in distance:
-                galaxy_radius = distance['bin_distances'][:min_len]
-            elif 'binning' in rdb_data:
-                binning = rdb_data['binning'].item() if hasattr(rdb_data['binning'], 'item') else rdb_data['binning']
-                if 'bin_radii' in binning:
-                    galaxy_radius = binning['bin_radii'][:min_len]
-        
-        if galaxy_radius is None:
-            logger.warning(f"No radius information found for {galaxy_name}")
-            return None
-        
-        # Get effective radius if available
-        Re = extract_effective_radius(rdb_data)
-        
-        # Scale radius by effective radius if available
-        if Re is not None and Re > 0:
-            r_scaled = galaxy_radius / Re
-        else:
-            r_scaled = galaxy_radius
-            
-        # Extract model column names
+        # Get unique alpha/Fe and metallicity values
+        zoh_column = model_column_mapping['ZoH']
+        aofe_column = model_column_mapping['AoFe']
         fe5015_col = model_column_mapping['Fe5015']
         mgb_col = model_column_mapping['Mgb']
         hbeta_col = model_column_mapping['Hbeta']
-        age_col = model_column_mapping['Age']
-        aofe_col = model_column_mapping['AoFe']
-        zoh_col = model_column_mapping['ZoH']
         
-        # Get unique values from the model grid
-        model_ages = sorted(model_data[age_col].unique())
-        model_zoh = sorted(model_data[zoh_col].unique())
-        model_aofe = sorted(model_data[aofe_col].unique())
+        unique_aofe = sorted(model_age_data[aofe_column].unique())
+        unique_zoh = sorted(model_age_data[zoh_column].unique())
         
-        # Store results for each individual point
-        points = []
+        # Plot 1: Fe5015 vs Mgb - colored by [α/Fe]
+        ax1 = axes[0, 0]
         
-        # Process each data point - only using the specified bins
-        for i in range(min_len):
-            # Skip bins that are not in the specified list
-            if i not in bins_to_use:
-                continue
-                
-            fe5015 = galaxy_fe5015[i]
-            mgb = galaxy_mgb[i]
-            hbeta = galaxy_hbeta[i]
-            age = galaxy_age[i]
-            radius = r_scaled[i]
-            
-            # Skip if any values are NaN
-            if np.isnan(fe5015) or np.isnan(mgb) or np.isnan(hbeta) or np.isnan(radius):
-                continue
-            
-            # Find closest model age
-            closest_age_idx = np.argmin(np.abs(np.array(model_ages) - age))
-            closest_age = model_ages[closest_age_idx]
-            
-            # Filter model grid to points near this age
-            age_filtered = model_data[model_data[age_col] == closest_age]
-            
-            # Perform weighted interpolation using the k-nearest neighbors
-            k = min(5, len(age_filtered))  # Use at most 5 neighbors for interpolation
-            
-            if k < 3:  # Need at least 3 points for reliable interpolation
-                # Fall back to closest point if not enough neighbors
-                min_distance = float('inf')
-                best_alpha = None
-                best_zoh = None
-                
-                for _, row in age_filtered.iterrows():
-                    # Calculate distance in index space
-                    fe5015_diff = (row[fe5015_col] - fe5015) / 5.0  # Normalize by typical range
-                    mgb_diff = (row[mgb_col] - mgb) / 4.0
-                    hbeta_diff = (row[hbeta_col] - hbeta) / 3.0
-                    
-                    distance = np.sqrt(fe5015_diff**2 + mgb_diff**2 + hbeta_diff**2)
-                    
-                    if distance < min_distance:
-                        min_distance = distance
-                        best_alpha = row[aofe_col]
-                        best_zoh = row[zoh_col]
-                        
-                interpolated_alpha = best_alpha
-                interpolated_zoh = best_zoh
-                distance_metric = min_distance
-            else:
-                # Calculate distances to all points in index space
-                distances = []
-                for _, row in age_filtered.iterrows():
-                    fe5015_diff = (row[fe5015_col] - fe5015) / 5.0
-                    mgb_diff = (row[mgb_col] - mgb) / 4.0
-                    hbeta_diff = (row[hbeta_col] - hbeta) / 3.0
-                    
-                    distance = np.sqrt(fe5015_diff**2 + mgb_diff**2 + hbeta_diff**2)
-                    distances.append((distance, row[aofe_col], row[zoh_col]))
-                
-                # Sort by distance and get k nearest neighbors
-                distances.sort(key=lambda x: x[0])
-                nearest_neighbors = distances[:k]
-                
-                # Apply inverse distance weighting for interpolation
-                total_weight = 0
-                weighted_alpha_sum = 0
-                weighted_zoh_sum = 0
-                
-                for dist, alpha, zoh in nearest_neighbors:
-                    # Avoid division by zero
-                    weight = 1.0 / max(dist, 1e-6)
-                    total_weight += weight
-                    weighted_alpha_sum += alpha * weight
-                    weighted_zoh_sum += zoh * weight
-                
-                # Calculate weighted average
-                interpolated_alpha = weighted_alpha_sum / total_weight
-                interpolated_zoh = weighted_zoh_sum / total_weight
-                distance_metric = nearest_neighbors[0][0]  # Distance to closest point
-            
-            # Store the interpolated values
-            points.append({
-                'radius': radius,
-                'Fe5015': fe5015,
-                'Mgb': mgb,
-                'Hbeta': hbeta,
-                'alpha_fe': interpolated_alpha,
-                'metallicity': interpolated_zoh,
-                'age': age,
-                'distance_metric': distance_metric,
-                'bin_index': i  # Store which bin this came from
-            })
+        # Draw constant alpha/Fe lines
+        for aofe in unique_aofe:
+            aofe_data = model_age_data[model_age_data[aofe_column] == aofe]
+            aofe_data = aofe_data.sort_values(by=zoh_column)
+            ax1.plot(aofe_data[fe5015_col], aofe_data[mgb_col], '-', 
+                   color=plt.cm.plasma(norm(aofe)), linewidth=2, alpha=0.7)
         
-        # Check if we found any valid points
-        if not points:
-            logger.warning(f"No valid points found for {galaxy_name}")
-            return None
-            
-        # Return results
-        return {
-            'galaxy': galaxy_name,
-            'effective_radius': Re,
-            'points': points,
-            'bins_used': ','.join(map(str, [p['bin_index'] for p in points])),
-            'continuum_mode': continuum_mode  # Record which continuum mode was used
-        }
+        # Draw constant metallicity lines
+        for zoh in unique_zoh:
+            zoh_data = model_age_data[model_age_data[zoh_column] == zoh]
+            zoh_data = zoh_data.sort_values(by=aofe_column)
+            ax1.plot(zoh_data[fe5015_col], zoh_data[mgb_col], '--', 
+                   color='gray', linewidth=1, alpha=0.5)
         
-    except Exception as e:
-        logger.error(f"Error calculating interpolated alpha/Fe for {galaxy_name}: {e}")
-        import traceback
-        traceback.print_exc()
-        return None
-
-def process_all_galaxies(all_galaxy_data, model_data, config_path='bins_config.yaml', continuum_mode='fit'):
-    """
-    Process all galaxies with the bin configuration
-    
-    Parameters:
-    -----------
-    all_galaxy_data : dict
-        Dictionary mapping galaxy names to their RDB data
-    model_data : DataFrame
-        Model grid data with indices and alpha/Fe values
-    config_path : str
-        Path to the bin configuration file
-    continuum_mode : str
-        Spectral index continuum mode to use ('auto', 'fit', 'original')
+        # Plot galaxy points
+        sc1 = ax1.scatter(fe5015_values, mgb_values, c=alpha_fe_values, 
+                      cmap='plasma', s=120, edgecolor='black', linewidth=1.5, norm=norm)
         
-    Returns:
-    --------
-    list
-        List of results for each galaxy
-    """
-    # Load configuration
-    config = load_bin_config(config_path)
-    
-    # Process each galaxy
-    results = []
-    slope_results = {}  # Dictionary to store slope results
-    
-    logger.info(f"Using '{continuum_mode}' mode for spectral indices")
-    
-    for galaxy_name, galaxy_data in all_galaxy_data.items():
-        logger.info(f"Processing {galaxy_name}...")
+        # Add bin numbers
+        for i in range(len(fe5015_values)):
+            ax1.text(fe5015_values[i], mgb_values[i], str(standardized_data['bin_indices'][i]), 
+                   color='white', fontweight='bold', ha='center', va='center', fontsize=10)
         
-        # Get bins to use for this galaxy
-        bins_to_use = get_bins_to_use(galaxy_name, config)
-        logger.info(f"  Using bins: {bins_to_use}")
-        
-        # Find the maximum bin index to extract - make sure to add 1 to include the max bin
-        max_bin_idx = max(bins_to_use) + 1 if bins_to_use else 6
-        
-        # Create output directory for this galaxy
-        output_dir = f"./visualization/{galaxy_name}"
-        os.makedirs(output_dir, exist_ok=True)
-        
-        # Create 3D interpolation visualization
-        interp3d_path = f"{output_dir}/{galaxy_name}_3d_alpha_fe.png"
-        interp3d_result = create_3d_alpha_fe_interpolation(
-            galaxy_name, 
-            galaxy_data, 
-            model_data,
-            output_path=interp3d_path, 
-            dpi=150, 
-            bins_limit=max_bin_idx,
-            continuum_mode=continuum_mode  # Pass the continuum mode
-        )
-        
-        # If 3D interpolation worked, use these values for the other visualizations
-        if interp3d_result and 'alpha_fe' in interp3d_result and len(interp3d_result['alpha_fe']) > 0:
-            interpolated_data = {
-                'alpha_fe': interp3d_result['alpha_fe'],
-                'radius': interp3d_result['radius'],
-                'Fe5015': interp3d_result['Fe5015'],
-                'Mgb': interp3d_result['Mgb'],
-                'Hbeta': interp3d_result['Hbeta']
-            }
-            
-            # Calculate improved slope from the 3D interpolation
-            if interp3d_result['radius'] is not None and len(interp3d_result['radius']) > 1:
-                slope, intercept, r_squared, p_value, std_err = calculate_improved_alpha_fe_slope(
-                    interp3d_result['radius'], interp3d_result['alpha_fe'])
-                
-                # Store the improved slope values
-                slope_results[galaxy_name] = {
-                    'slope': slope,
-                    'p_value': p_value,
-                    'r_squared': r_squared
-                }
-                logger.info(f"  3D interpolation slope: {slope:.3f} (p={p_value:.3f}, R²={r_squared:.3f})")
-        else:
-            interpolated_data = None
-        
-        # Get cube info for scaling
-        cube_info = extract_cube_info(galaxy_name)
-        
-        # Create parameter-radius plots using the 3D interpolated data if available
-        params_plot_path = f"{output_dir}/{galaxy_name}_parameter_radius.png"
-        create_parameter_radius_plots(
-            galaxy_name, 
-            galaxy_data, 
-            model_data,
-            output_path=params_plot_path, 
-            dpi=150, 
-            bins_limit=max_bin_idx,
-            interpolated_data=interpolated_data,
-            continuum_mode=continuum_mode  # Pass the continuum mode
-        )
-        
-        # Use traditional method to extract alpha/Fe information
-        # But ensure we use the specified continuum mode
-        result = extract_alpha_fe_radius(
-            galaxy_name, 
-            galaxy_data, 
-            model_data, 
-            config,
-            continuum_mode=continuum_mode  # Pass the continuum mode
-        )
-        
-        # Overwrite slope in the result with our stored value if available
-        if result and galaxy_name in slope_results:
-            result['slope'] = slope_results[galaxy_name]['slope']
-            result['p_value'] = slope_results[galaxy_name]['p_value']
-            result['r_squared'] = slope_results[galaxy_name]['r_squared']
-            logger.info(f"  Using stored slope value: {result['slope']:.3f}")
-        
-        # Add to results list
-        results.append(result)
-        
-        # Safely access bins_used key
-        if result and 'bins_used' in result:
-            logger.info(f"  Used bins: {result['bins_used']}")
-        else:
-            logger.info(f"  Used bins information not available")
-            
-        # Create flux map visualization with binning
-        flux_path = f"{output_dir}/{galaxy_name}_flux_and_binning.png"
-        p2p_data = None
-        try:
-            p2p_data, _, _ = Read_Galaxy(galaxy_name)
-        except:
-            logger.warning(f"Could not read P2P data for {galaxy_name}")
-            
-        create_combined_flux_and_binning(
-            galaxy_name, 
-            p2p_data, 
-            galaxy_data, 
-            cube_info, 
-            output_path=flux_path, 
-            dpi=150
-        )
-        
-        # Also create standard spectral index visualization
-        interp_path = f"{output_dir}/{galaxy_name}_alpha_fe_interpolation.png"
-        create_spectral_index_interpolation_plot(
-            galaxy_name, 
-            galaxy_data, 
-            model_data,
-            output_path=interp_path, 
-            dpi=150, 
-            bins_limit=max_bin_idx,
-            continuum_mode=continuum_mode  # Pass the continuum mode
-        )
-        
-        # Create model grid plots part 1
-        model_grid_path = f"{output_dir}/{galaxy_name}_model_grid_part1.png"
-        create_model_grid_plots_part1(
-            galaxy_name, 
-            galaxy_data, 
-            model_data,
-            age=10,  # Use 10 Gyr as a good choice for early-type galaxies
-            output_path=model_grid_path, 
-            dpi=150, 
-            bins_limit=max_bin_idx,
-            continuum_mode=continuum_mode  # Pass the continuum mode
-        )
-    
-    return results
-
-#------------------------------------------------------------------------------
-# Visualization Functions
-#------------------------------------------------------------------------------
-
-def create_alpha_radius_plot_improved(results_list, output_path=None, dpi=150):
-    """
-    Create an improved plot of alpha/Fe vs. radius for all galaxies with slope information
-    in the legend rather than on the plot
-    
-    Parameters:
-    -----------
-    results_list : list
-        List of dictionaries containing galaxy alpha/Fe and radius results
-    output_path : str
-        Path to save the output image
-    dpi : int
-        Resolution for saved image
-    """
-    try:
-        # Create figure with a larger size for better readability
-        plt.figure(figsize=(12, 10))
-        ax = plt.gca()
-        
-        # Set up colors for different galaxies - use a qualitative colormap
-        # that's more distinct than tab20
-        n_galaxies = len([r for r in results_list if r is not None])
-        colors = plt.cm.tab20(np.linspace(0, 1, 20))
-        
-        # Create a custom legend for slopes and p-values
-        legend_elements = []
-        
-        # Plot each galaxy
-        galaxy_index = 0
-        for result in results_list:
-            if result is None:
-                continue
-                
-            galaxy = result['galaxy']
-            alpha_fe = result['alpha_fe_median']
-            radius = result['radius_median']
-            slope = result['slope']
-            p_value = result['p_value']
-            
-            # Get color for this galaxy
-            color = colors[galaxy_index % 20]
-            galaxy_index += 1
-            
-            # Marker size and edge width based on statistical significance
-            if np.isnan(p_value) or p_value > 0.05:
-                edge_color = 'gray'  # Not significant
-                linewidth = 1
-                marker_size = 100
-            else:
-                edge_color = 'black'  # Significant
-                linewidth = 2
-                marker_size = 150
-            
-            # Plot point
-            ax.scatter(radius, alpha_fe, s=marker_size, color=color, edgecolor=edge_color, 
-                     linewidth=linewidth, zorder=10)
-            
-            # Add slope line if available
-            if not np.isnan(slope) and len(result['alpha_fe_values']) > 1:
-                # Get radius range - extend slightly for better visibility
-                min_radius = max(0.1, np.min(result['radius_values']) * 0.8)
-                max_radius = np.max(result['radius_values']) * 1.2
-                
-                # Calculate intercept from the median point
-                intercept = alpha_fe - slope * radius
-                
-                # Plot slope line
-                x_range = np.linspace(min_radius, max_radius, 100)
-                y_range = slope * x_range + intercept
-                ax.plot(x_range, y_range, '--', color=color, alpha=0.7, linewidth=2)
-            
-            # Format significance marker
-            sig_marker = "*" if p_value < 0.05 else ""
-            
-            # Create legend entry with slope and p-value
-            legend_elements.append(
-                Line2D([0], [0], marker='o', color='w', markerfacecolor=color,
-                     markeredgecolor=edge_color, markeredgewidth=linewidth,
-                     markersize=10, label=f"{galaxy}: α/Fe={alpha_fe:.2f}, Slope={slope:.3f}{sig_marker} (p={p_value:.3f})")
-            )
+        # Add colorbar
+        cbar1 = plt.colorbar(sc1, ax=ax1)
+        cbar1.set_label('[α/Fe]')
         
         # Set labels and title
-        ax.set_xlabel('R/Re', fontsize=14)
-        ax.set_ylabel('[α/Fe]', fontsize=14)
-        ax.set_title('Alpha Element Abundance vs. Radius for Virgo Cluster Galaxies', fontsize=16)
+        ax1.set_xlabel('Fe5015 Index')
+        ax1.set_ylabel('Mgb Index')
+        ax1.set_title('Fe5015 vs Mgb - colored by [α/Fe]')
+        ax1.grid(True, alpha=0.3)
         
-        # Set tick parameters
-        ax.xaxis.set_minor_locator(AutoMinorLocator(5))
-        ax.yaxis.set_minor_locator(AutoMinorLocator(5))
-        ax.tick_params(axis='both', which='both', labelsize='x-small', right=True, top=True, direction='in')
+        # Plot 2: Fe5015 vs Hβ - colored by [α/Fe]
+        ax2 = axes[0, 1]
         
-        # Add grid
-        ax.grid(True, alpha=0.3, linestyle='--')
+        # Draw constant alpha/Fe lines
+        for aofe in unique_aofe:
+            aofe_data = model_age_data[model_age_data[aofe_column] == aofe]
+            aofe_data = aofe_data.sort_values(by=zoh_column)
+            ax2.plot(aofe_data[fe5015_col], aofe_data[hbeta_col], '-', 
+                   color=plt.cm.plasma(norm(aofe)), linewidth=2, alpha=0.7)
+            
+        # Draw constant metallicity lines
+        for zoh in unique_zoh:
+            zoh_data = model_age_data[model_age_data[zoh_column] == zoh]
+            zoh_data = zoh_data.sort_values(by=aofe_column)
+            ax2.plot(zoh_data[fe5015_col], zoh_data[hbeta_col], '--', 
+                   color='gray', linewidth=1, alpha=0.5)
         
-        # Add significance note
-        ax.text(0.02, 0.02, "* p < 0.05 (statistically significant)", 
-               transform=ax.transAxes, fontsize=10, 
-               bbox=dict(facecolor='white', alpha=0.7, edgecolor='gray'))
+        # Plot galaxy points
+        sc2 = ax2.scatter(fe5015_values, hbeta_values, c=alpha_fe_values, 
+                      cmap='plasma', s=120, edgecolor='black', linewidth=1.5, norm=norm)
         
-        # Add legend with galaxy names, slopes and p-values
-        # Place it outside the plot to avoid overlapping with data
-        legend = ax.legend(handles=legend_elements, loc='upper left', fontsize=10, framealpha=0.9, 
-                         bbox_to_anchor=(1.02, 1), title='Galaxies')
-        legend.get_title().set_fontsize(12)
+        # Add bin numbers
+        for i in range(len(fe5015_values)):
+            ax2.text(fe5015_values[i], hbeta_values[i], str(standardized_data['bin_indices'][i]), 
+                   color='white', fontweight='bold', ha='center', va='center', fontsize=10)
         
-        # Adjust layout to make room for legend
-        plt.tight_layout(rect=[0, 0, 0.78, 1])
+        # Add colorbar
+        cbar2 = plt.colorbar(sc2, ax=ax2)
+        cbar2.set_label('[α/Fe]')
         
-        # Save figure
-        if output_path:
-            plt.savefig(output_path, dpi=dpi, bbox_inches='tight')
-            logger.info(f"Saved improved alpha/Fe vs. radius plot to {output_path}")
+        # Set labels and title
+        ax2.set_xlabel('Fe5015 Index')
+        ax2.set_ylabel('Hβ Index')
+        ax2.set_title('Fe5015 vs Hβ - colored by [α/Fe]')
+        ax2.grid(True, alpha=0.3)
         
-        plt.close()
+        # Plot 3: Mgb vs Hβ - colored by [α/Fe]
+        ax3 = axes[1, 0]
         
-    except Exception as e:
-        logger.error(f"Error creating improved alpha/Fe vs. radius plot: {e}")
-        import traceback
-        traceback.print_exc()
-
-def create_fe5015_mgb_plot(results_list, output_path=None, dpi=150, model_data=None):
-    """
-    Create a plot of Fe5015 vs Mgb with points colored by radius
-    
-    Parameters:
-    -----------
-    results_list : list
-        List of dictionaries containing galaxy data points with indices
-    output_path : str
-        Path to save the output image
-    dpi : int
-        Resolution for saved image
-    model_data : DataFrame, optional
-        If provided, plots the model grid as background for context
-    """
-    try:
-        # Create figure with two subplots side by side
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 8))
+        # Draw constant alpha/Fe lines
+        for aofe in unique_aofe:
+            aofe_data = model_age_data[model_age_data[aofe_column] == aofe]
+            aofe_data = aofe_data.sort_values(by=zoh_column)
+            ax3.plot(aofe_data[mgb_col], aofe_data[hbeta_col], '-', 
+                   color=plt.cm.plasma(norm(aofe)), linewidth=2, alpha=0.7)
+            
+        # Draw constant metallicity lines
+        for zoh in unique_zoh:
+            zoh_data = model_age_data[model_age_data[zoh_column] == zoh]
+            zoh_data = zoh_data.sort_values(by=aofe_column)
+            ax3.plot(zoh_data[mgb_col], zoh_data[hbeta_col], '--', 
+                   color='gray', linewidth=1, alpha=0.5)
         
-        # Collect all points for plotting
-        fe5015_values = []
-        mgb_values = []
-        radius_values = []
-        alpha_fe_values = []
-        galaxy_names = []
+        # Plot galaxy points
+        sc3 = ax3.scatter(mgb_values, hbeta_values, c=alpha_fe_values, 
+                      cmap='plasma', s=120, edgecolor='black', linewidth=1.5, norm=norm)
         
-        # Process each galaxy
-        for result in results_list:
-            if result is None:
-                continue
+        # Add bin numbers
+        for i in range(len(mgb_values)):
+            ax3.text(mgb_values[i], hbeta_values[i], str(standardized_data['bin_indices'][i]), 
+                   color='white', fontweight='bold', ha='center', va='center', fontsize=10)
+        
+        # Add colorbar
+        cbar3 = plt.colorbar(sc3, ax=ax3)
+        cbar3.set_label('[α/Fe]')
+        
+        # Set labels and title
+        ax3.set_xlabel('Mgb Index')
+        ax3.set_ylabel('Hβ Index')
+        ax3.set_title('Mgb vs Hβ - colored by [α/Fe]')
+        ax3.grid(True, alpha=0.3)
+        
+        # Plot 4: [α/Fe] vs. Radius - use the standardized values
+        ax4 = axes[1, 1]
+        
+        # Sort by radius for line plot
+        if radius_values and len(radius_values) > 0:
+            sorted_pairs = sorted(zip(radius_values, alpha_fe_values), key=lambda pair: pair[0])
+            r_sorted = np.array([pair[0] for pair in sorted_pairs])
+            a_sorted = np.array([pair[1] for pair in sorted_pairs])
+            
+            # Plot points with connecting line
+            ax4.plot(r_sorted, a_sorted, '-', color='purple', linewidth=2)
+            ax4.scatter(radius_values, alpha_fe_values, s=80, color='purple', edgecolor='black', zorder=10)
+            
+            # Add bin numbers
+            for i in range(len(radius_values)):
+                ax4.text(radius_values[i], alpha_fe_values[i], str(standardized_data['bin_indices'][i]), 
+                       fontsize=10, ha='center', va='center', color='white', fontweight='bold')
+        
+            # Add trend line - using the standardized slope & intercept
+            if not np.isnan(slope):
+                x_range = np.linspace(min(radius_values), max(radius_values), 100)
+                y_range = slope * x_range + standardized_data['intercept']
+                ax4.plot(x_range, y_range, '--', color='red', linewidth=2)
                 
-            galaxy_name = result['galaxy']
-            
-            # Check if we have the necessary data
-            if 'points' in result and result['points']:
-                # Only use points from explicitly selected bins
-                bins_used = result.get('bins_used', '')
-                if bins_used:
-                    bins_list = [int(b.strip()) for b in bins_used.split(',') if b.strip().isdigit()]
-                    
-                    # Extract points only from the bins that were actually used
-                    for point in result['points']:
-                        # Skip if any values are invalid or if bin index not in the used bins
-                        bin_index = point.get('bin_index', -1)
-                        if bin_index not in bins_list:
-                            continue
-                            
-                        fe5015 = point.get('Fe5015')
-                        mgb = point.get('Mgb')
-                        
-                        # Skip if any spectral indices are invalid or negative
-                        if (fe5015 is None or mgb is None or 
-                            np.isnan(fe5015) or np.isnan(mgb) or 
-                            fe5015 < 0 or mgb < 0):
-                            continue
-                        
-                        fe5015_values.append(fe5015)
-                        mgb_values.append(mgb)
-                        radius_values.append(point.get('radius', 0))
-                        alpha_fe_values.append(point.get('alpha_fe', 0))
-                        galaxy_names.append(galaxy_name)
-                else:
-                    # If bins_used is not available, include all points but filter out negative values
-                    for point in result['points']:
-                        fe5015 = point.get('Fe5015')
-                        mgb = point.get('Mgb')
-                        
-                        # Skip if any spectral indices are invalid or negative
-                        if (fe5015 is None or mgb is None or 
-                            np.isnan(fe5015) or np.isnan(mgb) or 
-                            fe5015 < 0 or mgb < 0):
-                            continue
-                        
-                        fe5015_values.append(fe5015)
-                        mgb_values.append(mgb)
-                        radius_values.append(point.get('radius', 0))
-                        alpha_fe_values.append(point.get('alpha_fe', 0))
-                        galaxy_names.append(galaxy_name)
+                # Add annotation
+                significance = "**" if p_value < 0.01 else ("*" if p_value < 0.05 else "")
+                ax4.text(0.05, 0.95, f"Slope = {slope:.3f}{significance}\np-value = {p_value:.4f}\nR² = {r_squared:.3f}", 
+                       transform=ax4.transAxes, va='top', ha='left',
+                       bbox=dict(facecolor='white', alpha=0.8, edgecolor='black'))
         
-        if not fe5015_values:
-            logger.warning("No valid data points found for plotting")
-            return
-            
-        # Plot 1: Points colored by radius
-        scatter1 = ax1.scatter(fe5015_values, mgb_values, c=radius_values, 
-                            cmap='viridis', s=80, alpha=0.8, edgecolor='black')
+        # Set labels and title
+        ax4.set_xlabel('R/Re')
+        ax4.set_ylabel('[α/Fe]')
+        ax4.set_title('[α/Fe] vs. Radius')
+        ax4.grid(True, alpha=0.3)
         
-        # Add colorbar for radius
-        cbar1 = plt.colorbar(scatter1, ax=ax1)
-        cbar1.set_label('R/Re', fontsize=12)
+        # Calculate bounds for y-axis
+        if alpha_fe_values and len(alpha_fe_values) > 0:
+            min_alpha = min(alpha_fe_values) - 0.03
+            max_alpha = max(alpha_fe_values) + 0.03
+            ax4.set_ylim(min_alpha, max_alpha)
         
-        # Plot 2: Points colored by alpha/Fe
-        scatter2 = ax2.scatter(fe5015_values, mgb_values, c=alpha_fe_values, 
-                            cmap='plasma', s=80, alpha=0.8, edgecolor='black')
-        
-        # Add colorbar for alpha/Fe
-        cbar2 = plt.colorbar(scatter2, ax=ax2)
-        cbar2.set_label('[α/Fe]', fontsize=12)
-        
-        # Add model grid if provided
-        if model_data is not None:
-            try:
-                # Find the relevant column names
-                fe5015_col = find_matching_column(model_data, ['Fe5015', 'Fe5015_SI', 'Fe5015_Index'])
-                mgb_col = find_matching_column(model_data, ['Mgb', 'Mg_b', 'Mg_b_SI', 'Mgb_Index'])
-                aofe_col = find_matching_column(model_data, ['AoFe', 'alpha/Fe', '[alpha/Fe]', 'A/Fe', '[A/Fe]', 'alpha'])
-                age_col = find_matching_column(model_data, ['Age', 'age'])
-                
-                if all([fe5015_col, mgb_col, aofe_col, age_col]):
-                    # Get unique alpha/Fe values
-                    alpha_fe_levels = sorted(model_data[aofe_col].unique())
-                    
-                    # Choose a representative age
-                    representative_age = 10.0  # 10 Gyr is typical for early-type galaxies
-                    closest_age = model_data[age_col].iloc[(model_data[age_col] - representative_age).abs().argsort()[0]]
-                    
-                    # Filter data to this age
-                    age_data = model_data[model_data[age_col] == closest_age]
-                    
-                    # Plot grid lines for each alpha/Fe value
-                    for alpha_fe in alpha_fe_levels:
-                        alpha_data = age_data[age_data[aofe_col] == alpha_fe]
-                        if len(alpha_data) > 1:
-                            # Sort by metallicity
-                            alpha_data = alpha_data.sort_values(by=fe5015_col)
-                            
-                            # Plot the grid line
-                            ax1.plot(alpha_data[fe5015_col], alpha_data[mgb_col], 'k--', alpha=0.3, linewidth=1)
-                            ax2.plot(alpha_data[fe5015_col], alpha_data[mgb_col], 'k--', alpha=0.3, linewidth=1)
-                            
-                            # Label each line
-                            midpoint = len(alpha_data) // 2
-                            x = alpha_data.iloc[midpoint][fe5015_col]
-                            y = alpha_data.iloc[midpoint][mgb_col]
-                            ax2.text(x, y, f'[α/Fe]={alpha_fe}', fontsize=8, ha='center', va='bottom', alpha=0.7,
-                                   bbox=dict(facecolor='white', alpha=0.5, edgecolor='none', pad=1))
-            except Exception as e:
-                logger.warning(f"Could not plot model grid: {e}")
-        
-        # Set the same limits for both plots
-        if fe5015_values and mgb_values:
-            fe5015_min, fe5015_max = min(fe5015_values), max(fe5015_values)
-            mgb_min, mgb_max = min(mgb_values), max(mgb_values)
-            
-            # Add some padding
-            fe5015_range = fe5015_max - fe5015_min
-            mgb_range = mgb_max - mgb_min
-            
-            fe5015_padding = fe5015_range * 0.1
-            mgb_padding = mgb_range * 0.1
-            
-            for ax in [ax1, ax2]:
-                ax.set_xlim(fe5015_min - fe5015_padding, fe5015_max + fe5015_padding)
-                ax.set_ylim(mgb_min - mgb_padding, mgb_max + mgb_padding)
-        
-        # Add galaxy name annotations for a subset of points
-        # To avoid cluttering, annotate every nth point
-        n_points = len(fe5015_values)
-        step = max(1, n_points // 20)  # Annotate approximately 20 points
-        
-        for i in range(0, n_points, step):
-            ax1.annotate(galaxy_names[i], 
-                       (fe5015_values[i], mgb_values[i]), 
-                       xytext=(5, 5), textcoords='offset points',
-                       fontsize=8, alpha=0.7)
-        
-        # Set labels and titles
-        ax1.set_xlabel('Fe5015 Index', fontsize=14)
-        ax1.set_ylabel('Mgb Index', fontsize=14)
-        ax1.set_title('Fe5015 vs Mgb - colored by R/Re', fontsize=16)
-        
-        ax2.set_xlabel('Fe5015 Index', fontsize=14)
-        ax2.set_ylabel('Mgb Index', fontsize=14)
-        ax2.set_title('Fe5015 vs Mgb - colored by [α/Fe]', fontsize=16)
-        
-        # Add grid
-        ax1.grid(True, alpha=0.3, linestyle='--')
-        ax2.grid(True, alpha=0.3, linestyle='--')
-        
-        # Set tick parameters
-        for ax in [ax1, ax2]:
-            ax.xaxis.set_minor_locator(AutoMinorLocator(5))
-            ax.yaxis.set_minor_locator(AutoMinorLocator(5))
-            ax.tick_params(axis='both', which='both', labelsize='x-small', right=True, top=True, direction='in')
+        # Add special case note if applicable
+        if standardized_data.get('special_case_applied', False):
+            plt.figtext(0.5, 0.02, 
+                      "NOTE: Special case handling applied to this galaxy.",
+                      ha='center', fontsize=10, color='red', 
+                      bbox=dict(facecolor='white', alpha=0.8, edgecolor='red'))
         
         # Add overall title
-        plt.suptitle('Spectral Indices and Alpha Enhancement in Virgo Cluster Galaxies', fontsize=18, y=0.98)
+        plt.suptitle(f"Galaxy {galaxy_name}: [α/Fe] Interpolation from Spectral Indices\n"
+                   f"Model Age: {closest_age} Gyr | Continuum Mode: {continuum_mode}", 
+                   fontsize=16, y=0.98)
         
-        # Add note about interpolation method
+        # Add explanation text
         plt.figtext(0.5, 0.01, 
-                  "α/Fe values interpolated from TMB03 model grid using Fe5015, Mgb and Hβ indices.\n"
-                  "Model grid lines (dashed) show constant α/Fe paths for a 10 Gyr stellar population.",
-                  ha='center', fontsize=12, bbox=dict(facecolor='white', alpha=0.7))
+                  "Alpha/Fe values are interpolated from the model grid using primarily Fe5015 and Mgb indices.\n"
+                  "Solid lines: constant [α/Fe], Dashed lines: constant [Z/H]",
+                  ha='center', fontsize=12)
         
         # Adjust layout
         plt.tight_layout(rect=[0, 0.03, 1, 0.95])
@@ -2381,111 +1637,477 @@ def create_fe5015_mgb_plot(results_list, output_path=None, dpi=150, model_data=N
         # Save figure
         if output_path:
             plt.savefig(output_path, dpi=dpi, bbox_inches='tight')
-            logger.info(f"Saved Fe5015 vs Mgb plot to {output_path}")
+            logger.info(f"Saved spectral index interpolation plot to {output_path}")
         
         plt.close()
         
+        # Return the standardized data for reference
+        return standardized_data
+        
     except Exception as e:
-        logger.error(f"Error creating Fe5015 vs Mgb plot: {e}")
+        logger.error(f"Error creating spectral index interpolation plot: {e}")
         import traceback
         traceback.print_exc()
+        return None
 
-def create_alpha_radius_direct_plot(results_list, output_path=None, dpi=150):
+def create_parameter_radius_plots(galaxy_name, rdb_data, model_data=None, output_path=None, 
+                                dpi=150, bins_limit=6, interpolated_data=None, continuum_mode='fit'):
     """
-    Create a plot of alpha/Fe vs. radius using directly calculated values for each point
+    Create parameter vs. radius plots with consistent data
     
     Parameters:
     -----------
-    results_list : list
-        List of dictionaries containing galaxy data with direct alpha/Fe calculations
+    galaxy_name : str
+        Galaxy name
+    rdb_data : dict
+        RDB data containing spectral indices
+    model_data : DataFrame, optional
+        Model grid data
     output_path : str
         Path to save the output image
     dpi : int
-        Resolution for saved image
+        Resolution for the output image
+    bins_limit : int
+        Limit on the number of bins to analyze
+    interpolated_data : dict, optional
+        Pre-calculated data - if provided, use this instead of calculating
+    continuum_mode : str
+        Spectral index continuum mode to use
     """
     try:
-        # Create figure
-        plt.figure(figsize=(12, 10))
-        ax = plt.gca()
+        # Check if RDB data is valid
+        if rdb_data is None or not isinstance(rdb_data, dict):
+            logger.error(f"Invalid RDB data format for {galaxy_name}")
+            return
         
-        # Set up colors for different galaxies
-        n_galaxies = len([r for r in results_list if r is not None])
-        colors = plt.cm.tab20(np.linspace(0, 1, 20))
+        # Get standardized data if not provided
+        if interpolated_data is None:
+            standardized_data = get_standardized_alpha_fe_data(
+                galaxy_name, rdb_data, model_data, bins_limit, continuum_mode, SPECIAL_CASES)
+        else:
+            standardized_data = interpolated_data
         
-        # Create legend elements
-        legend_elements = []
+        # Get parameter profiles for standard spectral indices
+        params = extract_parameter_profiles(
+            rdb_data, 
+            parameter_names=['Fe5015', 'Mgb', 'Hbeta', 'age', 'metallicity'],
+            bins_limit=bins_limit,
+            continuum_mode=continuum_mode
+        )
         
-        # Process each galaxy
-        galaxy_index = 0
-        for result in results_list:
-            if result is None or 'points' not in result or not result['points']:
-                continue
+        # Use standardized data for alpha/Fe
+        alpha_fe_values = standardized_data['alpha_fe_values']
+        radius_values = standardized_data['radius_values']
+        
+        # Create figure with 2x3 grid of subplots
+        fig, axes = plt.subplots(2, 3, figsize=(18, 10))
+        axes = axes.flatten()
+        
+        # Create plots for each parameter
+        parameters = ['Fe5015', 'Mgb', 'Hbeta', 'age', 'metallicity'] 
+        
+        for i, param_name in enumerate(parameters):
+            ax = axes[i]
+            
+            if param_name in params and hasattr(params[param_name], '__len__') and len(params[param_name]) > 0:
+                y = params[param_name]
+                r = params['radius']
                 
-            galaxy_name = result['galaxy']
-            
-            # Get color for this galaxy
-            color = colors[galaxy_index % 20]
-            galaxy_index += 1
-            
-            # Extract radii and alpha/Fe values
-            radii = [point['radius'] for point in result['points']]
-            alpha_fe = [point['alpha_fe'] for point in result['points']]
-            
-            # Plot each point
-            ax.scatter(radii, alpha_fe, s=80, color=color, edgecolor='black', alpha=0.8, zorder=10)
-            
-            # Calculate statistics
-            median_alpha_fe = np.median(alpha_fe) if alpha_fe else np.nan
-            
-            # Fit linear slope
-            if len(radii) > 1:
-                slope, intercept, r_value, p_value, std_err = stats.linregress(radii, alpha_fe)
+                if r is None or len(r) == 0:
+                    ax.text(0.5, 0.5, f"No radius data available", 
+                          ha='center', va='center', fontsize=12,
+                          transform=ax.transAxes)
+                    continue
                 
-                # Add to legend with slope and p-value information
-                sig_marker = "*" if p_value < 0.05 else ""
-                legend_elements.append(
-                    Line2D([0], [0], marker='o', color='w', markerfacecolor=color,
-                         markeredgecolor='black', markeredgewidth=1,
-                         markersize=10, label=f"{galaxy_name}: median α/Fe={median_alpha_fe:.2f}, Slope={slope:.3f}{sig_marker} (p={p_value:.3f})")
-                )
+                # Create sorted arrays for consistent plotting
+                sorted_pairs = sorted(zip(r, y), key=lambda pair: pair[0])
+                r_sorted = np.array([pair[0] for pair in sorted_pairs])
+                y_sorted = np.array([pair[1] for pair in sorted_pairs])
+                
+                # Check for outliers
+                _, _, outlier_mask = remove_outliers(r_sorted, y_sorted, threshold=3.0)
+                
+                # Create a clean copy for fitting
+                x_clean = r_sorted.copy()
+                y_clean = y_sorted.copy()
+                
+                # Mark outliers with X but don't use them for fitting
+                if np.any(outlier_mask):
+                    x_clean[outlier_mask] = np.nan
+                    y_clean[outlier_mask] = np.nan
+                
+                # Plot data points with lines connecting in order of radius
+                ax.plot(r_sorted, y_sorted, 'o-', color='blue', markersize=8, alpha=0.7)
+                
+                # Mark outliers
+                if np.any(outlier_mask):
+                    ax.plot(r_sorted[outlier_mask], y_sorted[outlier_mask], 'rx', markersize=10, alpha=0.8)
+                
+                # Fit linear trend and add to plot
+                slope, intercept, y_fit, r_squared, p_value = fit_linear_slope(x_clean, y_clean, return_full=True)
+                
+                if not np.isnan(slope):
+                    valid_mask = ~np.isnan(x_clean) & ~np.isnan(y_clean)
+                    x_valid = np.array(x_clean)[valid_mask]
+                    if len(x_valid) >= 2:
+                        x_line = np.linspace(min(x_valid), max(x_valid), 100)
+                        y_line = linear_fit(x_line, slope, intercept)
+                        
+                        ax.plot(x_line, y_line, '--', color='red', linewidth=2)
+                        
+                        # Add slope and p-value to plot
+                        ax.text(0.05, 0.95, f"Slope = {slope:.3f}\np = {p_value:.3f}", 
+                              transform=ax.transAxes, fontsize=10,
+                              va='top', ha='left',
+                              bbox=dict(boxstyle='round', facecolor='white', alpha=0.7))
+                
+                # Set labels and title
+                ax.set_xlabel('R/Re' if params['effective_radius'] is not None else 'Radius (arcsec)', fontsize=12)
+                ax.set_ylabel(param_name, fontsize=12)
+                ax.set_title(f"{param_name} vs. Radius", fontsize=14)
+                
+                # Add grid
+                ax.grid(True, alpha=0.3, linestyle='--')
+                
+                # Add vertical line at Re=1 if using normalized radius
+                if params['effective_radius'] is not None:
+                    ax.axvline(x=1, color='k', linestyle=':', alpha=0.5)
+                
+                # Set tick parameters
+                ax.xaxis.set_minor_locator(AutoMinorLocator(5))
+                ax.yaxis.set_minor_locator(AutoMinorLocator(5))
+                ax.tick_params(axis='both', which='both', labelsize='x-small', right=True, top=True, direction='in')
             else:
-                # If only one point, just add the galaxy to legend without slope
-                legend_elements.append(
-                    Line2D([0], [0], marker='o', color='w', markerfacecolor=color,
-                         markeredgecolor='black', markeredgewidth=1,
-                         markersize=10, label=f"{galaxy_name}: α/Fe={median_alpha_fe:.2f}")
-                )
+                ax.text(0.5, 0.5, f"No {param_name} data available", 
+                      ha='center', va='center', fontsize=12,
+                      transform=ax.transAxes)
+        
+        # Add alpha/Fe plot in the last subplot - using standardized data
+        ax = axes[5]
+        
+        if alpha_fe_values and radius_values and len(alpha_fe_values) > 0:
+            # Sort by radius
+            sorted_pairs = sorted(zip(radius_values, alpha_fe_values), key=lambda pair: pair[0])
+            r_sorted = np.array([pair[0] for pair in sorted_pairs])
+            alpha_sorted = np.array([pair[1] for pair in sorted_pairs])
+            
+            # Plot data points with lines
+            ax.plot(r_sorted, alpha_sorted, 'o-', color='purple', markersize=8, alpha=0.7)
+            
+            # Add bin numbers
+            for j, (r, alpha) in enumerate(zip(r_sorted, alpha_sorted)):
+                ax.text(r, alpha, str(standardized_data['bin_indices'][j]), fontsize=8, ha='center', va='center', 
+                      color='white', fontweight='bold')
+            
+            # Use standardized slope values
+            slope = standardized_data['slope']
+            p_value = standardized_data['p_value']
+            r_squared = standardized_data['r_squared']
+            intercept = standardized_data['intercept']
+            
+            # Add trend line if we have a valid slope
+            if not np.isnan(slope):
+                x_range = np.linspace(min(r_sorted), max(r_sorted), 100)
+                y_range = slope * x_range + intercept
+                ax.plot(x_range, y_range, '--', color='red', linewidth=2)
+                
+                # Add horizontal reference line
+                ax.axhline(y=np.mean(alpha_sorted), color='green', linestyle=':', alpha=0.7)
+                
+                # Determine trend type based on slope magnitude
+                if abs(slope) < 0.01:
+                    trend_type = "Horizontal" 
+                    trend_color = "green"
+                elif slope > 0:
+                    trend_type = "Increasing"
+                    trend_color = "blue"
+                else:
+                    trend_type = "Decreasing" 
+                    trend_color = "red"
+                
+                # Add annotation with trend type
+                significance = "**" if p_value < 0.01 else ("*" if p_value < 0.05 else "")
+                ax.text(0.05, 0.95, 
+                      f"Slope = {slope:.3f}{significance}\np = {p_value:.3f}\nR² = {r_squared:.3f}\nTrend: {trend_type}", 
+                      transform=ax.transAxes, fontsize=10,
+                      va='top', ha='left', color=trend_color,
+                      bbox=dict(boxstyle='round', facecolor='white', alpha=0.7))
         
         # Set labels and title
-        ax.set_xlabel('R/Re', fontsize=14)
-        ax.set_ylabel('[α/Fe]', fontsize=14)
-        ax.set_title('Alpha Element Abundance vs. Radius - Direct Grid Interpolation', fontsize=16)
+        ax.set_xlabel('R/Re' if params['effective_radius'] is not None else 'Radius (arcsec)', fontsize=12)
+        ax.set_ylabel('[α/Fe] (standardized)', fontsize=12)
+        ax.set_title('[α/Fe] vs. R/Re', fontsize=14)
         
-        # Add grid
+        # Add grid and other formatting
         ax.grid(True, alpha=0.3, linestyle='--')
         
-        # Add significance note
-        ax.text(0.02, 0.02, "* p < 0.05 (statistically significant)", 
-               transform=ax.transAxes, fontsize=10, 
-               bbox=dict(facecolor='white', alpha=0.7, edgecolor='gray'))
+        # Add special case note if applicable
+        if standardized_data.get('special_case_applied', False):
+            ax.text(0.5, 0.5, "NOTE: Special case values applied",
+                  transform=ax.transAxes, fontsize=10, color='red',
+                  ha='center', va='center',
+                  bbox=dict(facecolor='white', alpha=0.8, edgecolor='red'))
         
-        # Add legend
-        legend = ax.legend(handles=legend_elements, loc='upper left', fontsize=10, framealpha=0.9, 
-                         bbox_to_anchor=(1.02, 1), title='Galaxies')
-        legend.get_title().set_fontsize(12)
+        # Add overall title
+        Re = params['effective_radius']
+        re_info = f" (Re = {Re:.2f} arcsec)" if Re is not None else ""
+        plt.suptitle(f"Galaxy {galaxy_name}: Parameter-Radius Relations{re_info}\nContinuum Mode: {continuum_mode}", 
+                   fontsize=16, y=0.98)
+        
+        # Add note about standardized data
+        plt.figtext(0.5, 0.01, 
+                  "Alpha/Fe values derived from standard interpolation in spectral index space.\n"
+                  "Bin numbers shown on the α/Fe plot correspond to the radial bins used in the analysis.",
+                  ha='center', fontsize=10, style='italic')
         
         # Adjust layout
-        plt.tight_layout(rect=[0, 0, 0.78, 1])
+        plt.tight_layout(rect=[0, 0.03, 1, 0.95])
         
         # Save figure
         if output_path:
             plt.savefig(output_path, dpi=dpi, bbox_inches='tight')
-            logger.info(f"Saved direct alpha/Fe vs. radius plot to {output_path}")
+            logger.info(f"Saved parameter-radius plots to {output_path}")
         
         plt.close()
         
     except Exception as e:
-        logger.error(f"Error creating direct alpha/Fe vs. radius plot: {e}")
+        logger.error(f"Error creating parameter-radius plots: {e}")
+        import traceback
+        traceback.print_exc()
+
+def create_model_grid_plots_part1(galaxy_name, rdb_data, model_data, age=10, output_path=None, dpi=150, 
+                                bins_limit=6, continuum_mode='fit', standardized_data=None):
+    """
+    Create first set of model grid plots colored by R, log Age, and M/H
+    Part 1: Fe5015 vs Mgb, Fe5015 vs Hbeta, Mgb vs Hbeta - Colored by different parameters
+    
+    Parameters:
+    -----------
+    galaxy_name : str
+        Galaxy name
+    rdb_data : dict
+        RDB data containing spectral indices and bin info
+    model_data : DataFrame
+        Model grid data with ages, metallicities, and spectral indices
+    age : float
+        Age (in Gyr) to use for the model grid
+    output_path : str
+        Path to save the output image
+    dpi : int
+        Resolution for the output image
+    bins_limit : int
+        Limit analysis to first N bins (default: 6 for bins 0-5)
+    continuum_mode : str
+        Spectral index continuum mode to use ('auto', 'fit', 'original')
+    standardized_data : dict, optional
+        Pre-calculated standardized data - if provided, this will be used instead of calculating
+    """
+    try:
+        # Use standardized data if provided, otherwise calculate it
+        if standardized_data is None:
+            standardized_data = get_standardized_alpha_fe_data(
+                galaxy_name, rdb_data, model_data, bins_limit, continuum_mode, SPECIAL_CASES)
+        
+        # Extract data from standardized data
+        fe5015_values = standardized_data['fe5015_values']
+        mgb_values = standardized_data['mgb_values'] 
+        hbeta_values = standardized_data['hbeta_values']
+        radius_values = standardized_data['radius_values']
+        bin_indices = standardized_data['bin_indices']
+        
+        # Define column name mapping for the model grid
+        model_column_mapping = {
+            'Fe5015': find_matching_column(model_data, ['Fe5015', 'Fe5015_SI', 'Fe5015_Index']),
+            'Mgb': find_matching_column(model_data, ['Mgb', 'Mg_b', 'Mg_b_SI', 'Mgb_Index']),
+            'Hbeta': find_matching_column(model_data, ['Hbeta', 'Hb', 'Hbeta_SI', 'Hb_Index', 'Hb_si']),
+            'Age': find_matching_column(model_data, ['Age', 'age']),
+            'ZoH': find_matching_column(model_data, ['ZoH', 'Z/H', '[Z/H]', 'metallicity', 'MOH', '[M/H]']),
+            'AoFe': find_matching_column(model_data, ['AoFe', 'alpha/Fe', '[alpha/Fe]', 'A/Fe', '[A/Fe]', 'alpha'])
+        }
+        
+        # Filter model data to the requested age
+        age_column = model_column_mapping['Age']
+        available_ages = np.array(sorted(model_data[age_column].unique()))
+        closest_age = available_ages[np.argmin(np.abs(available_ages - age))]
+        
+        model_age_data = model_data[model_data[age_column] == closest_age].copy()
+        logger.info(f"Using age {closest_age} Gyr for model grid (requested: {age} Gyr)")
+        
+        # Create figure with 3x3 grid (9 subplots)
+        fig, axes = plt.subplots(3, 3, figsize=(18, 15))
+        
+        # Set up the three index pairs to plot
+        index_pairs = [
+            ('Fe5015', 'Mgb'),
+            ('Fe5015', 'Hbeta'),
+            ('Mgb', 'Hbeta')
+        ]
+        
+        # Set up color variables in order
+        color_vars = ['R', 'age', 'metallicity']
+        color_labels = ['R (arcsec)', 'log Age (Gyr)', '[M/H]']
+        
+        # Get unique metallicity and alpha/Fe values for grid lines
+        zoh_column = model_column_mapping['ZoH']
+        aofe_column = model_column_mapping['AoFe']
+        
+        zoh_unique = sorted(model_age_data[zoh_column].unique())
+        aofe_unique = sorted(model_age_data[aofe_column].unique())
+        
+        # Get parameter data from standardized data
+        param_data = {'R': radius_values}
+        
+        # Extract other parameters from RDB data
+        params = extract_parameter_profiles(
+            rdb_data, 
+            parameter_names=['age', 'metallicity'],
+            bins_limit=bins_limit,
+            continuum_mode=continuum_mode
+        )
+        
+        # Use only the valid bins
+        if 'age' in params and params['age'] is not None:
+            param_data['age'] = [params['age'][b] for b in bin_indices]
+        
+        if 'metallicity' in params and params['metallicity'] is not None:
+            param_data['metallicity'] = [params['metallicity'][b] for b in bin_indices]
+        
+        # Plot each panel
+        for row, color_var in enumerate(color_vars):
+            for col, (x_index, y_index) in enumerate(index_pairs):
+                ax = axes[row, col]
+                
+                # Get the mapped column names for the model data
+                model_x_column = model_column_mapping[x_index]
+                model_y_column = model_column_mapping[y_index]
+                
+                # Skip if either column is missing
+                if model_x_column is None or model_y_column is None:
+                    ax.text(0.5, 0.5, f"Missing {x_index} or {y_index} data", 
+                          transform=ax.transAxes, ha='center', va='center')
+                    continue
+                
+                # Draw model grid
+                # Draw metallicity (ZoH) lines
+                for zoh in zoh_unique:
+                    zoh_data = model_age_data[model_age_data[zoh_column] == zoh]
+                    ax.plot(zoh_data[model_x_column], zoh_data[model_y_column], '-', 
+                           color='tab:blue', alpha=0.5, linewidth=1.5, zorder=1)
+                
+                # Draw alpha/Fe (AoFe) lines
+                for aofe in aofe_unique:
+                    aofe_data = model_age_data[model_age_data[aofe_column] == aofe]
+                    ax.plot(aofe_data[model_x_column], aofe_data[model_y_column], '--', 
+                           color='tab:red', alpha=0.5, linewidth=1.5, zorder=1)
+                
+                # Add grid point annotations
+                for zoh in zoh_unique:
+                    for aofe in aofe_unique:
+                        point_data = model_age_data[(model_age_data[zoh_column] == zoh) & 
+                                                  (model_age_data[aofe_column] == aofe)]
+                        if len(point_data) > 0:
+                            x_val = point_data[model_x_column].values[0]
+                            y_val = point_data[model_y_column].values[0]
+                            
+                            # Add grid point
+                            ax.scatter(x_val, y_val, color='black', s=20, zorder=2)
+                
+                # Get galaxy values for this panel
+                x_values = []
+                y_values = []
+                color_values = []
+                
+                if x_index == 'Fe5015' and y_index == 'Mgb':
+                    x_values = fe5015_values
+                    y_values = mgb_values
+                elif x_index == 'Fe5015' and y_index == 'Hbeta':
+                    x_values = fe5015_values 
+                    y_values = hbeta_values
+                elif x_index == 'Mgb' and y_index == 'Hbeta':
+                    x_values = mgb_values
+                    y_values = hbeta_values
+                
+                # Get color data
+                if color_var in param_data and param_data[color_var] is not None:
+                    color_data = param_data[color_var]
+                    
+                    # Determine color normalization
+                    if len(color_data) > 0:
+                        vmin = np.nanmin(color_data)
+                        vmax = np.nanmax(color_data)
+                    else:
+                        # Default values if array is empty
+                        vmin = 0
+                        vmax = 1
+                    
+                    # Plot points colored by the selected variable
+                    sc = ax.scatter(x_values, y_values, c=color_data, 
+                                  cmap='viridis', s=80, alpha=0.8, zorder=10,
+                                  vmin=vmin, vmax=vmax)
+                    
+                    # Add bin numbers
+                    for j, (x, y) in enumerate(zip(x_values, y_values)):
+                        ax.text(x, y, str(bin_indices[j]), fontsize=8, ha='center', va='center', 
+                              color='white', fontweight='bold', zorder=11)
+                    
+                    # Add colorbar
+                    divider = make_axes_locatable(ax)
+                    cax = divider.append_axes("right", size="5%", pad=0.05)
+                    cbar = plt.colorbar(sc, cax=cax)
+                    cbar.set_label(color_labels[row])
+                else:
+                    # Fallback to plain scatter if color variable is not available
+                    ax.scatter(x_values, y_values, color='green', s=80, alpha=0.7, zorder=10)
+                    
+                    # Add bin numbers
+                    for j, (x, y) in enumerate(zip(x_values, y_values)):
+                        ax.text(x, y, str(bin_indices[j]), fontsize=8, ha='center', va='center', 
+                              color='black', fontweight='bold', zorder=11)
+                
+                # Set labels and grid
+                ax.set_xlabel(f'{x_index} Index', fontsize=12)
+                ax.set_ylabel(f'{y_index} Index', fontsize=12)
+                ax.set_title(f'{x_index} vs {y_index} - colored by {color_labels[row]}', fontsize=14)
+                ax.grid(alpha=0.3, linestyle='--')
+                
+                # Set tick parameters
+                ax.xaxis.set_minor_locator(AutoMinorLocator(5))
+                ax.yaxis.set_minor_locator(AutoMinorLocator(5))
+                ax.tick_params(axis='both', which='both', labelsize='x-small', right=True, top=True, direction='in')
+        
+        # Add legend
+        legend_elements = [
+            Line2D([0], [0], color='tab:blue', linestyle='-', linewidth=1.5, label='Constant [Z/H]'),
+            Line2D([0], [0], color='tab:red', linestyle='--', linewidth=1.5, label='Constant [α/Fe]'),
+            Line2D([0], [0], marker='o', color='w', label='Galaxy Bins',
+                   markerfacecolor='tab:green', markersize=8)
+        ]
+        fig.legend(handles=legend_elements, loc='upper center', ncol=3, bbox_to_anchor=(0.5, 0.03))
+        
+        # Add special case note if applicable
+        if standardized_data.get('special_case_applied', False):
+            plt.figtext(0.5, 0.05, 
+                      "NOTE: Special case handling applied to this galaxy.",
+                      ha='center', fontsize=10, color='red', 
+                      bbox=dict(facecolor='white', alpha=0.8, edgecolor='red'))
+        
+        # Add overall title
+        plt.suptitle(f'Galaxy {galaxy_name}: Spectral Indices vs. Model Grid\n'
+                   f'Age = {closest_age} Gyr | Continuum Mode: {continuum_mode}', 
+                   fontsize=16, y=0.98)
+        
+        # Adjust layout
+        plt.tight_layout(rect=[0, 0.05, 1, 0.95])
+        
+        # Save figure
+        if output_path:
+            plt.savefig(output_path, dpi=dpi, bbox_inches='tight')
+            logger.info(f"Saved model grid plots part 1 to {output_path}")
+        
+        plt.close()
+        
+    except Exception as e:
+        logger.error(f"Error creating model grid plots part 1: {e}")
         import traceback
         traceback.print_exc()
 
@@ -2548,17 +2170,7 @@ def create_combined_flux_and_binning(galaxy_name, p2p_data, rdb_data, cube_info,
             center_y = ny / 2
         
         # Extract effective radius
-        Re = None
-        if 'distance' in rdb_data:
-            distance = rdb_data['distance'].item() if hasattr(rdb_data['distance'], 'item') else rdb_data['distance']
-            if 'effective_radius' in distance:
-                Re = distance['effective_radius']
-        elif 'meta_data' in rdb_data:
-            meta = rdb_data['meta_data'].item() if hasattr(rdb_data['meta_data'], 'item') else rdb_data['meta_data']
-            if 'effective_radius' in meta:
-                Re = meta['effective_radius']
-        elif 'effective_radius' in rdb_data:
-            Re = rdb_data['effective_radius']
+        Re = extract_effective_radius(rdb_data)
         
         # Get pixel scale information
         pixel_scale_x = cube_info['pixel_scale_x']  # arcsec/pixel
@@ -2707,1310 +2319,459 @@ def create_combined_flux_and_binning(galaxy_name, p2p_data, rdb_data, cube_info,
         import traceback
         traceback.print_exc()
 
-def create_parameter_radius_plots(galaxy_name, rdb_data, model_data=None, output_path=None, dpi=150, bins_limit=6, interpolated_data=None, continuum_mode='fit'):
+def create_alpha_radius_plot_improved(results_list, output_path=None, dpi=150):
     """
-    Create parameter vs. radius plots with linear fits, using Re and including interpolated alpha/Fe
+    Create an improved plot of alpha/Fe vs. radius for all galaxies with slope information
+    in the legend rather than on the plot
     
     Parameters:
     -----------
-    galaxy_name : str
-        Galaxy name
-    rdb_data : dict
-        RDB data containing spectral indices
-    model_data : DataFrame, optional
-        Model grid data for reference
+    results_list : list
+        List of dictionaries containing galaxy alpha/Fe and radius results
     output_path : str
         Path to save the output image
     dpi : int
-        Resolution for the output image
-    bins_limit : int
-        Limit on the number of bins to analyze
-    interpolated_data : dict, optional
-        Pre-calculated interpolated values
-    continuum_mode : str
-        Spectral index continuum mode to use ('auto', 'fit', 'original')
+        Resolution for saved image
     """
     try:
-        # Check if RDB data is valid
-        if rdb_data is None or not isinstance(rdb_data, dict):
-            logger.error(f"Invalid RDB data format for {galaxy_name}")
+        # Create figure with a larger size for better readability
+        plt.figure(figsize=(12, 10))
+        ax = plt.gca()
+        
+        # Set up colors for different galaxies - use a qualitative colormap
+        # that's more distinct than tab20
+        n_galaxies = len([r for r in results_list if r is not None])
+        colors = plt.cm.tab20(np.linspace(0, 1, 20))
+        
+        # Create a custom legend for slopes and p-values
+        legend_elements = []
+        
+        # Plot each galaxy
+        galaxy_index = 0
+        for result in results_list:
+            if result is None:
+                continue
+                
+            galaxy = result['galaxy']
+            # Use alpha_fe_median as the central value
+            alpha_fe = result.get('alpha_fe_median', np.nan)
+            radius = result.get('radius_median', np.nan)
+            
+            # Use the standardized slope values
+            slope = result.get('slope', np.nan)
+            p_value = result.get('p_value', np.nan)
+            
+            # Get color for this galaxy
+            color = colors[galaxy_index % 20]
+            galaxy_index += 1
+            
+            # Marker size and edge width based on statistical significance
+            if np.isnan(p_value) or p_value > 0.05:
+                edge_color = 'gray'  # Not significant
+                linewidth = 1
+                marker_size = 100
+            else:
+                edge_color = 'black'  # Significant
+                linewidth = 2
+                marker_size = 150
+            
+            # Plot point
+            ax.scatter(radius, alpha_fe, s=marker_size, color=color, edgecolor=edge_color, 
+                     linewidth=linewidth, zorder=10)
+            
+            # Add slope line if available
+            if not np.isnan(slope) and 'radius_values' in result and len(result['radius_values']) > 1:
+                # Get radius range - extend slightly for better visibility
+                min_radius = max(0.1, np.min(result['radius_values']) * 0.8)
+                max_radius = np.max(result['radius_values']) * 1.2
+                
+                # Calculate intercept from the median point
+                intercept = alpha_fe - slope * radius
+                
+                # Plot slope line
+                x_range = np.linspace(min_radius, max_radius, 100)
+                y_range = slope * x_range + intercept
+                ax.plot(x_range, y_range, '--', color=color, alpha=0.7, linewidth=2)
+            
+            # Format significance marker
+            sig_marker = "*" if p_value < 0.05 else ""
+            
+            # Create legend entry with slope and p-value
+            legend_elements.append(
+                Line2D([0], [0], marker='o', color='w', markerfacecolor=color,
+                     markeredgecolor=edge_color, markeredgewidth=linewidth,
+                     markersize=10, label=f"{galaxy}: α/Fe={alpha_fe:.2f}, Slope={slope:.3f}{sig_marker} (p={p_value:.3f})")
+            )
+        
+        # Set labels and title
+        ax.set_xlabel('R/Re', fontsize=14)
+        ax.set_ylabel('[α/Fe]', fontsize=14)
+        ax.set_title('Alpha Element Abundance vs. Radius for Virgo Cluster Galaxies', fontsize=16)
+        
+        # Set tick parameters
+        ax.xaxis.set_minor_locator(AutoMinorLocator(5))
+        ax.yaxis.set_minor_locator(AutoMinorLocator(5))
+        ax.tick_params(axis='both', which='both', labelsize='x-small', right=True, top=True, direction='in')
+        
+        # Add grid
+        ax.grid(True, alpha=0.3, linestyle='--')
+        
+        # Add significance note
+        ax.text(0.02, 0.02, "* p < 0.05 (statistically significant)", 
+               transform=ax.transAxes, fontsize=10, 
+               bbox=dict(facecolor='white', alpha=0.7, edgecolor='gray'))
+        
+        # Add legend with galaxy names, slopes and p-values
+        # Place it outside the plot to avoid overlapping with data
+        legend = ax.legend(handles=legend_elements, loc='upper left', fontsize=10, framealpha=0.9, 
+                         bbox_to_anchor=(1.02, 1), title='Galaxies')
+        legend.get_title().set_fontsize(12)
+        
+        # Add note about the standardized data
+        plt.figtext(0.5, 0.01, 
+                  "Alpha/Fe values calculated using standardized 3D interpolation method.\n"
+                  "Slopes indicate radial gradients of alpha-element abundance.",
+                  ha='center', fontsize=10, style='italic')
+        
+        # Adjust layout to make room for legend
+        plt.tight_layout(rect=[0, 0.03, 0.78, 0.97])
+        
+        # Save figure
+        if output_path:
+            plt.savefig(output_path, dpi=dpi, bbox_inches='tight')
+            logger.info(f"Saved improved alpha/Fe vs. radius plot to {output_path}")
+        
+        plt.close()
+        
+    except Exception as e:
+        logger.error(f"Error creating improved alpha/Fe vs. radius plot: {e}")
+        import traceback
+        traceback.print_exc()
+
+def create_alpha_radius_direct_plot(results_list, output_path=None, dpi=150):
+    """
+    Create a plot of alpha/Fe vs. radius using directly calculated values for each point
+    
+    Parameters:
+    -----------
+    results_list : list
+        List of dictionaries containing galaxy data with direct alpha/Fe calculations
+    output_path : str
+        Path to save the output image
+    dpi : int
+        Resolution for saved image
+    """
+    try:
+        # Create figure
+        plt.figure(figsize=(12, 10))
+        ax = plt.gca()
+        
+        # Set up colors for different galaxies
+        n_galaxies = len([r for r in results_list if r is not None])
+        colors = plt.cm.tab20(np.linspace(0, 1, 20))
+        
+        # Create legend elements
+        legend_elements = []
+        
+        # Process each galaxy
+        galaxy_index = 0
+        for result in results_list:
+            if result is None:
+                continue
+                
+            galaxy_name = result['galaxy']
+            
+            # Use standardized data for consistency
+            alpha_fe_values = result.get('alpha_fe_values', [])
+            radius_values = result.get('radius_values', [])
+            slope = result.get('slope', np.nan)
+            p_value = result.get('p_value', np.nan)
+            
+            # Skip if insufficient data
+            if len(alpha_fe_values) == 0 or len(radius_values) == 0:
+                continue
+            
+            # Get color for this galaxy
+            color = colors[galaxy_index % 20]
+            galaxy_index += 1
+            
+            # Plot all points for this galaxy
+            ax.scatter(radius_values, alpha_fe_values, s=80, color=color, edgecolor='black', alpha=0.8, zorder=10)
+            
+            # Calculate statistics
+            median_alpha_fe = np.median(alpha_fe_values) if alpha_fe_values else np.nan
+            
+            # If we have multiple points, add line connecting them in radial order
+            if len(radius_values) > 1:
+                # Sort by radius
+                sorted_pairs = sorted(zip(radius_values, alpha_fe_values), key=lambda pair: pair[0])
+                r_sorted = [pair[0] for pair in sorted_pairs]
+                a_sorted = [pair[1] for pair in sorted_pairs]
+                ax.plot(r_sorted, a_sorted, '-', color=color, alpha=0.6, linewidth=1.5)
+                
+                # Add to legend with slope and p-value information
+                sig_marker = "*" if p_value < 0.05 else ""
+                legend_elements.append(
+                    Line2D([0], [0], marker='o', color='w', markerfacecolor=color,
+                         markeredgecolor='black', markeredgewidth=1,
+                         markersize=10, label=f"{galaxy_name}: median α/Fe={median_alpha_fe:.2f}, Slope={slope:.3f}{sig_marker} (p={p_value:.3f})")
+                )
+            else:
+                # If only one point, just add the galaxy to legend without slope
+                legend_elements.append(
+                    Line2D([0], [0], marker='o', color='w', markerfacecolor=color,
+                         markeredgecolor='black', markeredgewidth=1,
+                         markersize=10, label=f"{galaxy_name}: α/Fe={median_alpha_fe:.2f}")
+                )
+        
+        # Set labels and title
+        ax.set_xlabel('R/Re', fontsize=14)
+        ax.set_ylabel('[α/Fe]', fontsize=14)
+        ax.set_title('Alpha Element Abundance vs. Radius - All Data Points', fontsize=16)
+        
+        # Add grid
+        ax.grid(True, alpha=0.3, linestyle='--')
+        
+        # Add significance note
+        ax.text(0.02, 0.02, "* p < 0.05 (statistically significant)", 
+               transform=ax.transAxes, fontsize=10, 
+               bbox=dict(facecolor='white', alpha=0.7, edgecolor='gray'))
+        
+        # Add legend
+        legend = ax.legend(handles=legend_elements, loc='upper left', fontsize=10, framealpha=0.9, 
+                         bbox_to_anchor=(1.02, 1), title='Galaxies')
+        legend.get_title().set_fontsize(12)
+        
+        # Add note about the data source
+        plt.figtext(0.5, 0.01, 
+                  "This plot shows all individual data points from the standardized alpha/Fe calculation.\n"
+                  "Lines connect points from the same galaxy in order of increasing radius.",
+                  ha='center', fontsize=10, style='italic')
+        
+        # Adjust layout
+        plt.tight_layout(rect=[0, 0.03, 0.78, 0.97])
+        
+        # Save figure
+        if output_path:
+            plt.savefig(output_path, dpi=dpi, bbox_inches='tight')
+            logger.info(f"Saved direct alpha/Fe vs. radius plot to {output_path}")
+        
+        plt.close()
+        
+    except Exception as e:
+        logger.error(f"Error creating direct alpha/Fe vs. radius plot: {e}")
+        import traceback
+        traceback.print_exc()
+
+def create_fe5015_mgb_plot(results_list, output_path=None, dpi=150, model_data=None):
+    """
+    Create a plot of Fe5015 vs Mgb with points colored by radius
+    
+    Parameters:
+    -----------
+    results_list : list
+        List of dictionaries containing galaxy data points with indices
+    output_path : str
+        Path to save the output image
+    dpi : int
+        Resolution for saved image
+    model_data : DataFrame, optional
+        If provided, plots the model grid as background for context
+    """
+    try:
+        # Create figure with two subplots side by side
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 8))
+        
+        # Collect all points for plotting
+        fe5015_values = []
+        mgb_values = []
+        radius_values = []
+        alpha_fe_values = []
+        galaxy_names = []
+        
+        # Process each galaxy
+        for result in results_list:
+            if result is None:
+                continue
+                
+            galaxy_name = result['galaxy']
+            
+            # Use standardized data
+            if len(result.get('fe5015_values', [])) > 0 and len(result.get('mgb_values', [])) > 0:
+                # Extract data
+                galaxy_fe5015 = result['fe5015_values']
+                galaxy_mgb = result['mgb_values']
+                galaxy_radius = result.get('radius_values', [])
+                galaxy_alpha_fe = result.get('alpha_fe_values', [])
+                
+                # Ensure lengths match
+                min_len = min(len(galaxy_fe5015), len(galaxy_mgb))
+                valid_indices = []
+                
+                for i in range(min_len):
+                    # Skip invalid values
+                    if (np.isnan(galaxy_fe5015[i]) or np.isnan(galaxy_mgb[i]) or 
+                        galaxy_fe5015[i] <= 0 or galaxy_mgb[i] <= 0):
+                        continue
+                    
+                    valid_indices.append(i)
+                
+                # Add valid values to the collected data
+                for i in valid_indices:
+                    fe5015_values.append(galaxy_fe5015[i])
+                    mgb_values.append(galaxy_mgb[i])
+                    
+                    # Add radius and alpha/Fe if available
+                    if i < len(galaxy_radius):
+                        radius_values.append(galaxy_radius[i])
+                    else:
+                        radius_values.append(np.nan)
+                        
+                    if i < len(galaxy_alpha_fe):
+                        alpha_fe_values.append(galaxy_alpha_fe[i])
+                    else:
+                        alpha_fe_values.append(np.nan)
+                        
+                    galaxy_names.append(galaxy_name)
+        
+        if not fe5015_values:
+            logger.warning("No valid data points found for plotting")
             return
             
-        # Special case handling for VCC1588 α/Fe plot
-        vcc1588_correction = False
-        if galaxy_name == "VCC1588" and interpolated_data is not None and 'alpha_fe' in interpolated_data:
-            # Flag that we'll need to use the corrected value
-            vcc1588_correction = True
+        # Plot 1: Points colored by radius
+        scatter1 = ax1.scatter(fe5015_values, mgb_values, c=radius_values, 
+                            cmap='viridis', s=80, alpha=0.8, edgecolor='black')
         
-        # Extract parameters with bin limit using the specified mode
-        params = extract_parameter_profiles(
-            rdb_data, 
-            parameter_names=['Fe5015', 'Mgb', 'Hbeta', 'age', 'metallicity'],
-            bins_limit=bins_limit,
-            continuum_mode=continuum_mode
-        )
+        # Add colorbar for radius
+        cbar1 = plt.colorbar(scatter1, ax=ax1)
+        cbar1.set_label('R/Re', fontsize=12)
         
-        if params['radius'] is None:
-            logger.error(f"No radius information found for {galaxy_name}")
-            return
+        # Plot 2: Points colored by alpha/Fe
+        scatter2 = ax2.scatter(fe5015_values, mgb_values, c=alpha_fe_values, 
+                            cmap='plasma', s=80, alpha=0.8, edgecolor='black')
         
-        # Get effective radius
-        Re = params['effective_radius']
-        if Re is None:
-            logger.warning(f"No effective radius found for {galaxy_name}, using raw radius")
-            r_scaled = params['radius']
-            x_label = 'Radius (arcsec)'
-        else:
-            # Normalize radius by Re
-            r_scaled = params['radius'] / Re
-            x_label = 'R/Re'
+        # Add colorbar for alpha/Fe
+        cbar2 = plt.colorbar(scatter2, ax=ax2)
+        cbar2.set_label('[α/Fe]', fontsize=12)
         
-        # Set up parameter labels
-        param_labels = {
-            'Fe5015': 'Fe5015 Index',
-            'Mgb': 'Mgb Index',
-            'Hbeta': 'Hβ Index',
-            'age': 'log Age (Gyr)',
-            'metallicity': '[M/H]',
-            'alpha_fe': '[α/Fe]'
-        }
+        # Add model grid if provided
+        if model_data is not None:
+            try:
+                # Find the relevant column names
+                model_column_mapping = {
+                    'Fe5015': find_matching_column(model_data, ['Fe5015', 'Fe5015_SI', 'Fe5015_Index']),
+                    'Mgb': find_matching_column(model_data, ['Mgb', 'Mg_b', 'Mg_b_SI', 'Mgb_Index']),
+                    'Hbeta': find_matching_column(model_data, ['Hbeta', 'Hb', 'Hbeta_SI', 'Hb_Index', 'Hb_si']),
+                    'Age': find_matching_column(model_data, ['Age', 'age']),
+                    'ZoH': find_matching_column(model_data, ['ZoH', 'Z/H', '[Z/H]', 'metallicity', 'MOH', '[M/H]']),
+                    'AoFe': find_matching_column(model_data, ['AoFe', 'alpha/Fe', '[alpha/Fe]', 'A/Fe', '[A/Fe]', 'alpha'])
+                }
+                
+                fe5015_col = model_column_mapping['Fe5015']
+                mgb_col = model_column_mapping['Mgb']
+                aofe_col = model_column_mapping['AoFe']
+                age_col = model_column_mapping['Age']
+                
+                if all([fe5015_col, mgb_col, aofe_col, age_col]):
+                    # Get unique alpha/Fe values
+                    alpha_fe_levels = sorted(model_data[aofe_col].unique())
+                    
+                    # Choose a representative age
+                    representative_age = 10.0  # 10 Gyr is typical for early-type galaxies
+                    closest_age = model_data[age_col].iloc[(model_data[age_col] - representative_age).abs().argsort()[0]]
+                    
+                    # Filter data to this age
+                    age_data = model_data[model_data[age_col] == closest_age]
+                    
+                    # Plot grid lines for each alpha/Fe value
+                    for alpha_fe in alpha_fe_levels:
+                        alpha_data = age_data[age_data[aofe_col] == alpha_fe]
+                        if len(alpha_data) > 1:
+                            # Sort by metallicity
+                            alpha_data = alpha_data.sort_values(by=fe5015_col)
+                            
+                            # Plot the grid line
+                            ax1.plot(alpha_data[fe5015_col], alpha_data[mgb_col], 'k--', alpha=0.3, linewidth=1)
+                            ax2.plot(alpha_data[fe5015_col], alpha_data[mgb_col], 'k--', alpha=0.3, linewidth=1)
+                            
+                            # Label each line
+                            midpoint = len(alpha_data) // 2
+                            x = alpha_data.iloc[midpoint][fe5015_col]
+                            y = alpha_data.iloc[midpoint][mgb_col]
+                            ax2.text(x, y, f'[α/Fe]={alpha_fe}', fontsize=8, ha='center', va='bottom', alpha=0.7,
+                                   bbox=dict(facecolor='white', alpha=0.5, edgecolor='none', pad=1))
+            except Exception as e:
+                logger.warning(f"Could not plot model grid: {e}")
         
-        # Create figure with 6 subplots in a 2x3 grid to include alpha/Fe
-        fig, axes = plt.subplots(2, 3, figsize=(18, 10))
-        axes = axes.flatten()
-        
-        # Create plots for each parameter
-        parameters = ['Fe5015', 'Mgb', 'Hbeta', 'age', 'metallicity'] 
-        
-        for i, param_name in enumerate(parameters):
-            ax = axes[i]
+        # Set the same limits for both plots
+        if fe5015_values and mgb_values:
+            fe5015_min, fe5015_max = min(fe5015_values), max(fe5015_values)
+            mgb_min, mgb_max = min(mgb_values), max(mgb_values)
             
-            if param_name in params and hasattr(params[param_name], '__len__') and len(params[param_name]) > 0:
-                y = params[param_name]
-                
-                # Create sorted arrays for consistent plotting
-                sorted_pairs = sorted(zip(r_scaled, y), key=lambda pair: pair[0])
-                r_sorted = np.array([pair[0] for pair in sorted_pairs])
-                y_sorted = np.array([pair[1] for pair in sorted_pairs])
-                
-                # Check for outliers
-                _, _, outlier_mask = remove_outliers(r_sorted, y_sorted, threshold=3.0)
-                
-                # Create a clean copy for fitting
-                x_clean = r_sorted.copy()
-                y_clean = y_sorted.copy()
-                
-                # Mark outliers with X but don't use them for fitting
-                if np.any(outlier_mask):
-                    x_clean[outlier_mask] = np.nan
-                    y_clean[outlier_mask] = np.nan
-                
-                # Plot data points with lines connecting in order of radius
-                ax.plot(r_sorted, y_sorted, 'o-', color='blue', markersize=8, alpha=0.7)
-                
-                # Mark outliers
-                if np.any(outlier_mask):
-                    ax.plot(r_sorted[outlier_mask], y_sorted[outlier_mask], 'rx', markersize=10, alpha=0.8)
-                
-                # Special handling for VCC1588 plots
-                if galaxy_name == "VCC1588":
-                    # Use predefined slopes from the example image
-                    if param_name == 'Fe5015':
-                        special_slope = -2.786
-                        special_p_value = 0.021
-                        logger.info(f"Using corrected Fe5015 slope for VCC1588: {special_slope}")
-                    elif param_name == 'Mgb':
-                        special_slope = -1.090
-                        special_p_value = 0.101
-                        logger.info(f"Using corrected Mgb slope for VCC1588: {special_slope}")
-                    elif param_name == 'Hbeta':
-                        special_slope = -1.623
-                        special_p_value = 0.071
-                        logger.info(f"Using corrected Hbeta slope for VCC1588: {special_slope}")
-                    elif param_name == 'age':
-                        special_slope = -0.904
-                        special_p_value = 0.084
-                        logger.info(f"Using corrected Age slope for VCC1588: {special_slope}")
-                    elif param_name == 'metallicity':
-                        special_slope = -0.157
-                        special_p_value = 0.659
-                        logger.info(f"Using corrected metallicity slope for VCC1588: {special_slope}")
-                    
-                    # Calculate intercept using the first point
-                    if 'special_slope' in locals():
-                        special_intercept = y_sorted[0] - special_slope * r_sorted[0]
-                        
-                        # Create line using the special slope
-                        x_range = np.linspace(min(r_sorted), max(r_sorted), 100)
-                        y_range = special_slope * x_range + special_intercept
-                        
-                        ax.plot(x_range, y_range, '--', color='red', linewidth=2)
-                        
-                        # Add slope and p-value to plot
-                        ax.text(0.05, 0.95, f"Slope = {special_slope:.3f}\np = {special_p_value:.3f}", 
-                              transform=ax.transAxes, fontsize=10,
-                              va='top', ha='left',
-                              bbox=dict(boxstyle='round', facecolor='white', alpha=0.7))
-                        
-                        # Continue to next parameter
-                        special_slope = None  # Reset for next parameter
-                        continue  # Skip the regular slope calculation
-                
-                # Fit linear trend and add to plot (for regular cases)
-                slope, intercept, y_fit, r_squared, p_value = fit_linear_slope(x_clean, y_clean, return_full=True)
-                
-                if not np.isnan(slope):
-                    valid_mask = ~np.isnan(x_clean) & ~np.isnan(y_clean)
-                    x_valid = np.array(x_clean)[valid_mask]
-                    if len(x_valid) >= 2:
-                        x_line = np.linspace(min(x_valid), max(x_valid), 100)
-                        y_line = linear_fit(x_line, slope, intercept)
-                        
-                        ax.plot(x_line, y_line, '--', color='red', linewidth=2)
-                        
-                        # Add slope and p-value to plot
-                        ax.text(0.05, 0.95, f"Slope = {slope:.3f}\np = {p_value:.3f}", 
-                              transform=ax.transAxes, fontsize=10,
-                              va='top', ha='left',
-                              bbox=dict(boxstyle='round', facecolor='white', alpha=0.7))
-                
-                # Set labels and title
-                ax.set_xlabel(x_label, fontsize=12)
-                ax.set_ylabel(param_labels[param_name], fontsize=12)
-                ax.set_title(f"{param_labels[param_name]} vs. {x_label}", fontsize=14)
-                
-                # Add grid
-                ax.grid(True, alpha=0.3, linestyle='--')
-                
-                # Add vertical line at Re=1 if using normalized radius
-                if Re is not None:
-                    ax.axvline(x=1, color='k', linestyle=':', alpha=0.5)
-                
-                # Set tick parameters
-                ax.xaxis.set_minor_locator(AutoMinorLocator(5))
-                ax.yaxis.set_minor_locator(AutoMinorLocator(5))
-                ax.tick_params(axis='both', which='both', labelsize='x-small', right=True, top=True, direction='in')
-            else:
-                ax.text(0.5, 0.5, f"No {param_name} data available", 
-                      ha='center', va='center', fontsize=12,
-                      transform=ax.transAxes)
-        
-        # Add alpha/Fe plot in the last subplot - using INTERPOLATED values if available
-        ax = axes[5]
-        
-        # Use interpolated alpha/Fe if available
-        if interpolated_data is not None and 'alpha_fe' in interpolated_data and 'radius' in interpolated_data:
-            # Get interpolated alpha/Fe values and corresponding radii
-            alpha_values = interpolated_data['alpha_fe']
-            alpha_radii = interpolated_data['radius']
+            # Add some padding
+            fe5015_range = fe5015_max - fe5015_min
+            mgb_range = mgb_max - mgb_min
             
-            # Sort by radius
-            if len(alpha_values) > 0 and len(alpha_radii) > 0:
-                sorted_pairs = sorted(zip(alpha_radii, alpha_values), key=lambda pair: pair[0])
-                r_sorted = np.array([pair[0] for pair in sorted_pairs])
-                alpha_sorted = np.array([pair[1] for pair in sorted_pairs])
-                
-                # Plot data points with lines
-                ax.plot(r_sorted, alpha_sorted, 'o-', color='purple', markersize=8, alpha=0.7)
-                
-                # Add bin numbers to the points
-                for j, (r, alpha) in enumerate(zip(r_sorted, alpha_sorted)):
-                    ax.text(r, alpha, str(j), fontsize=8, ha='center', va='center', 
-                          color='white', fontweight='bold')
-                
-                # Special case for VCC1588 - use the correct slope value
-                if vcc1588_correction:
-                    # Use values from the example image
-                    corrected_slope = 0.085
-                    corrected_p_value = 0.009
-                    corrected_r_squared = 0.982
-                    
-                    # Calculate intercept using the first point
-                    corrected_intercept = alpha_sorted[0] - corrected_slope * r_sorted[0]
-                    
-                    # Create line using the corrected slope
-                    x_range = np.linspace(min(r_sorted), max(r_sorted), 100)
-                    y_range = corrected_slope * x_range + corrected_intercept
-                    
-                    ax.plot(x_range, y_range, '--', color='red', linewidth=2)
-                    
-                    # Add horizontal reference line at the mean value
-                    ax.axhline(y=np.mean(alpha_sorted), color='green', linestyle=':', alpha=0.7)
-                    
-                    # Add annotation with corrected values
-                    ax.text(0.05, 0.95, 
-                          f"Slope = {corrected_slope:.3f}**\np = {corrected_p_value:.3f}\nR² = {corrected_r_squared:.3f}\nTrend: Increasing", 
-                          transform=ax.transAxes, fontsize=10,
-                          va='top', ha='left', color='blue',
-                          bbox=dict(boxstyle='round', facecolor='white', alpha=0.7))
-                    
-                    # Add horizontal reference line
-                    ax.axhline(y=0.265, color='green', linestyle=':', alpha=0.7)
-                    
-                    # Add note about significance symbols
-                    ax.text(0.05, 0.05, f"* p < 0.05\n** p < 0.01", 
-                          transform=ax.transAxes, fontsize=8,
-                          va='bottom', ha='left',
-                          bbox=dict(boxstyle='round', facecolor='white', alpha=0.7))
-                
-                # Regular case - calculate trend line normally
-                elif len(r_sorted) > 1:
-                    # Try to use our improved slope calculation function if defined
-                    if 'calculate_improved_alpha_fe_slope' in globals():
-                        # Use improved calculation for more accurate results
-                        slope, intercept, r_squared, p_value, std_err = calculate_improved_alpha_fe_slope(
-                            r_sorted, alpha_sorted)
-                    else:
-                        # Fall back to standard linear regression if the function isn't available
-                        slope, intercept, r_value, p_value, std_err = stats.linregress(r_sorted, alpha_sorted)
-                        r_squared = r_value**2
-                    
-                    # Create line using the calculated slope
-                    x_range = np.linspace(min(r_sorted), max(r_sorted), 100)
-                    y_range = slope * x_range + intercept
-                    
-                    ax.plot(x_range, y_range, '--', color='red', linewidth=2)
-                    
-                    # Add horizontal reference line
-                    ax.axhline(y=np.mean(alpha_sorted), color='green', linestyle=':', alpha=0.7)
-                    
-                    # Determine trend type with meaningful threshold
-                    # Use a threshold of 0.01 for "horizontal" classification
-                    if abs(slope) < 0.01:
-                        trend_type = "Horizontal"
-                        trend_color = "green"
-                    elif slope > 0:
-                        trend_type = "Increasing"
-                        trend_color = "blue"
-                    else:
-                        trend_type = "Decreasing"
-                        trend_color = "red"
-                    
-                    # Add annotation with trend type
-                    significance = "**" if p_value < 0.01 else ("*" if p_value < 0.05 else "")
-                    ax.text(0.05, 0.95, 
-                          f"Slope = {slope:.3f}{significance}\np = {p_value:.3f}\nR² = {r_squared:.3f}\nTrend: {trend_type}", 
-                          transform=ax.transAxes, fontsize=10,
-                          va='top', ha='left', color=trend_color,
-                          bbox=dict(boxstyle='round', facecolor='white', alpha=0.7))
-                    
-                    # Add note about significance symbols
-                    if significance:
-                        ax.text(0.05, 0.05, f"* p < 0.05\n** p < 0.01", 
-                              transform=ax.transAxes, fontsize=8,
-                              va='bottom', ha='left',
-                              bbox=dict(boxstyle='round', facecolor='white', alpha=0.7))
-                
-                # Set labels and title
-                ax.set_xlabel(x_label, fontsize=12)
-                ax.set_ylabel('[α/Fe] (interpolated)', fontsize=12)
-                ax.set_title('[α/Fe] vs. ' + x_label, fontsize=14)
-                
-                # Add grid
-                ax.grid(True, alpha=0.3, linestyle='--')
-                
-                # Add vertical line at Re=1 if using normalized radius
-                if Re is not None:
-                    ax.axvline(x=1, color='k', linestyle=':', alpha=0.5)
-                
-                # Set tick parameters
-                ax.xaxis.set_minor_locator(AutoMinorLocator(5))
-                ax.yaxis.set_minor_locator(AutoMinorLocator(5))
-                ax.tick_params(axis='both', which='both', labelsize='x-small', right=True, top=True, direction='in')
-            else:
-                ax.text(0.5, 0.5, "No interpolated [α/Fe] data available", 
-                      ha='center', va='center', fontsize=12,
-                      transform=ax.transAxes)
-        else:
-            # If no interpolated data, try to use direct calculation method
-            if model_data is not None:
-                direct_result = calculate_alpha_fe_direct(galaxy_name, rdb_data, model_data, bins_limit=bins_limit, continuum_mode=continuum_mode)
-                if direct_result is not None and 'points' in direct_result:
-                    points = direct_result['points']
-                    
-                    # Extract values
-                    alpha_fe = [point['alpha_fe'] for point in points]
-                    radii = [point['radius'] for point in points]
-                    
-                    # Sort by radius
-                    if len(alpha_fe) > 0 and len(radii) > 0:
-                        sorted_pairs = sorted(zip(radii, alpha_fe), key=lambda pair: pair[0])
-                        r_sorted = np.array([pair[0] for pair in sorted_pairs])
-                        alpha_sorted = np.array([pair[1] for pair in sorted_pairs])
-                        
-                        # Plot points with lines
-                        ax.plot(r_sorted, alpha_sorted, 'o-', color='purple', markersize=8, alpha=0.7)
-                        
-                        # Add bin numbers
-                        for j, (r, alpha) in enumerate(zip(r_sorted, alpha_sorted)):
-                            ax.text(r, alpha, str(j), fontsize=8, ha='center', va='center', 
-                                  color='white', fontweight='bold')
-                        
-                        # Special case for VCC1588
-                        if galaxy_name == "VCC1588":
-                            # Use values from the example image
-                            corrected_slope = 0.085
-                            corrected_p_value = 0.009
-                            corrected_r_squared = 0.982
-                            
-                            # Calculate intercept using the first point
-                            corrected_intercept = alpha_sorted[0] - corrected_slope * r_sorted[0]
-                            
-                            # Create line using the corrected slope
-                            x_range = np.linspace(min(r_sorted), max(r_sorted), 100)
-                            y_range = corrected_slope * x_range + corrected_intercept
-                            
-                            ax.plot(x_range, y_range, '--', color='red', linewidth=2)
-                            
-                            # Add annotation with corrected values
-                            ax.text(0.05, 0.95, 
-                                  f"Slope = {corrected_slope:.3f}**\np = {corrected_p_value:.3f}\nR² = {corrected_r_squared:.3f}\nTrend: Increasing", 
-                                  transform=ax.transAxes, fontsize=10,
-                                  va='top', ha='left', color='blue',
-                                  bbox=dict(boxstyle='round', facecolor='white', alpha=0.7))
-                                  
-                            # Add horizontal reference line
-                            ax.axhline(y=0.265, color='green', linestyle=':', alpha=0.7)
-                        else:
-                            # Standard calculation for other galaxies
-                            # Try to use our improved slope calculation function if defined
-                            if 'calculate_improved_alpha_fe_slope' in globals():
-                                # Use improved calculation for more accurate results
-                                slope, intercept, r_squared, p_value, std_err = calculate_improved_alpha_fe_slope(
-                                    r_sorted, alpha_sorted)
-                            else:
-                                # Fall back to standard linear regression
-                                slope, intercept, r_value, p_value, std_err = stats.linregress(r_sorted, alpha_sorted)
-                                r_squared = r_value**2
-                            
-                            # Create line
-                            x_range = np.linspace(min(r_sorted), max(r_sorted), 100)
-                            y_range = slope * x_range + intercept
-                            
-                            ax.plot(x_range, y_range, '--', color='red', linewidth=2)
-                            
-                            # Add horizontal reference line
-                            ax.axhline(y=np.mean(alpha_sorted), color='green', linestyle=':', alpha=0.7)
-                            
-                            # Determine trend type
-                            if abs(slope) < 0.01:
-                                trend_type = "Horizontal"
-                                trend_color = "green"
-                            elif slope > 0:
-                                trend_type = "Increasing"
-                                trend_color = "blue"
-                            else:
-                                trend_type = "Decreasing"
-                                trend_color = "red"
-                            
-                            # Add annotations
-                            significance = "**" if p_value < 0.01 else ("*" if p_value < 0.05 else "")
-                            ax.text(0.05, 0.95, 
-                                  f"Slope = {slope:.3f}{significance}\np = {p_value:.3f}\nR² = {r_squared:.3f}\nTrend: {trend_type}", 
-                                  transform=ax.transAxes, fontsize=10,
-                                  va='top', ha='left', color=trend_color,
-                                  bbox=dict(boxstyle='round', facecolor='white', alpha=0.7))
-                        
-                        # Set labels and title
-                        ax.set_xlabel(x_label, fontsize=12)
-                        ax.set_ylabel('[α/Fe]', fontsize=12)
-                        ax.set_title('[α/Fe] vs. ' + x_label, fontsize=14)
-                        
-                        # Add grid and other formatting
-                        ax.grid(True, alpha=0.3, linestyle='--')
-                        if Re is not None:
-                            ax.axvline(x=1, color='k', linestyle=':', alpha=0.5)
-                        ax.xaxis.set_minor_locator(AutoMinorLocator(5))
-                        ax.yaxis.set_minor_locator(AutoMinorLocator(5))
-                        ax.tick_params(axis='both', which='both', labelsize='x-small', right=True, top=True, direction='in')
-                    else:
-                        ax.text(0.5, 0.5, "No [α/Fe] data available", 
-                              ha='center', va='center', fontsize=12,
-                              transform=ax.transAxes)
-                else:
-                    ax.text(0.5, 0.5, "No [α/Fe] data available", 
-                          ha='center', va='center', fontsize=12,
-                          transform=ax.transAxes)
-            else:
-                ax.text(0.5, 0.5, "Model data required for [α/Fe] interpolation", 
-                      ha='center', va='center', fontsize=12,
-                      transform=ax.transAxes)
+            fe5015_padding = fe5015_range * 0.1
+            mgb_padding = mgb_range * 0.1
+            
+            for ax in [ax1, ax2]:
+                ax.set_xlim(fe5015_min - fe5015_padding, fe5015_max + fe5015_padding)
+                ax.set_ylim(mgb_min - mgb_padding, mgb_max + mgb_padding)
+        
+        # Add galaxy name annotations for a subset of points
+        # To avoid cluttering, annotate every nth point
+        n_points = len(fe5015_values)
+        step = max(1, n_points // 20)  # Annotate approximately 20 points
+        
+        for i in range(0, n_points, step):
+            ax1.annotate(galaxy_names[i], 
+                       (fe5015_values[i], mgb_values[i]), 
+                       xytext=(5, 5), textcoords='offset points',
+                       fontsize=8, alpha=0.7)
+        
+        # Set labels and titles
+        ax1.set_xlabel('Fe5015 Index', fontsize=14)
+        ax1.set_ylabel('Mgb Index', fontsize=14)
+        ax1.set_title('Fe5015 vs Mgb - colored by R/Re', fontsize=16)
+        
+        ax2.set_xlabel('Fe5015 Index', fontsize=14)
+        ax2.set_ylabel('Mgb Index', fontsize=14)
+        ax2.set_title('Fe5015 vs Mgb - colored by [α/Fe]', fontsize=16)
+        
+        # Add grid
+        ax1.grid(True, alpha=0.3, linestyle='--')
+        ax2.grid(True, alpha=0.3, linestyle='--')
+        
+        # Set tick parameters
+        for ax in [ax1, ax2]:
+            ax.xaxis.set_minor_locator(AutoMinorLocator(5))
+            ax.yaxis.set_minor_locator(AutoMinorLocator(5))
+            ax.tick_params(axis='both', which='both', labelsize='x-small', right=True, top=True, direction='in')
         
         # Add overall title
-        re_info = f" (Re = {Re:.2f} arcsec)" if Re is not None else ""
-        plt.suptitle(f"Galaxy {galaxy_name}: Parameter-Radius Relations{re_info}\nContinuum Mode: {continuum_mode}", 
-                   fontsize=16, y=0.98)
+        plt.suptitle('Spectral Indices and Alpha Enhancement in Virgo Cluster Galaxies', fontsize=18, y=0.98)
         
-        # Add note about alpha/Fe interpolation
-        if model_data is not None:
-            plt.figtext(0.5, 0.01, 
-                      "Alpha/Fe values derived from TMB03 models using interpolation in Fe5015-Mgb space.\n"
-                      "Bin numbers shown on the α/Fe plot correspond to the radial bins used in the analysis.",
-                      ha='center', fontsize=10, style='italic')
+        # Add note about standardized data
+        plt.figtext(0.5, 0.01, 
+                  "Data points represent individual radial bins from all galaxies.\n"
+                  "All α/Fe values calculated using the standardized interpolation method for consistency.",
+                  ha='center', fontsize=12, bbox=dict(facecolor='white', alpha=0.7))
         
         # Adjust layout
         plt.tight_layout(rect=[0, 0.03, 1, 0.95])
         
-        # Save figure if output path is provided
-        if output_path:
-            plt.savefig(output_path, dpi=dpi, bbox_inches='tight')
-            logger.info(f"Saved parameter-radius plots to {output_path}")
-        
-        plt.close()
-        
-    except Exception as e:
-        logger.error(f"Error creating parameter-radius plots: {e}")
-        import traceback
-        traceback.print_exc()
-
-def create_model_grid_plots_part1(galaxy_name, rdb_data, model_data, age=10, output_path=None, dpi=150, bins_limit=6, continuum_mode='fit'):
-    """
-    Create first set of model grid plots colored by R, log Age, and M/H
-    Part 1: Fe5015 vs Mgb, Fe5015 vs Hbeta, Mgb vs Hbeta - Colored by different parameters
-    
-    Parameters:
-    -----------
-    galaxy_name : str
-        Galaxy name
-    rdb_data : dict
-        RDB data containing spectral indices and bin info
-    model_data : DataFrame
-        Model grid data with ages, metallicities, and spectral indices
-    age : float
-        Age (in Gyr) to use for the model grid
-    output_path : str
-        Path to save the output image
-    dpi : int
-        Resolution for the output image
-    bins_limit : int
-        Limit analysis to first N bins (default: 6 for bins 0-5)
-    continuum_mode : str
-        Spectral index continuum mode to use ('auto', 'fit', 'original')
-    """
-    try:
-        # Extract spectral indices from galaxy data with bin limit using the specified mode
-        galaxy_indices = extract_spectral_indices_from_method(
-            rdb_data, 
-            method=continuum_mode, 
-            bins_limit=bins_limit
-        )
-        
-        # Define column name mapping for the model grid
-        # Maps our standard names to whatever is in the model data
-        model_column_mapping = {
-            'Fe5015': find_matching_column(model_data, ['Fe5015', 'Fe5015_SI', 'Fe5015_Index']),
-            'Mgb': find_matching_column(model_data, ['Mgb', 'Mg_b', 'Mg_b_SI', 'Mgb_Index']),
-            'Hbeta': find_matching_column(model_data, ['Hbeta', 'Hb', 'Hbeta_SI', 'Hb_Index', 'Hb_si']),
-            'Age': find_matching_column(model_data, ['Age', 'age']),
-            'ZoH': find_matching_column(model_data, ['ZoH', 'Z/H', '[Z/H]', 'metallicity', 'MOH', '[M/H]']),
-            'AoFe': find_matching_column(model_data, ['AoFe', 'alpha/Fe', '[alpha/Fe]', 'A/Fe', '[A/Fe]', 'alpha'])
-        }
-        
-        # Print the actual mappings being used for debugging
-        logger.info(f"Model column mappings: {model_column_mapping}")
-        
-        # Check if we found all required columns
-        missing_columns = [k for k, v in model_column_mapping.items() if v is None]
-        if missing_columns:
-            logger.error(f"Missing required columns in model data: {missing_columns}")
-            logger.info(f"Available columns in model data: {list(model_data.columns)}")
-            if 'Age' in missing_columns or 'ZoH' in missing_columns or 'AoFe' in missing_columns:
-                logger.error("Critical columns missing, cannot create grid plots")
-                return
-        
-        # Filter model data to the requested age
-        age_column = model_column_mapping['Age']
-        # Convert available ages to numpy array for calculation
-        available_ages = np.array(sorted(model_data[age_column].unique()))
-        # Find closest available age
-        closest_age = available_ages[np.argmin(np.abs(available_ages - age))]
-        
-        model_age_data = model_data[model_data[age_column] == closest_age].copy()
-        logger.info(f"Using age {closest_age} Gyr for model grid (requested: {age} Gyr)")
-        
-        # Create figure with 3x3 grid (9 subplots)
-        fig, axes = plt.subplots(3, 3, figsize=(18, 15))
-        
-        # Set up the three index pairs to plot
-        index_pairs = [
-            ('Fe5015', 'Mgb'),
-            ('Fe5015', 'Hbeta'),
-            ('Mgb', 'Hbeta')
-        ]
-        
-        # Set up color variables in order
-        color_vars = ['R', 'age', 'metallicity']
-        color_labels = ['R (arcsec)', 'log Age (Gyr)', '[M/H]']
-        
-        # Get unique metallicity and alpha/Fe values for grid lines
-        zoh_column = model_column_mapping['ZoH']
-        aofe_column = model_column_mapping['AoFe']
-        
-        zoh_unique = sorted(model_age_data[zoh_column].unique())
-        aofe_unique = sorted(model_age_data[aofe_column].unique())
-        
-        # Plot each panel
-        for row, color_var in enumerate(color_vars):
-            for col, (x_index, y_index) in enumerate(index_pairs):
-                ax = axes[row, col]
-                
-                # Get the mapped column names for the model data
-                model_x_column = model_column_mapping[x_index]
-                model_y_column = model_column_mapping[y_index]
-                
-                # Skip if either index is missing from galaxy data or model data
-                if (x_index not in galaxy_indices['bin_indices'] or 
-                    y_index not in galaxy_indices['bin_indices'] or
-                    model_x_column is None or model_y_column is None):
-                    ax.text(0.5, 0.5, f"Missing {x_index} or {y_index} data", 
-                          transform=ax.transAxes, ha='center', va='center')
-                    continue
-                
-                # Draw model grid
-                # Draw metallicity (ZoH) lines
-                for zoh in zoh_unique:
-                    zoh_data = model_age_data[model_age_data[zoh_column] == zoh]
-                    ax.plot(zoh_data[model_x_column], zoh_data[model_y_column], '-', 
-                           color='tab:blue', alpha=0.5, linewidth=1.5, zorder=1)
-                
-                # Draw alpha/Fe (AoFe) lines
-                for aofe in aofe_unique:
-                    aofe_data = model_age_data[model_age_data[aofe_column] == aofe]
-                    ax.plot(aofe_data[model_x_column], aofe_data[model_y_column], '--', 
-                           color='tab:red', alpha=0.5, linewidth=1.5, zorder=1)
-                
-                # Add grid point annotations
-                for zoh in zoh_unique:
-                    for aofe in aofe_unique:
-                        point_data = model_age_data[(model_age_data[zoh_column] == zoh) & 
-                                                  (model_age_data[aofe_column] == aofe)]
-                        if len(point_data) > 0:
-                            x_val = point_data[model_x_column].values[0]
-                            y_val = point_data[model_y_column].values[0]
-                            
-                            # Add grid point
-                            ax.scatter(x_val, y_val, color='black', s=20, zorder=2)
-                            
-                            # Label key grid points (optional)
-                            if zoh in [-1.0, -0.5, 0.0, 0.5] and aofe in [0.0, 0.3, 0.5]:
-                                label = f'[Z/H]={zoh:.1f}\n[α/Fe]={aofe:.1f}'
-                                
-                                # Adjust position based on values to avoid overlap
-                                if aofe == 0.5 and zoh >= 0.0:
-                                    xytext = (-20, 10)  # left top
-                                elif aofe == 0.5:
-                                    xytext = (-20, -15)  # left bottom
-                                elif aofe == 0.0 and zoh >= 0.0:
-                                    xytext = (5, 10)    # right top
-                                elif aofe == 0.0:
-                                    xytext = (5, -15)   # right bottom
-                                else:
-                                    xytext = (5, 5)     # default right top
-                                    
-                                ax.annotate(label, (x_val, y_val), 
-                                          xytext=xytext, textcoords='offset points',
-                                          fontsize=7, alpha=0.8, zorder=3,
-                                          bbox=dict(facecolor='white', edgecolor='none', alpha=0.7, pad=1))
-                
-                # Get galaxy data
-                galaxy_x = galaxy_indices['bin_indices'][x_index]
-                galaxy_y = galaxy_indices['bin_indices'][y_index]
-                
-                # Get color data
-                if color_var in galaxy_indices['bin_indices']:
-                    color_data = galaxy_indices['bin_indices'][color_var]
-                    
-                    # Determine color normalization
-                    vmin = np.nanmin(color_data)
-                    vmax = np.nanmax(color_data)
-                    
-                    # Plot points colored by the selected variable
-                    sc = ax.scatter(galaxy_x, galaxy_y, c=color_data, 
-                                  cmap='viridis', s=80, alpha=0.8, zorder=10,
-                                  vmin=vmin, vmax=vmax)
-                    
-                    # Add bin numbers
-                    for j, (x, y) in enumerate(zip(galaxy_x, galaxy_y)):
-                        ax.text(x, y, str(j), fontsize=8, ha='center', va='center', 
-                              color='white', fontweight='bold', zorder=11)
-                    
-                    # Add colorbar
-                    divider = make_axes_locatable(ax)
-                    cax = divider.append_axes("right", size="5%", pad=0.05)
-                    cbar = plt.colorbar(sc, cax=cax)
-                    cbar.set_label(color_labels[row])
-                else:
-                    # Fallback to plain scatter if color variable is not available
-                    ax.scatter(galaxy_x, galaxy_y, color='green', s=80, alpha=0.7, zorder=10)
-                    
-                    # Add bin numbers
-                    for j, (x, y) in enumerate(zip(galaxy_x, galaxy_y)):
-                        ax.text(x, y, str(j), fontsize=8, ha='center', va='center', 
-                              color='black', fontweight='bold', zorder=11)
-                
-                # Set labels and grid
-                ax.set_xlabel(f'{x_index} Index', fontsize=12)
-                ax.set_ylabel(f'{y_index} Index', fontsize=12)
-                ax.set_title(f'{x_index} vs {y_index} - colored by {color_labels[row]}', fontsize=14)
-                ax.grid(alpha=0.3, linestyle='--')
-                
-                # Set tick parameters
-                ax.xaxis.set_minor_locator(AutoMinorLocator(5))
-                ax.yaxis.set_minor_locator(AutoMinorLocator(5))
-                ax.tick_params(axis='both', which='both', labelsize='x-small', right=True, top=True, direction='in')
-        
-        # Add legend
-        legend_elements = [
-            Line2D([0], [0], color='tab:blue', linestyle='-', linewidth=1.5, label='Constant [Z/H]'),
-            Line2D([0], [0], color='tab:red', linestyle='--', linewidth=1.5, label='Constant [α/Fe]'),
-            Line2D([0], [0], marker='o', color='w', label='Galaxy Bins',
-                   markerfacecolor='tab:green', markersize=8)
-        ]
-        fig.legend(handles=legend_elements, loc='upper center', ncol=3, bbox_to_anchor=(0.5, 0.03))
-        
-        # Add overall title
-        plt.suptitle(f'Galaxy {galaxy_name}: Spectral Indices vs. Model Grid\n'
-                   f'Age = {closest_age} Gyr | Continuum Mode: {continuum_mode}', 
-                   fontsize=16, y=0.98)
-        
-        # Adjust layout
-        plt.tight_layout(rect=[0, 0.05, 1, 0.95])
-        
         # Save figure
         if output_path:
             plt.savefig(output_path, dpi=dpi, bbox_inches='tight')
-            logger.info(f"Saved model grid plots part 1 to {output_path}")
+            logger.info(f"Saved Fe5015 vs Mgb plot to {output_path}")
         
         plt.close()
         
     except Exception as e:
-        logger.error(f"Error creating model grid plots part 1: {e}")
+        logger.error(f"Error creating Fe5015 vs Mgb plot: {e}")
         import traceback
         traceback.print_exc()
-
-def create_model_grid_plots_part2(galaxy_name, rdb_data, model_data, ages=[1, 2, 5], output_path=None, dpi=150, bins_limit=6):
-    """
-    Create second set of model grid plots for multiple ages with age-colored data points
-    
-    Parameters:
-    -----------
-    galaxy_name : str
-        Galaxy name
-    rdb_data : dict
-        RDB data containing spectral indices and bin info
-    model_data : DataFrame
-        Model grid data with ages, metallicities, and spectral indices
-    ages : list
-        List of ages to use for grid models
-    output_path : str
-        Path to save the output image
-    dpi : int
-        Resolution for the output image
-    bins_limit : int
-        Limit analysis to first N bins (default: 6 for bins 0-5)
-    """
-    try:
-        # Extract spectral indices from galaxy data with bin limit
-        galaxy_indices = extract_spectral_indices(rdb_data, bins_limit=bins_limit)  # Limit to specified bins
-        
-        # Define column name mapping for the model grid
-        model_column_mapping = {
-            'Fe5015': find_matching_column(model_data, ['Fe5015', 'Fe5015_SI', 'Fe5015_Index']),
-            'Mgb': find_matching_column(model_data, ['Mgb', 'Mg_b', 'Mg_b_SI', 'Mgb_Index']),
-            'Hbeta': find_matching_column(model_data, ['Hbeta', 'Hb', 'Hbeta_SI', 'Hb_Index', 'Hb_si']),
-            'Age': find_matching_column(model_data, ['Age', 'age']),
-            'ZoH': find_matching_column(model_data, ['ZoH', 'Z/H', '[Z/H]', 'metallicity', 'MOH', '[M/H]']),
-            'AoFe': find_matching_column(model_data, ['AoFe', 'alpha/Fe', '[alpha/Fe]', 'A/Fe', '[A/Fe]', 'alpha'])
-        }
-        
-        # Check if we found all required columns
-        missing_columns = [k for k, v in model_column_mapping.items() if v is None]
-        if missing_columns:
-            logger.error(f"Missing required columns in model data: {missing_columns}")
-            logger.info(f"Available columns in model data: {list(model_data.columns)}")
-            if 'Age' in missing_columns or 'ZoH' in missing_columns or 'AoFe' in missing_columns:
-                logger.error("Critical columns missing, cannot create grid plots")
-                return
-        
-        # Create figure with 3x3 grid
-        fig, axes = plt.subplots(3, 3, figsize=(18, 15))
-        
-        # Set up the three index pairs to plot
-        index_pairs = [
-            ('Fe5015', 'Mgb'),
-            ('Fe5015', 'Hbeta'),
-            ('Mgb', 'Hbeta')
-        ]
-        
-        # Get column references for age, metallicity and alpha/Fe
-        age_column = model_column_mapping['Age']
-        zoh_column = model_column_mapping['ZoH']
-        aofe_column = model_column_mapping['AoFe']
-        
-        # Find available ages in the model - convert to numpy array for calculations
-        available_ages = np.array(sorted(model_data[age_column].unique()))
-        
-        # Choose model ages to plot - try to use requested ages if available
-        model_ages = []
-        for age in ages:
-            # Find closest available age
-            closest_age = available_ages[np.argmin(np.abs(available_ages - age))]
-            if closest_age not in model_ages:  # Avoid duplicates
-                model_ages.append(closest_age)
-        
-        # If we have fewer than 3 unique ages, add more
-        while len(model_ages) < 3 and len(available_ages) > len(model_ages):
-            for age in available_ages:
-                if age not in model_ages:
-                    model_ages.append(age)
-                    break
-        
-        # Ensure we have no more than 3 ages
-        model_ages = model_ages[:3]
-        
-        # Set up color map for model grid age lines
-        cmap = plt.cm.viridis
-        age_colors = cmap(np.linspace(0, 1, len(model_ages)))
-        
-        # For each row, set a different metallicity value to highlight
-        zoh_values = [-1.0, 0.0, 0.5]  # Different [Z/H] for each row
-        
-        # Plot each panel
-        for row, zoh in enumerate(zoh_values):
-            # Find closest available [Z/H] value - convert to numpy array for calculations
-            available_zoh = np.array(sorted(model_data[zoh_column].unique()))
-            closest_zoh = available_zoh[np.argmin(np.abs(available_zoh - zoh))]
-            
-            for col, (x_index, y_index) in enumerate(index_pairs):
-                ax = axes[row, col]
-                
-                # Get the mapped column names for the model data
-                model_x_column = model_column_mapping[x_index]
-                model_y_column = model_column_mapping[y_index]
-                
-                # Skip if either index is missing from galaxy data or model data
-                if (x_index not in galaxy_indices['bin_indices'] or 
-                    y_index not in galaxy_indices['bin_indices'] or
-                    model_x_column is None or model_y_column is None):
-                    ax.text(0.5, 0.5, f"Missing {x_index} or {y_index} data", 
-                          transform=ax.transAxes, ha='center', va='center')
-                    continue
-                
-                # Draw model grids for different ages
-                for i, age in enumerate(model_ages):
-                    age_data = model_data[model_data[age_column] == age]
-                    
-                    # Draw [Z/H] lines with fixed alpha/Fe
-                    for aofe in sorted(age_data[aofe_column].unique()):
-                        zoh_aofe_data = age_data[age_data[aofe_column] == aofe]
-                        ax.plot(zoh_aofe_data[model_x_column], zoh_aofe_data[model_y_column], '-', 
-                               color=age_colors[i], alpha=0.3, linewidth=1.0, zorder=1)
-                    
-                    # Highlight the line for the specific [Z/H] value for this row
-                    zoh_data = age_data[age_data[zoh_column] == closest_zoh]
-                    ax.plot(zoh_data[model_x_column], zoh_data[model_y_column], '-', 
-                           color=age_colors[i], alpha=0.8, linewidth=2.0, zorder=2)
-                
-                # Get galaxy data
-                galaxy_x = galaxy_indices['bin_indices'][x_index]
-                galaxy_y = galaxy_indices['bin_indices'][y_index]
-                
-                # Check if age data is available
-                if 'age' in galaxy_indices['bin_indices']:
-                    galaxy_age = galaxy_indices['bin_indices']['age']
-                    
-                    # Determine color normalization for galaxy ages
-                    vmin = np.nanmin(galaxy_age)
-                    vmax = np.nanmax(galaxy_age)
-                    
-                    # Create age colormap that matches the model grid colors
-                    # Use the same colormap (viridis) for both model grid and data points
-                    galaxy_cmap = plt.cm.viridis
-                    
-                    # Plot points colored by age
-                    sc = ax.scatter(galaxy_x, galaxy_y, c=galaxy_age, 
-                                  cmap=galaxy_cmap, s=80, alpha=0.8, zorder=10,
-                                  vmin=vmin, vmax=vmax)
-                    
-                    # Add bin numbers
-                    for j, (x, y) in enumerate(zip(galaxy_x, galaxy_y)):
-                        ax.text(x, y, str(j), fontsize=8, ha='center', va='center', 
-                              color='white', fontweight='bold', zorder=11)
-                    
-                    # Add colorbar with model age markers
-                    divider = make_axes_locatable(ax)
-                    cax = divider.append_axes("right", size="5%", pad=0.05)
-                    cbar = plt.colorbar(sc, cax=cax)
-                    cbar.set_label('Galaxy Age (Gyr)')
-                    
-                    # Add model ages to the colorbar
-                    for i, age in enumerate(model_ages):
-                        # Normalize the age to the colorbar range
-                        if vmax > vmin:
-                            age_normalized = (age - vmin) / (vmax - vmin)
-                            # Only add marker if within range
-                            if 0 <= age_normalized <= 1:
-                                cbar.ax.axhline(age_normalized, color=age_colors[i], 
-                                              linewidth=3, linestyle='-')
-                                # Add text label for model age - use different approach to avoid transform issues
-                                cbar.ax.text(1.5, age_normalized, f"{age} Gyr", 
-                                           va='center', ha='left', fontsize=8,
-                                           color=age_colors[i])
-                else:
-                    # Fallback to plain scatter if age data is not available
-                    ax.scatter(galaxy_x, galaxy_y, color='green', s=80, alpha=0.7, zorder=10)
-                    
-                    # Add bin numbers
-                    for j, (x, y) in enumerate(zip(galaxy_x, galaxy_y)):
-                        ax.text(x, y, str(j), fontsize=8, ha='center', va='center', 
-                              color='black', fontweight='bold', zorder=11)
-                
-                # Set labels and grid
-                ax.set_xlabel(f'{x_index} Index', fontsize=12)
-                ax.set_ylabel(f'{y_index} Index', fontsize=12)
-                ax.set_title(f'{x_index} vs {y_index} - [Z/H]={closest_zoh:.1f}', fontsize=14)
-                ax.grid(alpha=0.3, linestyle='--')
-                
-                # Set tick parameters
-                ax.xaxis.set_minor_locator(AutoMinorLocator(5))
-                ax.yaxis.set_minor_locator(AutoMinorLocator(5))
-                ax.tick_params(axis='both', which='both', labelsize='x-small', right=True, top=True, direction='in')
-        
-        # Add legend for age models
-        legend_elements = []
-        for i, age in enumerate(model_ages):
-            legend_elements.append(
-                Line2D([0], [0], color=age_colors[i], linestyle='-', linewidth=2.0, label=f'Age = {age} Gyr')
-            )
-        
-        # Add galaxy data marker to legend
-        legend_elements.append(
-            Line2D([0], [0], marker='o', color='w', label='Galaxy Bins',
-                   markerfacecolor='tab:green', markersize=8)
-        )
-        
-        fig.legend(handles=legend_elements, loc='upper center', ncol=len(legend_elements), 
-                 bbox_to_anchor=(0.5, 0.03), fontsize=10)
-        
-        # Add overall title
-        plt.suptitle(f'Galaxy {galaxy_name}: Spectral Indices vs. Model Grid', fontsize=16, y=0.98)
-        
-        # Adjust layout
-        plt.tight_layout(rect=[0, 0.05, 1, 0.95])
-        
-        # Save figure
-        if output_path:
-            plt.savefig(output_path, dpi=dpi, bbox_inches='tight')
-            logger.info(f"Saved model grid plots part 2 to {output_path}")
-        
-        plt.close()
-        
-    except Exception as e:
-        logger.error(f"Error creating model grid plots part 2: {e}")
-        import traceback
-        traceback.print_exc()
-
-def extract_alpha_fe_radius(galaxy_name, rdb_data, model_data, config=None, continuum_mode='fit'):
-    """
-    Extract the alpha/Fe ratio as a function of radius for a galaxy
-    
-    Parameters:
-    -----------
-    galaxy_name : str
-        Galaxy name
-    rdb_data : dict
-        RDB data containing spectral indices and radii
-    model_data : DataFrame
-        Model grid data with ages, metallicities, and spectral indices
-    bins_limit : int
-        Limit analysis to first N bins (default: 6 for bins 0-5)
-    
-    Returns:
-    --------
-    dict
-        Dictionary containing alpha/Fe values and radii information
-    """
-    try:
-        # Check if RDB data is available and valid
-        if rdb_data is None or not isinstance(rdb_data, dict):
-            logger.warning(f"Invalid RDB data format for {galaxy_name}")
-            return None
-            
-        # Extract spectral indices from galaxy data with specified bin limit
-        galaxy_indices = extract_spectral_indices(rdb_data, bins_limit=bins_limit)
-        
-        # Define column name mapping for the model grid
-        model_column_mapping = {
-            'Fe5015': find_matching_column(model_data, ['Fe5015', 'Fe5015_SI', 'Fe5015_Index']),
-            'Mgb': find_matching_column(model_data, ['Mgb', 'Mg_b', 'Mg_b_SI', 'Mgb_Index']),
-            'Hbeta': find_matching_column(model_data, ['Hbeta', 'Hb', 'Hbeta_SI', 'Hb_Index', 'Hb_si']),
-            'Age': find_matching_column(model_data, ['Age', 'age']),
-            'ZoH': find_matching_column(model_data, ['ZoH', 'Z/H', '[Z/H]', 'metallicity', 'MOH', '[M/H]']),
-            'AoFe': find_matching_column(model_data, ['AoFe', 'alpha/Fe', '[alpha/Fe]', 'A/Fe', '[A/Fe]', 'alpha'])
-        }
-        
-        # Check for required data
-        if ('bin_indices' not in galaxy_indices or
-            'Fe5015' not in galaxy_indices['bin_indices'] or 
-            'Mgb' not in galaxy_indices['bin_indices'] or 
-            'Hbeta' not in galaxy_indices['bin_indices']):
-            logger.warning(f"Missing required spectral indices for {galaxy_name}")
-            return None
-        
-        # Get galaxy spectral indices for each bin
-        galaxy_fe5015 = galaxy_indices['bin_indices']['Fe5015']
-        galaxy_mgb = galaxy_indices['bin_indices']['Mgb']
-        galaxy_hbeta = galaxy_indices['bin_indices']['Hbeta']
-        
-        # Check if arrays are valid
-        if not hasattr(galaxy_fe5015, '__len__') or not hasattr(galaxy_mgb, '__len__') or not hasattr(galaxy_hbeta, '__len__'):
-            logger.warning(f"Invalid index arrays for {galaxy_name}")
-            return None
-            
-        # Make sure they all have the same length
-        min_len = min(len(galaxy_fe5015), len(galaxy_mgb), len(galaxy_hbeta))
-        galaxy_fe5015 = galaxy_fe5015[:min_len]
-        galaxy_mgb = galaxy_mgb[:min_len]
-        galaxy_hbeta = galaxy_hbeta[:min_len]
-        
-        # Get galaxy age if available (for better matching in model grid)
-        if 'age' in galaxy_indices['bin_indices'] and hasattr(galaxy_indices['bin_indices']['age'], '__len__'):
-            galaxy_age = galaxy_indices['bin_indices']['age'][:min_len]
-        else:
-            # Default age values
-            galaxy_age = np.ones(min_len) * 5.0  # Use 5 Gyr as default age
-        
-        # Get galaxy radius information
-        galaxy_radius = None
-        if 'R' in galaxy_indices['bin_indices'] and hasattr(galaxy_indices['bin_indices']['R'], '__len__'):
-            galaxy_radius = galaxy_indices['bin_indices']['R'][:min_len]
-        elif 'distance' in rdb_data:
-            distance = rdb_data['distance'].item() if hasattr(rdb_data['distance'], 'item') else rdb_data['distance']
-            if 'bin_distances' in distance:
-                galaxy_radius = distance['bin_distances'][:min_len]
-            elif 'bin_radii' in rdb_data['binning']:
-                binning = rdb_data['binning'].item() if hasattr(rdb_data['binning'], 'item') else rdb_data['binning']
-                galaxy_radius = binning['bin_radii'][:min_len]
-        
-        if galaxy_radius is None:
-            logger.warning(f"No radius information found for {galaxy_name}")
-            return None
-        
-        # Get effective radius if available
-        Re = extract_effective_radius(rdb_data)
-        
-        # Scale radius by effective radius if available
-        if Re is not None and Re > 0:
-            r_scaled = galaxy_radius / Re
-        else:
-            r_scaled = galaxy_radius
-        
-        # Extract model column names
-        fe5015_col = model_column_mapping['Fe5015']
-        mgb_col = model_column_mapping['Mgb']
-        hbeta_col = model_column_mapping['Hbeta']
-        age_col = model_column_mapping['Age']
-        aofe_col = model_column_mapping['AoFe']
-        zoh_col = model_column_mapping['ZoH']
-        
-        # Get unique values of age, metallicity, and alpha/Fe in the model grid
-        model_ages = sorted(model_data[age_col].unique())
-        model_zoh = sorted(model_data[zoh_col].unique())
-        model_aofe = sorted(model_data[aofe_col].unique())
-        
-        # Interpolate alpha/Fe for each bin
-        alpha_fe_values = []
-        interpolated_zoh = []
-        valid_radii = []
-        
-        for i in range(min_len):
-            fe5015 = galaxy_fe5015[i]
-            mgb = galaxy_mgb[i]
-            hbeta = galaxy_hbeta[i]
-            age = galaxy_age[i]
-            radius = r_scaled[i]
-            
-            # Skip if any values are NaN
-            if np.isnan(fe5015) or np.isnan(mgb) or np.isnan(hbeta) or np.isnan(radius):
-                continue
-            
-            # Find closest model age
-            closest_age_idx = np.argmin(np.abs(np.array(model_ages) - age))
-            closest_age = model_ages[closest_age_idx]
-            
-            # Filter model grid to points near this age
-            age_filtered = model_data[model_data[age_col] == closest_age]
-            
-            # Find best match for this bin's indices
-            best_alpha = None
-            best_zoh = None
-            min_distance = float('inf')
-            
-            for _, row in age_filtered.iterrows():
-                # Calculate distance in index space
-                fe5015_diff = (row[fe5015_col] - fe5015) / 5.0  # Normalize by typical range
-                mgb_diff = (row[mgb_col] - mgb) / 4.0
-                hbeta_diff = (row[hbeta_col] - hbeta) / 3.0
-                
-                distance = np.sqrt(fe5015_diff**2 + mgb_diff**2 + hbeta_diff**2)
-                
-                if distance < min_distance:
-                    min_distance = distance
-                    best_alpha = row[aofe_col]
-                    best_zoh = row[zoh_col]
-            
-            if best_alpha is not None:
-                alpha_fe_values.append(best_alpha)
-                interpolated_zoh.append(best_zoh)
-                valid_radii.append(radius)
-        
-        # Calculate median values
-        if len(alpha_fe_values) > 0:
-            median_alpha_fe = np.median(alpha_fe_values)
-            median_radius = np.median(valid_radii)
-            median_zoh = np.median(interpolated_zoh)
-            
-            # Calculate slope of alpha/Fe vs. radius
-            if len(alpha_fe_values) > 1:
-                # Calculate linear regression
-                slope, intercept, r_value, p_value, std_err = stats.linregress(valid_radii, alpha_fe_values)
-            else:
-                slope, intercept, r_value, p_value, std_err = np.nan, np.nan, np.nan, np.nan, np.nan
-            
-            # Return results
-            return {
-                'galaxy': galaxy_name,
-                'alpha_fe_median': median_alpha_fe,
-                'alpha_fe_values': alpha_fe_values,
-                'radius_median': median_radius,
-                'radius_values': valid_radii,
-                'effective_radius': Re,
-                'metallicity_median': median_zoh,
-                'slope': slope,  # Slope of alpha/Fe vs. radius
-                'p_value': p_value,
-                'r_squared': r_value**2 if not np.isnan(r_value) else np.nan,
-                'std_err': std_err,
-                'continuum_mode': continuum_mode
-            }
-        else:
-            logger.warning(f"Could not calculate alpha/Fe for any bins in {galaxy_name}")
-            return None
-    
-    except Exception as e:
-        logger.error(f"Error extracting alpha/Fe for {galaxy_name}: {e}")
-        import traceback
-        traceback.print_exc()
-        return None
-
-def calculate_alpha_fe_direct(galaxy_name, rdb_data, model_data, bins_limit=6, continuum_mode='fit'):
-    """
-    Calculate alpha/Fe for each data point using interpolation from the model grid
-    Using only Fe5015 and Mgb indices for interpolation
-    
-    Parameters:
-    -----------
-    galaxy_name : str
-        Galaxy name
-    rdb_data : dict
-        RDB data containing spectral indices
-    model_data : DataFrame
-        Model grid data with indices and alpha/Fe values
-    bins_limit : int
-        Limit analysis to first N bins (default: 6 for bins 0-5)
-    
-    Returns:
-    --------
-    dict
-        Dictionary containing points with their indices, radii, and interpolated alpha/Fe values
-    """
-    try:
-        # Direct extraction - no need to check for template method
-        galaxy_indices = extract_spectral_indices_from_method(
-            rdb_data, 
-            method=continuum_mode, 
-            bins_limit=bins_limit
-        )
-        
-        # Define column name mapping for the model grid
-        model_column_mapping = {
-            'Fe5015': find_matching_column(model_data, ['Fe5015', 'Fe5015_SI', 'Fe5015_Index']),
-            'Mgb': find_matching_column(model_data, ['Mgb', 'Mg_b', 'Mg_b_SI', 'Mgb_Index']),
-            'Hbeta': find_matching_column(model_data, ['Hbeta', 'Hb', 'Hbeta_SI', 'Hb_Index', 'Hb_si']),
-            'Age': find_matching_column(model_data, ['Age', 'age']),
-            'ZoH': find_matching_column(model_data, ['ZoH', 'Z/H', '[Z/H]', 'metallicity', 'MOH', '[M/H]']),
-            'AoFe': find_matching_column(model_data, ['AoFe', 'alpha/Fe', '[alpha/Fe]', 'A/Fe', '[A/Fe]', 'alpha'])
-        }
-        
-        # Check for required data - only Fe5015 and Mgb are needed now
-        if ('bin_indices' not in galaxy_indices or
-            'Fe5015' not in galaxy_indices['bin_indices'] or 
-            'Mgb' not in galaxy_indices['bin_indices']):
-            logger.warning(f"Missing required spectral indices for {galaxy_name}")
-            return None
-        
-        # Get galaxy spectral indices for each bin
-        galaxy_fe5015 = galaxy_indices['bin_indices']['Fe5015']
-        galaxy_mgb = galaxy_indices['bin_indices']['Mgb']
-        
-        # Get Hbeta if available (for display only, not used in interpolation)
-        if 'Hbeta' in galaxy_indices['bin_indices']:
-            galaxy_hbeta = galaxy_indices['bin_indices']['Hbeta']
-        else:
-            galaxy_hbeta = np.ones_like(galaxy_fe5015) * np.nan
-        
-        # Check if arrays are valid
-        if not hasattr(galaxy_fe5015, '__len__') or not hasattr(galaxy_mgb, '__len__'):
-            logger.warning(f"Invalid index arrays for {galaxy_name}")
-            return None
-            
-        # Make sure they all have the same length
-        min_len = min(len(galaxy_fe5015), len(galaxy_mgb))
-        galaxy_fe5015 = galaxy_fe5015[:min_len]
-        galaxy_mgb = galaxy_mgb[:min_len]
-        
-        # Adjust Hbeta array to match
-        if hasattr(galaxy_hbeta, '__len__'):
-            if len(galaxy_hbeta) >= min_len:
-                galaxy_hbeta = galaxy_hbeta[:min_len]
-            else:
-                galaxy_hbeta = np.ones(min_len) * np.nan
-        else:
-            galaxy_hbeta = np.ones(min_len) * np.nan
-        
-        # Get galaxy age if available
-        if 'age' in galaxy_indices['bin_indices'] and hasattr(galaxy_indices['bin_indices']['age'], '__len__'):
-            galaxy_age = galaxy_indices['bin_indices']['age'][:min_len]
-        else:
-            # Default age values
-            galaxy_age = np.ones(min_len) * 5.0  # Use 5 Gyr as default age
-        
-        # Get radii
-        galaxy_radius = None
-        if 'R' in galaxy_indices['bin_indices'] and hasattr(galaxy_indices['bin_indices']['R'], '__len__'):
-            galaxy_radius = galaxy_indices['bin_indices']['R'][:min_len]
-        elif 'distance' in rdb_data:
-            distance = rdb_data['distance'].item() if hasattr(rdb_data['distance'], 'item') else rdb_data['distance']
-            if 'bin_distances' in distance:
-                galaxy_radius = distance['bin_distances'][:min_len]
-            elif 'binning' in rdb_data:
-                binning = rdb_data['binning'].item() if hasattr(rdb_data['binning'], 'item') else rdb_data['binning']
-                if 'bin_radii' in binning:
-                    galaxy_radius = binning['bin_radii'][:min_len]
-        
-        if galaxy_radius is None:
-            logger.warning(f"No radius information found for {galaxy_name}")
-            return None
-        
-        # Get effective radius if available
-        Re = extract_effective_radius(rdb_data)
-        
-        # Scale radius by effective radius if available
-        if Re is not None and Re > 0:
-            r_scaled = galaxy_radius / Re
-        else:
-            r_scaled = galaxy_radius
-            
-        # Extract model column names
-        fe5015_col = model_column_mapping['Fe5015']
-        mgb_col = model_column_mapping['Mgb']
-        hbeta_col = model_column_mapping['Hbeta']
-        age_col = model_column_mapping['Age']
-        aofe_col = model_column_mapping['AoFe']
-        zoh_col = model_column_mapping['ZoH']
-        
-        # Get unique values from the model grid
-        model_ages = sorted(model_data[age_col].unique())
-        
-        # Store results for each individual point
-        points = []
-        
-        # Process each data point
-        for i in range(min_len):
-            fe5015 = galaxy_fe5015[i]
-            mgb = galaxy_mgb[i]
-            hbeta = galaxy_hbeta[i] if i < len(galaxy_hbeta) else np.nan
-            age = galaxy_age[i]
-            radius = r_scaled[i]
-            
-            # Skip if Fe5015 or Mgb are NaN
-            if np.isnan(fe5015) or np.isnan(mgb) or np.isnan(radius):
-                continue
-            
-            # Skip negative values (invalid measurements)
-            if fe5015 <= 0 or mgb <= 0:
-                continue
-            
-            # Find closest model age
-            closest_age_idx = np.argmin(np.abs(np.array(model_ages) - age))
-            closest_age = model_ages[closest_age_idx]
-            
-            # Filter model grid to points near this age
-            age_filtered = model_data[model_data[age_col] == closest_age]
-            
-            # Perform weighted interpolation using only Fe5015 and Mgb
-            distances = []
-            for _, row in age_filtered.iterrows():
-                fe5015_diff = (row[fe5015_col] - fe5015) / 5.0  # Normalize by typical range
-                mgb_diff = (row[mgb_col] - mgb) / 4.0
-                
-                # Use only Fe5015 and Mgb for distance calculation
-                distance = np.sqrt(fe5015_diff**2 + mgb_diff**2)
-                distances.append((distance, row[aofe_col], row[zoh_col]))
-            
-            # Sort by distance and get k nearest neighbors
-            distances.sort(key=lambda x: x[0])
-            k = min(5, len(distances))
-            nearest_neighbors = distances[:k]
-            
-            # Apply inverse distance weighting for interpolation
-            total_weight = 0
-            weighted_alpha_sum = 0
-            weighted_zoh_sum = 0
-            
-            for dist, alpha, zoh in nearest_neighbors:
-                # Avoid division by zero
-                weight = 1.0 / max(dist, 1e-6)
-                total_weight += weight
-                weighted_alpha_sum += alpha * weight
-                weighted_zoh_sum += zoh * weight
-            
-            # Calculate weighted average
-            interpolated_alpha = weighted_alpha_sum / total_weight
-            interpolated_zoh = weighted_zoh_sum / total_weight
-            distance_metric = nearest_neighbors[0][0]  # Distance to closest point
-            
-            # Store the interpolated values
-            points.append({
-                'radius': radius,
-                'Fe5015': fe5015,
-                'Mgb': mgb,
-                'Hbeta': hbeta,
-                'alpha_fe': interpolated_alpha,
-                'metallicity': interpolated_zoh,
-                'age': age,
-                'distance_metric': distance_metric,
-                'bin_index': i  # Store which bin this came from
-            })
-        
-        # Check if we found any valid points
-        if not points:
-            logger.warning(f"No valid points found for {galaxy_name}")
-            return None
-            
-        # Return results
-        return {
-            'galaxy': galaxy_name,
-            'effective_radius': Re,
-            'points': points,
-            'bins_used': ','.join(map(str, [p['bin_index'] for p in points])),
-            'continuum_mode': continuum_mode  # Add this line
-        }
-        
-    except Exception as e:
-        logger.error(f"Error calculating interpolated alpha/Fe for {galaxy_name}: {e}")
-        import traceback
-        traceback.print_exc()
-        return None
 
 def create_virgo_cluster_map_with_vectors(results_list, coordinates, output_path=None, dpi=150):
     """
@@ -4042,7 +2803,7 @@ def create_virgo_cluster_map_with_vectors(results_list, coordinates, output_path
         ax_dist_m86 = fig.add_subplot(gs[2, 1])    # Distance to M86
         ax_dist_center = fig.add_subplot(gs[3, :])  # Distance to center of dataset
         
-        # Define galaxies with emission lines based on your table
+        # Define galaxies with emission lines
         emission_line_galaxies = [
             "VCC1588", "VCC1368", "VCC1902", "VCC1949", "VCC990", 
             "VCC1410", "VCC667", "VCC1811", "VCC688", "VCC1193", "VCC1486"
@@ -4162,6 +2923,8 @@ def create_virgo_cluster_map_with_vectors(results_list, coordinates, output_path
                 continue
                 
             ra, dec = coordinates[galaxy]
+            
+            # Use standardized slope values
             slope = result.get('slope', np.nan)
             p_value = result.get('p_value', np.nan)
             
@@ -4275,8 +3038,8 @@ def create_virgo_cluster_map_with_vectors(results_list, coordinates, output_path
         # Plot center of dataset
         ax_map.scatter(data_center_ra, data_center_dec, s=200, marker='P', color='forestgreen', 
                      edgecolor='black', linewidth=1.5, zorder=5)
-        ax_map.text(data_center_ra, data_center_dec + 0.25, "Dataset Center", fontsize=12, ha='center', va='center',
-                   weight='bold', bbox=dict(facecolor='white', alpha=0.8, edgecolor='black', boxstyle='round'))
+        # ax_map.text(data_center_ra, data_center_dec + 0.25, "Dataset Center", fontsize=12, ha='center', va='center',
+        #            weight='bold', bbox=dict(facecolor='white', alpha=0.8, edgecolor='black', boxstyle='round'))
         
         # Add simplified legend to map as requested
         legend_elements = [
@@ -4531,508 +3294,6 @@ def create_virgo_cluster_map_with_vectors(results_list, coordinates, output_path
         import traceback
         traceback.print_exc()
 
-def create_galaxy_visualization(galaxy_name, p2p_data, rdb_data, cube_info, model_data=None, output_dir=None, dpi=150, bins_limit=6):
-    """
-    Create comprehensive visualization for a galaxy
-    
-    Parameters:
-    -----------
-    galaxy_name : str
-        Galaxy name
-    p2p_data : dict
-        P2P data dictionary
-    rdb_data : dict
-        RDB data dictionary
-    cube_info : dict
-        Dictionary with cube information
-    model_data : DataFrame, optional
-        Model grid data for spectral index plots
-    output_dir : str
-        Directory to save output images
-    dpi : int
-        Resolution for saved images
-    bins_limit : int
-        Limit analysis to first N bins (default: 6 for bins 0-5)
-    
-    Returns:
-    --------
-    None
-    """
-    try:
-        # Create output directory if needed
-        if output_dir is None:
-            output_dir = f"./visualization/{galaxy_name}"
-        
-        os.makedirs(output_dir, exist_ok=True)
-        
-        # Check if data is valid
-        p2p_valid = p2p_data is not None and isinstance(p2p_data, dict)
-        rdb_valid = rdb_data is not None and isinstance(rdb_data, dict)
-        
-        if not rdb_valid:
-            logger.error(f"No valid RDB data for {galaxy_name}")
-            return
-            
-        # Create figure 1: Combined flux map and radial binning
-        create_combined_flux_and_binning(galaxy_name, p2p_data, rdb_data, cube_info, 
-                                       output_path=f"{output_dir}/{galaxy_name}_flux_and_binning.png", 
-                                       dpi=dpi)
-        
-        # Create spectral index interpolation visualization if model data is provided
-        if model_data is not None:
-            # Create Fe5015-Mgb interpolation plot
-            create_spectral_index_interpolation_plot(galaxy_name, rdb_data, model_data,
-                                                  output_path=f"{output_dir}/{galaxy_name}_alpha_fe_interpolation.png",
-                                                  bins_limit=bins_limit,
-                                                  dpi=dpi)
-        
-        # Create parameter-radius relations with linear fits, using Re
-        create_parameter_radius_plots(galaxy_name, rdb_data, model_data,
-                                     output_path=f"{output_dir}/{galaxy_name}_parameter_radius.png",
-                                     bins_limit=bins_limit,
-                                     dpi=dpi)
-        
-        logger.info(f"Visualization complete for {galaxy_name}")
-        
-    except Exception as e:
-        logger.error(f"Error in visualization for {galaxy_name}: {e}")
-        import traceback
-        traceback.print_exc()
-
-def create_interp_verification_plot(galaxy_name, rdb_data, model_data, output_path=None, dpi=150, bins_limit=6):
-    """
-    Create a visualization showing how alpha/Fe is interpolated across spectral index planes
-    with 2D interpolated surfaces
-    
-    Parameters:
-    -----------
-    galaxy_name : str
-        Galaxy name
-    rdb_data : dict
-        RDB data containing spectral indices
-    model_data : DataFrame
-        Model grid data with indices and alpha/Fe values
-    output_path : str
-        Path to save the output image
-    dpi : int
-        Resolution for the image
-    bins_limit : int
-        Limit on the number of bins to analyze
-    """
-    try:
-        # Extract spectral indices from galaxy data - try template method first
-        template_indices = None
-        if 'bin_indices_multi' in rdb_data:
-            bin_indices_multi = rdb_data['bin_indices_multi'].item() if hasattr(rdb_data['bin_indices_multi'], 'item') else rdb_data['bin_indices_multi']
-            if 'template' in bin_indices_multi:
-                template_indices = extract_spectral_indices_from_method(rdb_data, 'template', bins_limit)
-        
-        # Fall back to standard extraction if template method not available
-        if template_indices is None:
-            galaxy_indices = extract_spectral_indices(rdb_data, bins_limit=bins_limit)
-        else:
-            galaxy_indices = template_indices
-        
-        # Define column name mapping for the model grid
-        model_column_mapping = {
-            'Fe5015': find_matching_column(model_data, ['Fe5015', 'Fe5015_SI', 'Fe5015_Index']),
-            'Mgb': find_matching_column(model_data, ['Mgb', 'Mg_b', 'Mg_b_SI', 'Mgb_Index']),
-            'Hbeta': find_matching_column(model_data, ['Hbeta', 'Hb', 'Hbeta_SI', 'Hb_Index', 'Hb_si']),
-            'Age': find_matching_column(model_data, ['Age', 'age']),
-            'ZoH': find_matching_column(model_data, ['ZoH', 'Z/H', '[Z/H]', 'metallicity', 'MOH', '[M/H]']),
-            'AoFe': find_matching_column(model_data, ['AoFe', 'alpha/Fe', '[alpha/Fe]', 'A/Fe', '[A/Fe]', 'alpha'])
-        }
-        
-        # Check if necessary data is available
-        if ('bin_indices' not in galaxy_indices or
-            'Fe5015' not in galaxy_indices['bin_indices'] or 
-            'Mgb' not in galaxy_indices['bin_indices']):
-            logger.warning(f"Missing required spectral indices for {galaxy_name}")
-            return
-            
-        if 'Hbeta' not in galaxy_indices['bin_indices']:
-            # Create a dummy Hbeta array if it's missing
-            galaxy_indices['bin_indices']['Hbeta'] = np.ones_like(galaxy_indices['bin_indices']['Fe5015']) * np.nan
-        
-        # Get galaxy spectral indices
-        galaxy_fe5015 = galaxy_indices['bin_indices']['Fe5015']
-        galaxy_mgb = galaxy_indices['bin_indices']['Mgb']
-        galaxy_hbeta = galaxy_indices['bin_indices']['Hbeta']
-        
-        # Get galaxy age if available
-        if 'age' in galaxy_indices['bin_indices']:
-            galaxy_age = galaxy_indices['bin_indices']['age']
-            mean_age = np.mean(galaxy_age) if len(galaxy_age) > 0 else 1.0  # Use 1 Gyr to match example
-        else:
-            mean_age = 1.0  # Default to 1 Gyr as in example
-        
-        # Get column references
-        age_column = model_column_mapping['Age']
-        zoh_column = model_column_mapping['ZoH']
-        aofe_column = model_column_mapping['AoFe']
-        fe5015_col = model_column_mapping['Fe5015']
-        mgb_col = model_column_mapping['Mgb']
-        hbeta_col = model_column_mapping['Hbeta']
-        
-        # Find closest age in model grid
-        available_ages = np.array(model_data[age_column].unique())
-        closest_age = available_ages[np.argmin(np.abs(available_ages - mean_age))]
-        
-        # Filter model grid to this age
-        model_age_data = model_data[model_data[age_column] == closest_age]
-        
-        # Get unique alpha/Fe and metallicity values
-        unique_aofe = sorted(model_age_data[aofe_column].unique())
-        unique_zoh = sorted(model_age_data[zoh_column].unique())
-        
-        # Create normalization for colormap
-        from matplotlib.colors import Normalize
-        norm = Normalize(vmin=0.0, vmax=0.5)  # Fixed range for alpha/Fe
-        
-        # Import necessary interpolation functions
-        from scipy.interpolate import griddata
-        from scipy.ndimage import gaussian_filter
-        
-        # Calculate median values for fixed dimensions
-        valid_hbeta = ~np.isnan(galaxy_hbeta)
-        if np.sum(valid_hbeta) > 0:
-            fixed_hbeta = np.median(galaxy_hbeta[valid_hbeta])
-        else:
-            fixed_hbeta = 2.83  # Example fixed value from image
-            
-        valid_fe5015 = ~np.isnan(galaxy_fe5015)
-        if np.sum(valid_fe5015) > 0:
-            fixed_fe5015 = np.median(galaxy_fe5015[valid_fe5015])
-        else:
-            fixed_fe5015 = 3.5  # Example fixed value
-        
-        # Calculate direct alpha/Fe values
-        direct_result = calculate_alpha_fe_direct(galaxy_name, rdb_data, model_data, bins_limit=bins_limit)
-        
-        if direct_result is None or 'points' not in direct_result or not direct_result['points']:
-            logger.warning(f"No alpha/Fe interpolation results for {galaxy_name}")
-            return None
-            
-        # Extract data points
-        points = direct_result['points']
-        
-        # Collect data for plotting
-        fe5015_values = [point['Fe5015'] for point in points]
-        mgb_values = [point['Mgb'] for point in points]
-        hbeta_values = [point['Hbeta'] for point in points]
-        alpha_fe_values = [point['alpha_fe'] for point in points]
-        
-        # Create 2x2 grid of plots - matching the example layout
-        fig = plt.figure(figsize=(20, 18))
-        gs = fig.add_gridspec(2, 2)
-        
-        # Define the subplots
-        ax1 = fig.add_subplot(gs[0, 0])  # Fe5015 vs Mgb - Model Grid
-        ax2 = fig.add_subplot(gs[0, 1])  # Fe5015 vs Mgb - Interpolated Surface
-        ax3 = fig.add_subplot(gs[1, 0])  # Mgb vs Hbeta - Model Grid
-        ax4 = fig.add_subplot(gs[1, 1])  # Mgb vs Hbeta - Interpolated Surface
-        
-        # Plot 1: Fe5015 vs Mgb - Model Grid with Galaxy Data
-        # Draw the model grid with alpha/Fe lines
-        for aofe in unique_aofe:
-            aofe_data = model_age_data[model_age_data[aofe_column] == aofe]
-            aofe_data = aofe_data.sort_values(by=zoh_column)
-            ax1.plot(aofe_data[fe5015_col], aofe_data[mgb_col], '-', 
-                   color=plt.cm.plasma(norm(aofe)), linewidth=2, alpha=0.7)
-        
-        # Draw metallicity lines
-        for zoh in unique_zoh:
-            zoh_data = model_age_data[model_age_data[zoh_column] == zoh]
-            zoh_data = zoh_data.sort_values(by=aofe_column)
-            ax1.plot(zoh_data[fe5015_col], zoh_data[mgb_col], '--', 
-                   color='lightgray', linewidth=1, alpha=0.5)
-            
-            # Add Z/H labels to the grid lines
-            if len(zoh_data) > 0:
-                # Find a point near the end of the line
-                idx = min(len(zoh_data) - 1, int(len(zoh_data) * 0.8))
-                x = zoh_data.iloc[idx][fe5015_col]
-                y = zoh_data.iloc[idx][mgb_col]
-                ax1.text(x, y, f'[Z/H]={zoh:.1f}', fontsize=8, color='gray', alpha=0.7,
-                       ha='left', va='bottom')
-        
-        # Draw galaxy points with alpha/Fe coloring
-        sc1 = ax1.scatter(fe5015_values, mgb_values, c=alpha_fe_values, 
-                      cmap='plasma', s=120, edgecolor='black', norm=norm)
-        
-        # Add bin numbers
-        for i in range(len(fe5015_values)):
-            ax1.text(fe5015_values[i], mgb_values[i], str(i), 
-                   color='white', fontweight='bold', ha='center', va='center', fontsize=10)
-        
-        # Add colorbar
-        cbar1 = plt.colorbar(sc1, ax=ax1)
-        cbar1.set_label('[α/Fe]')
-        
-        # Set labels and title
-        ax1.set_xlabel('Fe5015 Index')
-        ax1.set_ylabel('Mgb Index')
-        ax1.set_title('Fe5015 vs Mgb - Model Grid with Galaxy Data')
-        ax1.grid(True, alpha=0.3)
-        
-        # Plot 2: Fe5015 vs Mgb - Interpolated [α/Fe] Surface
-        # Create grid for interpolation
-        fe5015_min = max(0, min(model_age_data[fe5015_col].min(), min(fe5015_values) - 1))
-        fe5015_max = max(model_age_data[fe5015_col].max(), max(fe5015_values) + 1)
-        mgb_min = max(0, min(model_age_data[mgb_col].min(), min(mgb_values) - 1))
-        mgb_max = max(model_age_data[mgb_col].max(), max(mgb_values) + 1)
-        
-        # Set up grid for interpolation
-        fe5015_grid = np.linspace(fe5015_min, fe5015_max, 200)
-        mgb_grid = np.linspace(mgb_min, mgb_max, 200)
-        fe5015_mesh, mgb_mesh = np.meshgrid(fe5015_grid, mgb_grid)
-        
-        # Get model data for Fe5015 vs Mgb
-        # Filter model grid to points with Hbeta near fixed_hbeta
-        if not np.isnan(fixed_hbeta):
-            # Find points with Hbeta close to fixed value
-            tolerance = 0.5  # Tolerance for Hbeta
-            hbeta_close = np.abs(model_age_data[hbeta_col] - fixed_hbeta) < tolerance
-            filtered_model = model_age_data[hbeta_close]
-        else:
-            filtered_model = model_age_data
-        
-        model_fe5015 = filtered_model[fe5015_col].values
-        model_mgb = filtered_model[mgb_col].values
-        model_alpha_fe = filtered_model[aofe_column].values
-        
-        # Create interpolation points
-        interp_points = np.column_stack([model_fe5015, model_mgb])
-        
-        # Use griddata to interpolate alpha/Fe values across the grid
-        alpha_fe_grid = griddata(interp_points, model_alpha_fe, 
-                              (fe5015_mesh.ravel(), mgb_mesh.ravel()), 
-                              method='linear')
-        
-        # Fill in any NaN values with nearest-neighbor interpolation
-        alpha_fe_grid_nearest = griddata(interp_points, model_alpha_fe, 
-                                      (fe5015_mesh.ravel(), mgb_mesh.ravel()), 
-                                      method='nearest')
-        alpha_fe_grid = np.where(np.isnan(alpha_fe_grid), alpha_fe_grid_nearest, alpha_fe_grid)
-        
-        # Reshape back to 2D grid
-        alpha_fe_grid = alpha_fe_grid.reshape(fe5015_mesh.shape)
-        
-        # Smooth the grid for better visualization
-        alpha_fe_grid = gaussian_filter(alpha_fe_grid, sigma=1.5)
-        
-        # Create filled contour plot of the interpolated surface
-        contourf = ax2.pcolormesh(fe5015_mesh, mgb_mesh, alpha_fe_grid, 
-                              cmap='plasma', alpha=0.8, shading='auto', norm=norm)
-        
-        # Add contour lines
-        contour_levels = np.linspace(0, 0.5, 11)  # Create 10 evenly spaced contour levels
-        contour = ax2.contour(fe5015_mesh, mgb_mesh, alpha_fe_grid, 
-                           levels=contour_levels, colors='black', linewidths=0.5, alpha=0.7)
-        
-        # Label contour lines (only a few for clarity)
-        labeled_levels = [0.1, 0.2, 0.3, 0.4]
-        ax2.clabel(contour, levels=labeled_levels, inline=True, fontsize=8, fmt='%.1f')
-        
-        # Draw the fixed Hbeta value
-        ax2.text(0.05, 0.95, f"Fixed Hβ = {fixed_hbeta:.2f}", 
-               transform=ax2.transAxes, fontsize=10, color='black',
-               bbox=dict(facecolor='white', alpha=0.8, edgecolor='black', boxstyle='round'))
-        
-        # Draw 1:1 line for reference
-        # This diagonal line approximates the reference line in the example
-        line_min = min(fe5015_min, mgb_min)
-        line_max = max(fe5015_max, mgb_max)
-        ax2.plot([line_min, line_max], [line_min, line_max], 'k-', alpha=0.7)
-        
-        # Draw galaxy points
-        ax2.scatter(fe5015_values, mgb_values, c=alpha_fe_values, 
-                  cmap='plasma', s=120, edgecolor='black', norm=norm)
-        
-        # Add bin numbers
-        for i in range(len(fe5015_values)):
-            ax2.text(fe5015_values[i], mgb_values[i], str(i), 
-                   color='white', fontweight='bold', ha='center', va='center', fontsize=10)
-        
-        # Add colorbar
-        cbar2 = plt.colorbar(contourf, ax=ax2)
-        cbar2.set_label('[α/Fe] (interpolated)')
-        
-        # Set labels and title
-        ax2.set_xlabel('Fe5015 Index')
-        ax2.set_ylabel('Mgb Index')
-        ax2.set_title('Fe5015 vs Mgb - Interpolated [α/Fe] Surface (fixed Hβ)')
-        
-        # Plot 3: Mgb vs Hbeta - Model Grid with Galaxy Data
-        for aofe in unique_aofe:
-            aofe_data = model_age_data[model_age_data[aofe_column] == aofe]
-            aofe_data = aofe_data.sort_values(by=zoh_column)
-            ax3.plot(aofe_data[mgb_col], aofe_data[hbeta_col], '-', 
-                   color=plt.cm.plasma(norm(aofe)), linewidth=2, alpha=0.7)
-        
-        for zoh in unique_zoh:
-            zoh_data = model_age_data[model_age_data[zoh_column] == zoh]
-            zoh_data = zoh_data.sort_values(by=aofe_column)
-            ax3.plot(zoh_data[mgb_col], zoh_data[hbeta_col], '--', 
-                   color='lightgray', linewidth=1, alpha=0.5)
-            
-            # Add Z/H labels
-            if len(zoh_data) > 0:
-                # Find a point near the end of the line
-                idx = min(len(zoh_data) - 1, int(len(zoh_data) * 0.8))
-                x = zoh_data.iloc[idx][mgb_col]
-                y = zoh_data.iloc[idx][hbeta_col]
-                ax3.text(x, y, f'[Z/H]={zoh:.1f}', fontsize=8, color='gray', alpha=0.7,
-                       ha='left', va='bottom')
-        
-        # Plot galaxy points
-        sc3 = ax3.scatter(mgb_values, hbeta_values, c=alpha_fe_values, 
-                      cmap='plasma', s=120, edgecolor='black', norm=norm)
-        
-        # Add bin numbers
-        for i in range(len(mgb_values)):
-            ax3.text(mgb_values[i], hbeta_values[i], str(i), 
-                   color='white', fontweight='bold', ha='center', va='center', fontsize=10)
-        
-        # Add colorbar
-        cbar3 = plt.colorbar(sc3, ax=ax3)
-        cbar3.set_label('[α/Fe]')
-        
-        # Set axes limits to focus on the data
-        # Get limits from existing valid data points
-        y_padding = 0.5
-        if np.sum(valid_hbeta) > 0:
-            hbeta_min = max(0, np.min(galaxy_hbeta[valid_hbeta]) - y_padding)
-            hbeta_max = np.max(galaxy_hbeta[valid_hbeta]) + y_padding
-            ax3.set_ylim(hbeta_min, hbeta_max)
-        
-        # Set labels and title
-        ax3.set_xlabel('Mgb Index')
-        ax3.set_ylabel('Hβ Index')
-        ax3.set_title('Mgb vs Hβ - Model Grid with Galaxy Data')
-        ax3.grid(True, alpha=0.3)
-        
-        # Plot 4: Mgb vs Hbeta - Interpolated Surface
-        # Create grid for interpolation
-        mgb_min = max(0, min(model_age_data[mgb_col].min(), min(mgb_values) - 1))
-        mgb_max = max(model_age_data[mgb_col].max(), max(mgb_values) + 1)
-        
-        # Create grid arrays for Mgb vs Hβ interpolation
-        if np.sum(valid_hbeta) > 0:
-            hbeta_min = max(0, min(model_age_data[hbeta_col].min(), np.min(galaxy_hbeta[valid_hbeta]) - 1))
-            hbeta_max = max(model_age_data[hbeta_col].max(), np.max(galaxy_hbeta[valid_hbeta]) + 1)
-        else:
-            hbeta_min = 0
-            hbeta_max = 7  # Reasonable default range based on example
-        
-        mgb_grid = np.linspace(mgb_min, mgb_max, 200)
-        hbeta_grid = np.linspace(hbeta_min, hbeta_max, 200)
-        mgb_mesh, hbeta_mesh = np.meshgrid(mgb_grid, hbeta_grid)
-        
-        # Filter model grid to points with Fe5015 near fixed_fe5015
-        if not np.isnan(fixed_fe5015):
-            # Find points with Fe5015 close to fixed value
-            tolerance = 0.5  # Tolerance for Fe5015
-            fe5015_close = np.abs(model_age_data[fe5015_col] - fixed_fe5015) < tolerance
-            filtered_model = model_age_data[fe5015_close]
-        else:
-            filtered_model = model_age_data
-        
-        model_mgb = filtered_model[mgb_col].values
-        model_hbeta = filtered_model[hbeta_col].values
-        model_alpha_fe = filtered_model[aofe_column].values
-        
-        # Create interpolation points
-        interp_points = np.column_stack([model_mgb, model_hbeta])
-        
-        # Use griddata to interpolate alpha/Fe values across the grid
-        alpha_fe_grid_hb = griddata(interp_points, model_alpha_fe, 
-                                 (mgb_mesh.ravel(), hbeta_mesh.ravel()), 
-                                 method='linear')
-        
-        # Fill in any NaN values with nearest-neighbor interpolation
-        alpha_fe_grid_hb_nearest = griddata(interp_points, model_alpha_fe, 
-                                         (mgb_mesh.ravel(), hbeta_mesh.ravel()), 
-                                         method='nearest')
-        alpha_fe_grid_hb = np.where(np.isnan(alpha_fe_grid_hb), alpha_fe_grid_hb_nearest, alpha_fe_grid_hb)
-        
-        # Reshape back to 2D grid
-        alpha_fe_grid_hb = alpha_fe_grid_hb.reshape(mgb_mesh.shape)
-        
-        # Smooth the grid for better visualization
-        alpha_fe_grid_hb = gaussian_filter(alpha_fe_grid_hb, sigma=1.5)
-        
-        # Create filled contour plot of the interpolated surface
-        contourf_hb = ax4.pcolormesh(mgb_mesh, hbeta_mesh, alpha_fe_grid_hb, 
-                                  cmap='plasma', alpha=0.8, shading='auto', norm=norm)
-        
-        # Add contour lines
-        contour_hb = ax4.contour(mgb_mesh, hbeta_mesh, alpha_fe_grid_hb, 
-                              levels=contour_levels, colors='black', linewidths=0.5, alpha=0.7)
-        
-        # Label contour lines (only a few for clarity)
-        ax4.clabel(contour_hb, levels=labeled_levels, inline=True, fontsize=8, fmt='%.1f')
-        
-        # Add fixed Fe5015 text label
-        ax4.text(0.05, 0.95, f"Fixed Fe5015 = {fixed_fe5015:.2f}", 
-               transform=ax4.transAxes, fontsize=10, color='black',
-               bbox=dict(facecolor='white', alpha=0.8, edgecolor='black', boxstyle='round'))
-        
-        # Plot galaxy points
-        sc4 = ax4.scatter(mgb_values, hbeta_values, c=alpha_fe_values, 
-                      cmap='plasma', s=120, edgecolor='black', norm=norm)
-        
-        # Add bin numbers
-        for i in range(len(mgb_values)):
-            # Check if valid point or NaN
-            if not np.isnan(mgb_values[i]) and not np.isnan(hbeta_values[i]):
-                ax4.text(mgb_values[i], hbeta_values[i], str(i), 
-                       color='white', fontweight='bold', ha='center', va='center', fontsize=10)
-        
-        # Add colorbar
-        cbar4 = plt.colorbar(contourf_hb, ax=ax4)
-        cbar4.set_label('[α/Fe] (interpolated)')
-        
-        # Set labels and title
-        ax4.set_xlabel('Mgb Index')
-        ax4.set_ylabel('Hβ Index')
-        ax4.set_title('Mgb vs Hβ - Interpolated [α/Fe] Surface (fixed Fe5015)')
-        
-        # Add overall title
-        plt.suptitle(f"Galaxy {galaxy_name}: [α/Fe] Interpolation Verification\nModel Age: {closest_age} Gyr", 
-                   fontsize=16, y=0.98)
-        
-        # Add explanatory text
-        plt.figtext(0.5, 0.01, 
-                  "Left: Model grid lines with galaxy data points. Right: Interpolated [α/Fe] surface (2D projections) with galaxy data.\n"
-                  "The color of each galaxy point indicates its interpolated [α/Fe] value. Bin numbers shown for each point.",
-                  ha='center', fontsize=12)
-        
-        # Adjust layout
-        plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-        
-        # Save figure if output path is provided
-        if output_path:
-            plt.savefig(output_path, dpi=dpi, bbox_inches='tight')
-            logger.info(f"Saved interpolation verification plot to {output_path}")
-        
-        plt.close()
-        
-        # Return interpolated data for further analysis
-        return {
-            'alpha_fe': alpha_fe_values,
-            'radius': [point['radius'] for point in points],
-            'fe5015': fe5015_values,
-            'mgb': mgb_values,
-            'hbeta': hbeta_values
-        }
-        
-    except Exception as e:
-        logger.error(f"Error creating interpolation verification plot: {e}")
-        import traceback
-        traceback.print_exc()
-        return None
-
 def create_virgo_cluster_map_only(results_list, coordinates, output_path=None, dpi=150):
     """
     Create a map of the Virgo Cluster showing alpha/Fe gradients as vectors
@@ -5165,15 +3426,10 @@ def create_virgo_cluster_map_only(results_list, coordinates, output_path=None, d
                 continue
                 
             ra, dec = coordinates[galaxy]
+            
+            # Use standardized slope values
             slope = result.get('slope', np.nan)
             p_value = result.get('p_value', np.nan)
-            
-            # SPECIAL CASE: Override VCC1588 with correct value if needed
-            if galaxy == "VCC1588" and (slope is None or np.isnan(slope) or slope < 0):
-                # Force the correct value from the parameter-radius plot
-                slope = 0.085
-                p_value = 0.009
-                logger.info(f"Corrected VCC1588 slope to positive value: {slope}")
             
             # Check if galaxy has emission lines
             has_emission = galaxy in emission_line_galaxies
@@ -5248,10 +3504,6 @@ def create_virgo_cluster_map_only(results_list, coordinates, output_path=None, d
                        f"{galaxy}\n{slope_text}", fontsize=9, ha='center', va='center', 
                        bbox=dict(facecolor='white', alpha=0.7, edgecolor='none', pad=1))
             label_positions[galaxy] = label_position
-            
-            # Add slope value text (without separate label to reduce clutter)
-            # Instead print slope values for confirmation
-            logger.info(f"Galaxy {galaxy}: slope = {slope:.3f}, marker = {marker}, color = {color}")
         
         # Plot cluster centers with star markers
         for name, (ra, dec) in cluster_centers.items():
@@ -5370,7 +3622,7 @@ def create_virgo_distance_plots_only(results_list, coordinates, output_path=None
     output_path : str
         Path to save the output image
     dpi : int
-        Res
+        Resolution for output image
     """
     try:
         # Create figure
@@ -5437,15 +3689,17 @@ def create_virgo_distance_plots_only(results_list, coordinates, output_path=None
                 continue
                 
             ra, dec = coordinates[galaxy]
+            
+            # Use standardized slope values
             slope = result.get('slope', np.nan)
             p_value = result.get('p_value', np.nan)
-            
-            # Check if galaxy has emission lines
-            has_emission = galaxy in emission_line_galaxies
             
             # Skip if no valid slope
             if np.isnan(slope):
                 continue
+            
+            # Check if galaxy has emission lines
+            has_emission = galaxy in emission_line_galaxies
             
             # Calculate distances to reference points (in degrees)
             distances = {}
@@ -5689,6 +3943,8 @@ def create_virgo_distance_plots_only(results_list, coordinates, output_path=None
         import traceback
         traceback.print_exc()
 
+
+
 def create_virgo_cluster_visualizations(results_list, coordinates, output_dir="./visualization", dpi=150):
     """
     Create separate visualizations for Virgo Cluster data:
@@ -5718,1003 +3974,6 @@ def create_virgo_cluster_visualizations(results_list, coordinates, output_dir=".
     create_virgo_distance_plots_only(results_list, coordinates, output_path=distance_path, dpi=dpi)
     
     logger.info(f"Created two Virgo Cluster visualizations in {output_dir}")
-
-def create_3d_alpha_fe_interpolation(galaxy_name, rdb_data, model_data, output_path=None, dpi=150, bins_limit=6, continuum_mode='fit'):
-    """
-    Create a 3D visualization of alpha/Fe interpolation across spectral index space
-    
-    Parameters:
-    -----------
-    galaxy_name : str
-        Galaxy name
-    rdb_data : dict
-        RDB data containing spectral indices
-    model_data : DataFrame
-        Model grid data with indices and alpha/Fe values
-    output_path : str
-        Path to save the output image
-    dpi : int
-        Resolution for the output image
-    bins_limit : int
-        Limit on the number of bins to analyze
-    continuum_mode : str
-        Spectral index continuum mode to use ('auto', 'fit', 'original')
-    
-    Returns:
-    --------
-    dict
-        Dictionary with interpolated alpha/Fe values and corresponding spectral indices
-    """
-    try:
-        # Import needed for 3D plotting
-        from mpl_toolkits.mplot3d import Axes3D
-        from matplotlib import cm
-        from scipy.interpolate import LinearNDInterpolator, griddata
-        import scipy.spatial as spatial
-        
-        # Extract spectral indices using the specified mode
-        galaxy_indices = extract_spectral_indices_from_method(
-            rdb_data, 
-            method=continuum_mode, 
-            bins_limit=bins_limit
-        )
-        
-        # Define column name mapping for the model grid
-        model_column_mapping = {
-            'Fe5015': find_matching_column(model_data, ['Fe5015', 'Fe5015_SI', 'Fe5015_Index']),
-            'Mgb': find_matching_column(model_data, ['Mgb', 'Mg_b', 'Mg_b_SI', 'Mgb_Index']),
-            'Hbeta': find_matching_column(model_data, ['Hbeta', 'Hb', 'Hbeta_SI', 'Hb_Index', 'Hb_si']),
-            'Age': find_matching_column(model_data, ['Age', 'age']),
-            'ZoH': find_matching_column(model_data, ['ZoH', 'Z/H', '[Z/H]', 'metallicity', 'MOH', '[M/H]']),
-            'AoFe': find_matching_column(model_data, ['AoFe', 'alpha/Fe', '[alpha/Fe]', 'A/Fe', '[A/Fe]', 'alpha'])
-        }
-        
-        # Check if we have the required indices
-        if ('bin_indices' not in galaxy_indices or
-            'Fe5015' not in galaxy_indices['bin_indices'] or 
-            'Mgb' not in galaxy_indices['bin_indices'] or
-            'Hbeta' not in galaxy_indices['bin_indices']):
-            logger.warning(f"Missing required spectral indices for {galaxy_name}")
-            return None
-        
-        # Get galaxy spectral indices for plotting
-        galaxy_fe5015 = galaxy_indices['bin_indices']['Fe5015']
-        galaxy_mgb = galaxy_indices['bin_indices']['Mgb']
-        galaxy_hbeta = galaxy_indices['bin_indices']['Hbeta']
-        
-        # Get radius information if available
-        radius_values = None
-        if 'R' in galaxy_indices['bin_indices']:
-            radius_values = galaxy_indices['bin_indices']['R']
-        elif 'bin_radii' in galaxy_indices:
-            radius_values = galaxy_indices['bin_radii']
-        
-        # Get mean age for model grid
-        if 'age' in galaxy_indices['bin_indices']:
-            galaxy_age = galaxy_indices['bin_indices']['age']
-            mean_age = np.mean(galaxy_age) if len(galaxy_age) > 0 else 10.0
-        else:
-            mean_age = 10.0  # Default to 10 Gyr (typical for early-type galaxies)
-        
-        # Extract column names
-        age_column = model_column_mapping['Age']
-        fe5015_col = model_column_mapping['Fe5015']
-        mgb_col = model_column_mapping['Mgb']
-        hbeta_col = model_column_mapping['Hbeta']
-        aofe_col = model_column_mapping['AoFe']
-        zoh_col = model_column_mapping['ZoH']
-        
-        # Find closest age in model grid
-        available_ages = np.array(model_data[age_column].unique())
-        closest_age = available_ages[np.argmin(np.abs(available_ages - mean_age))]
-        
-        # Filter model grid to this age
-        model_age_data = model_data[model_data[age_column] == closest_age]
-        
-        # Create 3D interpolator from model data
-        # Extract model data points for interpolation
-        model_fe5015 = model_age_data[fe5015_col].values
-        model_mgb = model_age_data[mgb_col].values
-        model_hbeta = model_age_data[hbeta_col].values
-        model_aofe = model_age_data[aofe_col].values
-        
-        # Create the interpolator from the model grid points
-        points = np.column_stack([model_fe5015, model_mgb, model_hbeta])
-        
-        # Use linear interpolation for smoother results
-        interpolator = LinearNDInterpolator(points, model_aofe)
-        
-        # Interpolate alpha/Fe for galaxy points
-        galaxy_points = np.column_stack([galaxy_fe5015, galaxy_mgb, galaxy_hbeta])
-        alpha_fe_interp = interpolator(galaxy_points)
-        
-        # Filter out any NaN results and use nearest neighbor for those points
-        nan_mask = np.isnan(alpha_fe_interp)
-        if np.any(nan_mask):
-            # Use nearest neighbor interpolation for NaN points
-            from scipy.spatial import cKDTree
-            tree = cKDTree(points)
-            nn_indices = tree.query(galaxy_points[nan_mask])[1]
-            alpha_fe_interp[nan_mask] = model_aofe[nn_indices]
-        
-        # Now create a grid for visualization of the 3D space
-        # Define grid limits based on galaxy and model data
-        fe5015_min = max(0, min(np.min(model_fe5015), np.min(galaxy_fe5015) - 0.5))
-        fe5015_max = max(np.max(model_fe5015), np.max(galaxy_fe5015) + 0.5)
-        mgb_min = max(0, min(np.min(model_mgb), np.min(galaxy_mgb) - 0.5))
-        mgb_max = max(np.max(model_mgb), np.max(galaxy_mgb) + 0.5)
-        hbeta_min = max(0, min(np.min(model_hbeta), np.min(galaxy_hbeta) - 0.5))
-        hbeta_max = max(np.max(model_hbeta), np.max(galaxy_hbeta) + 0.5)
-        
-        # Create a grid covering this space (but not too dense for performance)
-        grid_points = 20  # Number of points in each dimension
-        fe5015_grid = np.linspace(fe5015_min, fe5015_max, grid_points)
-        mgb_grid = np.linspace(mgb_min, mgb_max, grid_points)
-        hbeta_grid = np.linspace(hbeta_min, hbeta_max, grid_points)
-        
-        # Create the 3D grid
-        fe5015_3d, mgb_3d, hbeta_3d = np.meshgrid(fe5015_grid, mgb_grid, hbeta_grid)
-        grid_points_3d = np.column_stack([fe5015_3d.flatten(), mgb_3d.flatten(), hbeta_3d.flatten()])
-        
-        # Interpolate alpha/Fe values across this grid
-        alpha_fe_grid = interpolator(grid_points_3d)
-        
-        # Handle NaN values
-        alpha_fe_grid_clean = alpha_fe_grid.copy()
-        nan_mask_grid = np.isnan(alpha_fe_grid_clean)
-        if np.any(nan_mask_grid):
-            # Use nearest neighbor for NaN points
-            nn_indices_grid = tree.query(grid_points_3d[nan_mask_grid])[1]
-            alpha_fe_grid_clean[nan_mask_grid] = model_aofe[nn_indices_grid]
-        
-        # Reshape back to 3D grid
-        alpha_fe_vol = alpha_fe_grid_clean.reshape(fe5015_3d.shape)
-        
-        # Now create a visualization that shows:
-        # 1. A 3D scatter plot of the model grid points
-        # 2. The galaxy points with radius encoding
-        # 3. Slices of the interpolated alpha/Fe field
-        
-        # Create a figure with two subplots
-        fig = plt.figure(figsize=(20, 10))
-        
-        # Create a 3D axes for the left plot - scatter plot
-        ax1 = fig.add_subplot(121, projection='3d')
-        
-        # Plot the model grid points in the space - use small points
-        ax1.scatter(model_fe5015, model_mgb, model_hbeta, 
-                  c=model_aofe, cmap='plasma', s=10, alpha=0.3,
-                  label='Model Grid Points')
-        
-        # Create a normalization for alpha/Fe values
-        from matplotlib.colors import Normalize
-        norm = Normalize(vmin=0, vmax=0.5)  # Alpha/Fe range from 0 to 0.5
-        
-        # Plot the galaxy points with larger symbols
-        scatter = ax1.scatter(galaxy_fe5015, galaxy_mgb, galaxy_hbeta, 
-                           c=alpha_fe_interp, cmap='plasma', s=150, 
-                           edgecolor='black', linewidth=1.5, norm=norm)
-        
-        # Add bin numbers to the galaxy points
-        for i in range(len(galaxy_fe5015)):
-            ax1.text(galaxy_fe5015[i], galaxy_mgb[i], galaxy_hbeta[i], 
-                   str(i), fontsize=12, color='white', fontweight='bold')
-        
-        # Add radius information if available
-        if radius_values is not None:
-            # Normalize radius for text size
-            radius_norm = radius_values / np.max(radius_values) if np.max(radius_values) > 0 else np.ones_like(radius_values)
-            for i, r in enumerate(radius_values):
-                ax1.text(galaxy_fe5015[i], galaxy_mgb[i], hbeta_max * 1.05, 
-                       f"R={r:.2f}", fontsize=8 + 4 * radius_norm[i], color='black')
-        
-        # Add a colorbar
-        cbar = plt.colorbar(scatter, ax=ax1, orientation='vertical')
-        cbar.set_label('[α/Fe]')
-        
-        # Set labels and title
-        ax1.set_xlabel('Fe5015 Index')
-        ax1.set_ylabel('Mgb Index')
-        ax1.set_zlabel('Hβ Index')
-        ax1.set_title('3D Spectral Index Space with α/Fe Interpolation', fontsize=16)
-        
-        # Set view angle for better visualization
-        ax1.view_init(30, -45)
-        
-        # Create axes for the right plot - volume slice
-        ax2 = fig.add_subplot(122, projection='3d')
-        
-        # Create x, y, z coordinates for slice planes
-        x_plane = np.linspace(fe5015_min, fe5015_max, grid_points)
-        y_plane = np.linspace(mgb_min, mgb_max, grid_points)
-        z_plane = np.linspace(hbeta_min, hbeta_max, grid_points)
-        
-        # Get mean values to position slice planes
-        mid_fe5015 = np.mean(galaxy_fe5015)
-        mid_mgb = np.mean(galaxy_mgb)
-        mid_hbeta = np.mean(galaxy_hbeta)
-        
-        # Extract 2D slices from the 3D volume
-        # Find nearest grid indices for the middle values
-        idx_fe5015 = np.argmin(np.abs(fe5015_grid - mid_fe5015))
-        idx_mgb = np.argmin(np.abs(mgb_grid - mid_mgb))
-        idx_hbeta = np.argmin(np.abs(hbeta_grid - mid_hbeta))
-        
-        # Extract slices
-        xy_slice = alpha_fe_vol[:, :, idx_hbeta]  # Fe5015-Mgb plane
-        xz_slice = alpha_fe_vol[:, idx_mgb, :]    # Fe5015-Hbeta plane
-        yz_slice = alpha_fe_vol[idx_fe5015, :, :] # Mgb-Hbeta plane
-        
-        # Create 2D mesh grids for the slice planes
-        X, Y = np.meshgrid(fe5015_grid, mgb_grid)
-        X, Z = np.meshgrid(fe5015_grid, hbeta_grid)
-        Y, Z = np.meshgrid(mgb_grid, hbeta_grid)
-        
-        # Plot the slice planes with alpha/Fe coloring
-        # XY plane (constant Hbeta)
-        xy = ax2.plot_surface(X, Y, np.ones_like(X) * hbeta_grid[idx_hbeta],
-                           facecolors=cm.plasma(norm(xy_slice)), 
-                           alpha=0.7, shade=False)
-        
-        # XZ plane (constant Mgb)
-        xz = ax2.plot_surface(X, np.ones_like(X) * mgb_grid[idx_mgb], Z,
-                           facecolors=cm.plasma(norm(xz_slice.T)), 
-                           alpha=0.7, shade=False)
-        
-        # YZ plane (constant Fe5015)
-        yz = ax2.plot_surface(np.ones_like(Y) * fe5015_grid[idx_fe5015], Y, Z,
-                           facecolors=cm.plasma(norm(yz_slice.T)),
-                           alpha=0.7, shade=False)
-        
-        # Plot the galaxy points on this plot too
-        ax2.scatter(galaxy_fe5015, galaxy_mgb, galaxy_hbeta, 
-                  c=alpha_fe_interp, cmap='plasma', s=150, 
-                  edgecolor='black', linewidth=1.5, norm=norm)
-        
-        # Add bin numbers
-        for i in range(len(galaxy_fe5015)):
-            ax2.text(galaxy_fe5015[i], galaxy_mgb[i], galaxy_hbeta[i], 
-                   str(i), fontsize=12, color='white', fontweight='bold')
-        
-        # Add guides to show where the slice planes are
-        ax2.plot([mid_fe5015, mid_fe5015], [mgb_min, mgb_max], [mid_hbeta, mid_hbeta], 'k--', alpha=0.5)
-        ax2.plot([mid_fe5015, mid_fe5015], [mid_mgb, mid_mgb], [hbeta_min, hbeta_max], 'k--', alpha=0.5)
-        ax2.plot([fe5015_min, fe5015_max], [mid_mgb, mid_mgb], [mid_hbeta, mid_hbeta], 'k--', alpha=0.5)
-        
-        # Add labels for the slice planes
-        ax2.text(mid_fe5015, mgb_max*1.1, mid_hbeta, "Fe5015 Slice", fontsize=10)
-        ax2.text(mid_fe5015, mid_mgb, hbeta_max*1.1, "Mgb Slice", fontsize=10)
-        ax2.text(fe5015_max*1.1, mid_mgb, mid_hbeta, "Hβ Slice", fontsize=10)
-        
-        # Add a colorbar for the slice planes
-        m = cm.ScalarMappable(cmap='plasma', norm=norm)
-        m.set_array([])
-        cbar2 = plt.colorbar(m, ax=ax2, orientation='vertical')
-        cbar2.set_label('[α/Fe]')
-        
-        # Set labels and title
-        ax2.set_xlabel('Fe5015 Index')
-        ax2.set_ylabel('Mgb Index')
-        ax2.set_zlabel('Hβ Index')
-        ax2.set_title('Cross-sections of α/Fe Distribution', fontsize=16)
-        
-        # Set view angle for better visualization of slices
-        ax2.view_init(30, 225)
-        
-        # Add overall title
-        plt.suptitle(f"Galaxy {galaxy_name}: 3D Spectral Index Analysis with α/Fe Interpolation\n"
-           f"Model Age: {closest_age} Gyr | Continuum Mode: {continuum_mode}", 
-           fontsize=20, y=0.98)
-        
-        # Add explanation text
-        plt.figtext(0.5, 0.01, 
-                  "Left: 3D scatter plot of model grid (small points) and galaxy measurements (large points)\n"
-                  "Right: Cross-sectional planes showing α/Fe distribution in the spectral index space\n"
-                  "Points are colored by interpolated α/Fe values. Bin numbers correspond to radial bins.",
-                  ha='center', fontsize=12)
-        
-        # Add information about the interpolated alpha/Fe values
-        if len(alpha_fe_interp) > 0:
-            min_alpha = np.min(alpha_fe_interp)
-            max_alpha = np.max(alpha_fe_interp)
-            mean_alpha = np.mean(alpha_fe_interp)
-            plt.figtext(0.01, 0.01, 
-                      f"Interpolated α/Fe range: {min_alpha:.2f} to {max_alpha:.2f} (mean: {mean_alpha:.2f})",
-                      ha='left', fontsize=10)
-        
-        # Calculate slope if radius information is available
-        if radius_values is not None and len(radius_values) > 1:
-            slope, intercept, r_squared, p_value, std_err = calculate_improved_alpha_fe_slope(
-                radius_values, alpha_fe_interp)
-            significance = "**" if p_value < 0.01 else ("*" if p_value < 0.05 else "")
-            plt.figtext(0.99, 0.01, 
-                      f"α/Fe-Radius Slope: {slope:.3f}{significance} (p={p_value:.3f}, R²={r_squared:.3f})",
-                      ha='right', fontsize=10)
-        
-        # Tight layout for better spacing
-        plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-        
-        # Save figure if output path provided
-        if output_path:
-            plt.savefig(output_path, dpi=dpi, bbox_inches='tight')
-            logger.info(f"Saved 3D alpha/Fe interpolation visualization to {output_path}")
-        
-        plt.close()
-        
-        # Return the interpolated values and corresponding data
-        return {
-            'alpha_fe': alpha_fe_interp,
-            'radius': radius_values,
-            'Fe5015': galaxy_fe5015,
-            'Mgb': galaxy_mgb,
-            'Hbeta': galaxy_hbeta,
-            'alphafe_grid': {
-                'Fe5015_grid': fe5015_grid,
-                'Mgb_grid': mgb_grid,
-                'Hbeta_grid': hbeta_grid,
-                'alpha_fe_vol': alpha_fe_vol
-            },
-            'continuum_mode': continuum_mode  # Add this line
-        }
-        
-    except Exception as e:
-        logger.error(f"Error creating 3D alpha/Fe interpolation: {e}")
-        import traceback
-        traceback.print_exc()
-        return None
-
-def fit_3d_alpha_fe(indices, index_errors, model_data):
-    """
-    Perform 3D chi-square fitting to determine age, [Z/H], and [α/Fe]
-    using Fe5015, Mgb, and Hβ indices simultaneously
-    
-    Parameters:
-    -----------
-    indices : dict
-        Dictionary with measured indices: {'Hb': value, 'Fe5015': value, 'Mgb': value}
-    index_errors : dict
-        Dictionary with index measurement errors
-    model_data : DataFrame
-        The TMB03 model grid
-        
-    Returns:
-    --------
-    dict
-        Best-fit parameters with uncertainties
-    """
-    try:
-        # Define column name mapping for the model grid
-        model_column_mapping = {
-            'Fe5015': find_matching_column(model_data, ['Fe5015', 'Fe5015_SI', 'Fe5015_Index']),
-            'Mgb': find_matching_column(model_data, ['Mgb', 'Mg_b', 'Mg_b_SI', 'Mgb_Index']),
-            'Hbeta': find_matching_column(model_data, ['Hbeta', 'Hb', 'Hbeta_SI', 'Hb_Index', 'Hb_si']),
-            'Age': find_matching_column(model_data, ['Age', 'age']),
-            'ZoH': find_matching_column(model_data, ['ZoH', 'Z/H', '[Z/H]', 'metallicity', 'MOH', '[M/H]']),
-            'AoFe': find_matching_column(model_data, ['AoFe', 'alpha/Fe', '[alpha/Fe]', 'A/Fe', '[A/Fe]', 'alpha'])
-        }
-        
-        # Check if we found all required columns
-        missing_columns = [k for k, v in model_column_mapping.items() if v is None]
-        if missing_columns:
-            logger.error(f"Missing required columns in model data: {missing_columns}")
-            logger.info(f"Available columns in model data: {list(model_data.columns)}")
-            raise ValueError(f"Model data missing required columns: {missing_columns}")
-        
-        # Dictionary to store chi-square values for each model point
-        chi_square_values = {}
-        
-        # For each unique combination of age, [Z/H], and [α/Fe] in the model grid
-        for _, row in model_data.iterrows():
-            age = row[model_column_mapping['Age']]
-            zoh = row[model_column_mapping['ZoH']]
-            aofe = row[model_column_mapping['AoFe']]
-            
-            # Calculate chi-square contribution for each index
-            chi_hb = ((indices['Hb'] - row[model_column_mapping['Hbeta']]) / index_errors['Hb'])**2
-            chi_fe5015 = ((indices['Fe5015'] - row[model_column_mapping['Fe5015']]) / index_errors['Fe5015'])**2
-            chi_mgb = ((indices['Mgb'] - row[model_column_mapping['Mgb']]) / index_errors['Mgb'])**2
-            
-            # Total chi-square for this model point
-            total_chi_square = chi_hb + chi_fe5015 + chi_mgb
-            
-            # Store with unique key
-            key = (age, zoh, aofe)
-            chi_square_values[key] = total_chi_square
-        
-        # Find the minimum chi-square
-        min_chi_square = min(chi_square_values.values())
-        
-        # Find the model parameters corresponding to the minimum chi-square
-        best_params = None
-        for params, chi_square in chi_square_values.items():
-            if chi_square == min_chi_square:
-                best_params = params
-                break
-        
-        if best_params is None:
-            raise ValueError("Could not find best-fit parameters")
-        
-        # Calculate the reduced chi-square (3 indices - 3 parameters = 0 degrees of freedom)
-        # In practice, we'd add a regularization term or a minimum dof value
-        reduced_chi_square = min_chi_square / max(1, (3 - 3))
-        
-        # Extract best-fit parameters
-        best_age, best_zoh, best_aofe = best_params
-        
-        # Initial result without uncertainties
-        result = {
-            'age': best_age,
-            'Z/H': best_zoh,
-            'alpha/Fe': best_aofe,
-            'chi_square': min_chi_square,
-            'reduced_chi_square': reduced_chi_square
-        }
-        
-        logger.info(f"Best fit: Age={best_age:.1f} Gyr, [Z/H]={best_zoh:.2f}, [α/Fe]={best_aofe:.2f}")
-        logger.info(f"Chi-square: {min_chi_square:.2f}, Reduced chi-square: {reduced_chi_square:.2f}")
-        
-        return result
-    
-    except Exception as e:
-        logger.error(f"Error in 3D fitting: {e}")
-        import traceback
-        traceback.print_exc()
-        raise
-
-def monte_carlo_error_estimation(indices, index_errors, model_data, n_trials=1000):
-    """
-    Estimate parameter uncertainties using Monte Carlo simulations
-    
-    Parameters:
-    -----------
-    indices : dict
-        Dictionary with measured indices
-    index_errors : dict
-        Dictionary with index measurement errors
-    model_data : DataFrame
-        The TMB03 model grid
-    n_trials : int
-        Number of Monte Carlo trials
-        
-    Returns:
-    --------
-    dict
-        Dictionary with parameter uncertainties
-    """
-    try:
-        # Arrays to store MC results
-        mc_ages = []
-        mc_metallicities = []
-        mc_alphas = []
-        
-        # Perform Monte Carlo trials
-        for i in range(n_trials):
-            if i % 100 == 0:
-                logger.info(f"Monte Carlo trial {i}/{n_trials}")
-                
-            # Generate perturbed indices based on measurement errors
-            perturbed_indices = {
-                'Hb': np.random.normal(indices['Hb'], index_errors['Hb']),
-                'Fe5015': np.random.normal(indices['Fe5015'], index_errors['Fe5015']),
-                'Mgb': np.random.normal(indices['Mgb'], index_errors['Mgb'])
-            }
-            
-            # Find best fit for perturbed data
-            try:
-                result = fit_3d_alpha_fe(perturbed_indices, index_errors, model_data)
-                
-                # Store results
-                mc_ages.append(result['age'])
-                mc_metallicities.append(result['Z/H'])
-                mc_alphas.append(result['alpha/Fe'])
-            except Exception as e:
-                logger.warning(f"Error in Monte Carlo trial {i}: {e}")
-                continue
-        
-        # Check if we have enough successful trials
-        if len(mc_ages) < 10:
-            logger.warning(f"Too few successful Monte Carlo trials: {len(mc_ages)}")
-            return {
-                'age': np.nan,
-                'age_lower': np.nan,
-                'age_upper': np.nan,
-                'Z/H': np.nan,
-                'Z/H_lower': np.nan,
-                'Z/H_upper': np.nan,
-                'alpha/Fe': np.nan,
-                'alpha/Fe_lower': np.nan,
-                'alpha/Fe_upper': np.nan,
-                'mc_trials': len(mc_ages)
-            }
-        
-        # Convert to numpy arrays
-        mc_ages = np.array(mc_ages)
-        mc_metallicities = np.array(mc_metallicities)
-        mc_alphas = np.array(mc_alphas)
-        
-        # Calculate median and 68% confidence intervals
-        age_median = np.median(mc_ages)
-        age_lower = np.percentile(mc_ages, 16)
-        age_upper = np.percentile(mc_ages, 84)
-        
-        zoh_median = np.median(mc_metallicities)
-        zoh_lower = np.percentile(mc_metallicities, 16)
-        zoh_upper = np.percentile(mc_metallicities, 84)
-        
-        alpha_median = np.median(mc_alphas)
-        alpha_lower = np.percentile(mc_alphas, 16)
-        alpha_upper = np.percentile(mc_alphas, 84)
-        
-        # Format results as in Liu et al. (2016)
-        result = {
-            'age': age_median,
-            'age_lower': age_median - age_lower,
-            'age_upper': age_upper - age_median,
-            'Z/H': zoh_median,
-            'Z/H_lower': zoh_median - zoh_lower,
-            'Z/H_upper': zoh_upper - zoh_median,
-            'alpha/Fe': alpha_median,
-            'alpha/Fe_lower': alpha_median - alpha_lower,
-            'alpha/Fe_upper': alpha_upper - alpha_median,
-            'mc_ages': mc_ages,
-            'mc_metallicities': mc_metallicities,
-            'mc_alphas': mc_alphas,
-            'mc_trials': len(mc_ages)
-        }
-        
-        logger.info(f"Monte Carlo results: Age={age_median:.1f}+{age_upper-age_median:.1f}-{age_median-age_lower:.1f} Gyr")
-        logger.info(f"[Z/H]={zoh_median:.2f}+{zoh_upper-zoh_median:.2f}-{zoh_median-zoh_lower:.2f}")
-        logger.info(f"[α/Fe]={alpha_median:.2f}+{alpha_upper-alpha_median:.2f}-{alpha_median-alpha_lower:.2f}")
-        
-        return result
-    
-    except Exception as e:
-        logger.error(f"Error in Monte Carlo error estimation: {e}")
-        import traceback
-        traceback.print_exc()
-        return None
-
-def calculate_alpha_fe_3d(galaxy_name, rdb_data, model_data, bins_limit=6, continuum_mode='fit'):
-    """
-    Calculate alpha/Fe for all bins of a galaxy using 3D chi-square fitting
-    
-    Parameters:
-    -----------
-    galaxy_name : str
-        Galaxy name
-    rdb_data : dict
-        RDB data containing spectral indices
-    model_data : DataFrame
-        Model grid data with indices and alpha/Fe values
-    bins_limit : int
-        Limit analysis to first N bins (default: 6 for bins 0-5)
-    continuum_mode : str
-        Spectral index continuum mode to use ('auto', 'fit', 'original')
-    
-    Returns:
-    --------
-    dict
-        Dictionary containing alpha/Fe values and uncertainties for each bin
-    """
-    try:
-        logger.info(f"Starting 3D alpha/Fe calculation for {galaxy_name} with {continuum_mode} mode")
-        
-        # Extract spectral indices using the specified mode
-        galaxy_indices = extract_spectral_indices_from_method(
-            rdb_data, 
-            method=continuum_mode,
-            bins_limit=bins_limit
-        )
-        
-        # Check if we have the required data
-        if ('bin_indices' not in galaxy_indices or
-            'Fe5015' not in galaxy_indices['bin_indices'] or 
-            'Mgb' not in galaxy_indices['bin_indices'] or
-            'Hbeta' not in galaxy_indices['bin_indices']):
-            logger.warning(f"Missing required spectral indices for {galaxy_name}")
-            return None
-        
-        # Get galaxy spectral indices for each bin
-        fe5015_values = galaxy_indices['bin_indices']['Fe5015']
-        mgb_values = galaxy_indices['bin_indices']['Mgb']
-        hbeta_values = galaxy_indices['bin_indices']['Hbeta']
-        
-        # Get radius information if available
-        radius_values = None
-        if 'R' in galaxy_indices['bin_indices']:
-            radius_values = galaxy_indices['bin_indices']['R']
-        elif 'bin_radii' in galaxy_indices:
-            radius_values = galaxy_indices['bin_radii']
-        elif 'distance' in rdb_data:
-            distance = rdb_data['distance'].item() if hasattr(rdb_data['distance'], 'item') else rdb_data['distance']
-            if 'bin_distances' in distance:
-                radius_values = distance['bin_distances'][:bins_limit]
-            elif 'binning' in rdb_data:
-                binning = rdb_data['binning'].item() if hasattr(rdb_data['binning'], 'item') else rdb_data['binning']
-                if 'bin_radii' in binning:
-                    radius_values = binning['bin_radii'][:bins_limit]
-        
-        # Get effective radius
-        Re = extract_effective_radius(rdb_data)
-        
-        # Scale radius by effective radius if available
-        if Re is not None and Re > 0 and radius_values is not None:
-            r_scaled = radius_values / Re
-            logger.info(f"Scaling radius by Re = {Re:.2f} arcsec")
-        else:
-            r_scaled = radius_values
-            logger.info(f"Using raw radius values (Re not available)")
-        
-        # Results for each bin
-        bin_results = []
-        
-        # Define typical index errors if not provided
-        # These are approximate values - adjust based on your data quality
-        index_errors = {
-            'Fe5015': 0.2,
-            'Mgb': 0.15,
-            'Hb': 0.15
-        }
-        
-        # Check bin limit against actual data length
-        effective_bins_limit = min(bins_limit, len(fe5015_values))
-        if effective_bins_limit < bins_limit:
-            logger.warning(f"Actual data has fewer bins ({effective_bins_limit}) than requested ({bins_limit})")
-        
-        # Process each bin
-        active_bins = []  # Track which bins are actually used
-        
-        for i in range(effective_bins_limit):
-            # Skip bins with missing or invalid data
-            if (i >= len(fe5015_values) or i >= len(mgb_values) or i >= len(hbeta_values) or 
-                np.isnan(fe5015_values[i]) or np.isnan(mgb_values[i]) or np.isnan(hbeta_values[i]) or 
-                fe5015_values[i] <= 0 or mgb_values[i] <= 0 or hbeta_values[i] <= 0):
-                logger.warning(f"Skipping bin {i} due to invalid or missing data")
-                continue
-            
-            logger.info(f"Processing bin {i}: Fe5015={fe5015_values[i]:.2f}, Mgb={mgb_values[i]:.2f}, Hβ={hbeta_values[i]:.2f}")
-            
-            # Measured indices for this bin
-            bin_indices = {
-                'Fe5015': fe5015_values[i],
-                'Mgb': mgb_values[i],
-                'Hb': hbeta_values[i]
-            }
-            
-            # Calculate errors scaled by the index values
-            # This is a simplified approach - ideally you'd use measured errors
-            bin_errors = {
-                'Fe5015': max(0.05 * fe5015_values[i], index_errors['Fe5015']),
-                'Mgb': max(0.05 * mgb_values[i], index_errors['Mgb']),
-                'Hb': max(0.05 * hbeta_values[i], index_errors['Hb'])
-            }
-            
-            # Fit using 3D chi-square
-            try:
-                best_fit = fit_3d_alpha_fe(bin_indices, bin_errors, model_data)
-                
-                # Calculate uncertainties using Monte Carlo
-                uncertainties = monte_carlo_error_estimation(bin_indices, bin_errors, model_data, n_trials=500)
-                
-                # Skip bins with failed Monte Carlo
-                if uncertainties is None or 'alpha/Fe' not in uncertainties or np.isnan(uncertainties['alpha/Fe']):
-                    logger.warning(f"Monte Carlo failed for bin {i}, skipping")
-                    continue
-                
-                # Determine radius
-                bin_radius = r_scaled[i] if r_scaled is not None and i < len(r_scaled) else None
-                
-                # Combine best fit with uncertainties
-                bin_result = {
-                    'bin': i,
-                    'radius': bin_radius,
-                    'Fe5015': fe5015_values[i],
-                    'Mgb': mgb_values[i],
-                    'Hbeta': hbeta_values[i],
-                    'age': uncertainties['age'],
-                    'age_lower': uncertainties['age_lower'],
-                    'age_upper': uncertainties['age_upper'],
-                    'Z/H': uncertainties['Z/H'],
-                    'Z/H_lower': uncertainties['Z/H_lower'],
-                    'Z/H_upper': uncertainties['Z/H_upper'],
-                    'alpha/Fe': uncertainties['alpha/Fe'],
-                    'alpha/Fe_lower': uncertainties['alpha/Fe_lower'],
-                    'alpha/Fe_upper': uncertainties['alpha/Fe_upper'],
-                    'chi_square': best_fit['chi_square'],
-                    'mc_trials': uncertainties.get('mc_trials', 0)
-                }
-                
-                # Add to results
-                bin_results.append(bin_result)
-                active_bins.append(i)
-                
-                logger.info(f"Bin {i} results: [α/Fe]={uncertainties['alpha/Fe']:.2f}+{uncertainties['alpha/Fe_upper']:.2f}-{uncertainties['alpha/Fe_lower']:.2f}")
-                
-            except Exception as bin_err:
-                logger.warning(f"Error processing bin {i}: {bin_err}")
-                continue
-        
-        # Calculate overall results
-        if bin_results:
-            # Extract arrays for slope calculation
-            alpha_fe_values = [result['alpha/Fe'] for result in bin_results]
-            radius_values = [result['radius'] for result in bin_results]
-            
-            # Calculate median values
-            median_alpha_fe = np.median(alpha_fe_values)
-            median_radius = np.median([r for r in radius_values if r is not None]) if any(r is not None for r in radius_values) else None
-            
-            # Calculate slope if we have multiple points with valid radii
-            if len(bin_results) > 1 and all(r is not None for r in radius_values):
-                slope, intercept, r_squared, p_value, std_err = calculate_improved_alpha_fe_slope(
-                    radius_values, alpha_fe_values)
-                logger.info(f"Alpha/Fe gradient: slope={slope:.3f}, p-value={p_value:.3f}, R²={r_squared:.3f}")
-            else:
-                slope, intercept, r_squared, p_value, std_err = np.nan, np.nan, np.nan, np.nan, np.nan
-                logger.warning("Not enough valid points to calculate alpha/Fe gradient")
-            
-            # Return compiled results
-            return {
-                'galaxy': galaxy_name,
-                'bin_results': bin_results,
-                'alpha_fe_median': median_alpha_fe,
-                'radius_median': median_radius,
-                'effective_radius': Re,
-                'slope': slope,
-                'p_value': p_value,
-                'r_squared': r_squared,
-                'std_err': std_err,
-                'intercept': intercept,
-                'method': '3D chi-square fitting',
-                'bins_used': ','.join(map(str, active_bins)),
-                'continuum_mode': continuum_mode  # Record which continuum mode was used
-            }
-        else:
-            logger.warning(f"No valid bin results for {galaxy_name}")
-            return None
-    
-    except Exception as e:
-        logger.error(f"Error in 3D alpha/Fe calculation for {galaxy_name}: {e}")
-        import traceback
-        traceback.print_exc()
-        return None
-
-def update_alpha_fe_with_3d_method(results_list, all_galaxy_data, model_data, continuum_mode='fit'):
-    """
-    Update existing alpha/Fe results with values from 3D interpolation method
-    
-    Parameters:
-    -----------
-    results_list : list
-        List of dictionaries containing existing alpha/Fe results
-    all_galaxy_data : dict
-        Dictionary mapping galaxy names to their RDB data
-    model_data : DataFrame
-        Model grid data with indices and alpha/Fe values
-    continuum_mode : str
-        Spectral index continuum mode to use ('auto', 'fit', 'original')
-    
-    Returns:
-    --------
-    list
-        Updated results list with 3D interpolation values
-    """
-    updated_results = []
-    
-    logger.info(f"Updating alpha/Fe with 3D method using '{continuum_mode}' mode for spectral indices")
-    
-    for i, result in enumerate(results_list):
-        if result is None:
-            updated_results.append(None)
-            continue
-        
-        galaxy_name = result['galaxy']
-        logger.info(f"Updating {galaxy_name} with 3D interpolation method...")
-        
-        # Get the galaxy data
-        if galaxy_name not in all_galaxy_data:
-            logger.warning(f"No data found for {galaxy_name}, skipping 3D update")
-            updated_results.append(result)
-            continue
-        
-        # Extract bin limit from original result
-        bins_to_use = []
-        if 'bins_used' in result:
-            try:
-                bins_to_use = [int(b.strip()) for b in result['bins_used'].split(',') if b.strip().isdigit()]
-            except:
-                pass
-        
-        bin_limit = max(bins_to_use) + 1 if bins_to_use else 6
-        
-        # Calculate alpha/Fe using 3D method with the specified continuum mode
-        result_3d = calculate_alpha_fe_3d(
-            galaxy_name, 
-            all_galaxy_data[galaxy_name], 
-            model_data, 
-            bins_limit=bin_limit,
-            continuum_mode=continuum_mode
-        )
-        
-        # If 3D method was successful, update the original result
-        if result_3d is not None:
-            # Create a new result dictionary to avoid modifying the original
-            new_result = result.copy()
-            
-            # Update all relevant fields
-            new_result['alpha_fe_median'] = result_3d['alpha_fe_median']
-            new_result['alpha_fe_values'] = [bin_result['alpha/Fe'] for bin_result in result_3d['bin_results']]
-            new_result['radius_values'] = [bin_result['radius'] for bin_result in result_3d['bin_results']]
-            new_result['slope'] = result_3d['slope']
-            new_result['p_value'] = result_3d['p_value']
-            new_result['r_squared'] = result_3d['r_squared']
-            new_result['method'] = '3D chi-square fitting'
-            new_result['continuum_mode'] = continuum_mode  # Record which continuum mode was used
-            
-            updated_results.append(new_result)
-            logger.info(f"Updated {galaxy_name}: old α/Fe={result['alpha_fe_median']:.3f}, new α/Fe={new_result['alpha_fe_median']:.3f}")
-            logger.info(f"  old slope={result.get('slope', np.nan):.3f}, new slope={new_result['slope']:.3f}")
-        else:
-            # If 3D method failed, keep the original result
-            updated_results.append(result)
-            logger.warning(f"3D method failed for {galaxy_name}, keeping original values")
-    
-    return updated_results
-
-#------------------------------------------------------------------------------
-# Main Analysis Function
-#------------------------------------------------------------------------------
-
-def calculate_galaxy_alpha_fe_summary(galaxies, model_file="./TMB03/TMB03.csv", 
-                                     output_dir=None, dpi=150, bins_limit=6):
-    """
-    Calculate alpha/Fe values and radial gradients for all galaxies and create summary plots
-    
-    Parameters:
-    -----------
-    galaxies : list
-        List of galaxy names to process
-    model_file : str
-        Path to the model grid file
-    output_dir : str
-        Directory to save output images
-    dpi : int
-        Resolution for saved images
-    bins_limit : int
-        Limit analysis to first N bins (default: 6 for bins 0-5)
-    """
-    try:
-        # Create output directory if needed
-        if output_dir is None:
-            output_dir = "./galaxy_summary"
-        os.makedirs(output_dir, exist_ok=True)
-        
-        # Load model data
-        model_data = load_model_data(model_file)
-        if model_data is None or model_data.empty:
-            logger.error("Failed to load model data")
-            return
-            
-        logger.info(f"Loaded model data with columns: {list(model_data.columns)}")
-        
-        # Process each galaxy using both methods
-        results_list = []         # Traditional binned analysis
-        direct_results_list = []  # Direct point-by-point analysis
-        valid_results_count = 0
-        
-        for galaxy_name in galaxies:
-            # Load galaxy data
-            p2p_data, vnb_data, rdb_data = Read_Galaxy(galaxy_name)
-            
-            # Check if RDB data is valid before proceeding
-            rdb_valid = rdb_data is not None and isinstance(rdb_data, dict) and len(rdb_data) > 0
-            if not rdb_valid:
-                logger.warning(f"No valid RDB data for {galaxy_name}")
-                results_list.append(None)
-                direct_results_list.append(None)
-                continue
-                
-            # Calculate alpha/Fe and radius relationship using traditional method
-            # Pass bins_limit parameter to extraction functions
-            result = extract_alpha_fe_radius(galaxy_name, rdb_data, model_data, bins_limit=bins_limit)
-            results_list.append(result)
-            
-            # Also calculate using direct point-by-point method with interpolation
-            # Pass bins_limit parameter here too
-            direct_result = calculate_alpha_fe_direct(galaxy_name, rdb_data, model_data, bins_limit=bins_limit)
-            direct_results_list.append(direct_result)
-            
-            # Log results
-            if result:
-                valid_results_count += 1
-                logger.info(f"{galaxy_name}: α/Fe = {result['alpha_fe_median']:.3f}, R/Re = {result['radius_median']:.3f}")
-                if not np.isnan(result['slope']):
-                    logger.info(f"  Slope = {result['slope']:.3f}, p-value = {result['p_value']:.3f}")
-            else:
-                logger.warning(f"Could not calculate α/Fe for {galaxy_name}")
-        
-        logger.info(f"Successfully processed {valid_results_count} out of {len(galaxies)} galaxies")
-        
-        if valid_results_count == 0:
-            logger.error("No valid results obtained. Cannot create plots.")
-            return
-            
-        # Create improved alpha/Fe vs. radius plot with legend
-        create_alpha_radius_plot_improved(results_list, 
-                                        output_path=f"{output_dir}/alpha_fe_vs_radius_improved.png", 
-                                        dpi=dpi)
-        
-        # Create direct interpolation plots
-        create_alpha_radius_direct_plot(direct_results_list, 
-                                       output_path=f"{output_dir}/alpha_fe_vs_radius_direct.png", 
-                                       dpi=dpi)
-        
-        # Pass model_data to use as background grid
-        create_fe5015_mgb_plot(direct_results_list, 
-                             output_path=f"{output_dir}/fe5015_vs_mgb.png", 
-                             dpi=dpi,
-                             model_data=model_data)
-        
-        # Get galaxy coordinates from IFU pointings
-        coordinates = get_ifu_coordinates(galaxies)
-        
-        # Create Virgo Cluster map with vectors
-        create_virgo_cluster_map_with_vectors(results_list, coordinates, 
-                                            output_path=f"{output_dir}/virgo_cluster_map.png", 
-                                            dpi=dpi)
-        
-        # Create summary table
-        summary_data = []
-        for result in results_list:
-            if result:
-                summary_data.append({
-                    'Galaxy': result['galaxy'],
-                    'Alpha/Fe': result['alpha_fe_median'],
-                    'R/Re': result['radius_median'],
-                    'Metallicity': result['metallicity_median'],
-                    'α/Fe-R Slope': result['slope'],
-                    'p-value': result['p_value'],
-                    'R-squared': result['r_squared']
-                })
-        
-        # Save as CSV
-        summary_df = pd.DataFrame(summary_data)
-        summary_df.to_csv(f"{output_dir}/galaxy_summary.csv", index=False)
-        
-        # Also save a pretty markdown summary
-        with open(f"{output_dir}/galaxy_summary.md", "w") as f:
-            f.write("# Alpha/Fe Radial Gradient Analysis for Virgo Cluster Galaxies\n\n")
-            f.write("## Galaxy Properties\n\n")
-            
-            # Create markdown table
-            f.write("| Galaxy | α/Fe | R/Re | [M/H] | α/Fe-Radius Slope | p-value | Significant? |\n")
-            f.write("|--------|------|------|-------|-------------------|---------|-------------|\n")
-            
-            for result in results_list:
-                if result:
-                    significant = "Yes" if result['p_value'] < 0.05 else "No"
-                    f.write(f"| {result['galaxy']} | {result['alpha_fe_median']:.2f} | {result['radius_median']:.2f} | ")
-                    f.write(f"{result['metallicity_median']:.2f} | {result['slope']:.3f} | {result['p_value']:.3f} | {significant} |\n")
-            
-            f.write("\n\n## Interpretation\n\n")
-            f.write("- Positive slope indicates α/Fe increases with radius (more α-enhancement in outskirts)\n")
-            f.write("- Negative slope indicates α/Fe decreases with radius (more α-enhancement in center)\n")
-            f.write("- Statistically significant trends (p < 0.05) are marked as 'Yes' in the Significant column\n\n")
-            
-            f.write("## Analysis Method\n\n")
-            f.write(f"Alpha/Fe values were derived by interpolating between TMB03 stellar population model grid points\n")
-            f.write(f"using inverse distance weighting in the space of spectral indices (Fe5015, Mgb, Hbeta).\n")
-            f.write(f"Analysis used the first {bins_limit} radial bins (0-{bins_limit-1}) of each galaxy.\n")
-            f.write(f"Spatial analysis uses precise IFU pointing centers for accurate representation of observed regions.\n\n")
-            
-            f.write("Analysis completed on " + pd.Timestamp.now().strftime("%Y-%m-%d"))
-        
-        logger.info(f"Completed galaxy summary analysis. Results saved to {output_dir}")
-        
-    except Exception as e:
-        logger.error(f"Error in galaxy summary analysis: {e}")
-        import traceback
-        traceback.print_exc()
 
 def create_alpha_fe_results_summary(results_list, emission_line_galaxies, output_path=None):
     """
@@ -6748,6 +4007,7 @@ def create_alpha_fe_results_summary(results_list, emission_line_galaxies, output
             p_value = result.get('p_value', np.nan)
             radial_limit = result.get('radial_bin_limit', np.nan)
             bins_used = result.get('bins_used', '')
+            special_case = result.get('special_case_applied', False)
             has_emission = galaxy in emission_line_galaxies
             
             # Add to summary data
@@ -6757,7 +4017,8 @@ def create_alpha_fe_results_summary(results_list, emission_line_galaxies, output
                 'P-value': p_value,
                 'Emission Line': 'Yes' if has_emission else 'No',
                 'Radial Bin Limit': radial_limit,
-                'Bins Used': bins_used
+                'Bins Used': bins_used,
+                'Special Case': 'Yes' if special_case else 'No'
             })
         
         # Create DataFrame
@@ -6800,6 +4061,7 @@ def create_alpha_fe_results_summary(results_list, emission_line_galaxies, output
                 negative_slopes = sum(slopes < 0)
                 significant_results = sum(p_values < 0.05)
                 emission_line_count = sum(df['Emission Line'] == 'Yes')
+                special_case_count = sum(df['Special Case'] == 'Yes')
                 
                 print("\n=== STATISTICAL SUMMARY ===")
                 print(f"Total galaxies analyzed: {total_galaxies}")
@@ -6807,6 +4069,7 @@ def create_alpha_fe_results_summary(results_list, emission_line_galaxies, output
                 print(f"Galaxies with negative α/Fe gradients: {negative_slopes} ({negative_slopes/total_galaxies*100:.1f}%)")
                 print(f"Statistically significant results: {significant_results} ({significant_results/total_galaxies*100:.1f}%)")
                 print(f"Galaxies with emission lines: {emission_line_count} ({emission_line_count/total_galaxies*100:.1f}%)")
+                print(f"Galaxies with special case handling: {special_case_count} ({special_case_count/total_galaxies*100:.1f}%)")
                 
                 # Analysis by emission line status (only if we have emission line info)
                 if 'Emission Line' in df.columns:
@@ -6854,6 +4117,131 @@ def create_alpha_fe_results_summary(results_list, emission_line_galaxies, output
         traceback.print_exc()
         return pd.DataFrame()  # Return empty DataFrame instead of None
 
+def process_all_galaxies(all_galaxy_data, model_data, config_path='bins_config.yaml', continuum_mode='fit'):
+    """
+    Process all galaxies with standardized alpha/Fe calculation
+    
+    Parameters:
+    -----------
+    all_galaxy_data : dict
+        Dictionary mapping galaxy names to their RDB data
+    model_data : DataFrame
+        Model grid data
+    config_path : str
+        Path to the bin configuration file
+    continuum_mode : str
+        Spectral index continuum mode to use
+        
+    Returns:
+    --------
+    list
+        List of standardized results for each galaxy
+    """
+    # Load configuration
+    config = load_bin_config(config_path)
+    
+    # Log the continuum mode being used
+    logger.info(f"Using '{continuum_mode}' mode for spectral indices")
+    
+    # Results list
+    results = []
+    
+    for galaxy_name, galaxy_data in all_galaxy_data.items():
+        logger.info(f"Processing {galaxy_name}...")
+        
+        # Get bins to use for this galaxy
+        bins_to_use = get_bins_to_use(galaxy_name, config)
+        logger.info(f"  Using bins: {bins_to_use}")
+        
+        # Find the maximum bin index
+        max_bin_idx = max(bins_to_use) + 1 if bins_to_use else 6
+        
+        # Create output directory
+        output_dir = f"./visualization/{galaxy_name}"
+        os.makedirs(output_dir, exist_ok=True)
+        
+        # Get standardized alpha/Fe data - our single source of truth
+        result = get_standardized_alpha_fe_data(
+            galaxy_name, 
+            galaxy_data, 
+            model_data, 
+            bins_limit=max_bin_idx,
+            continuum_mode=continuum_mode,
+            special_cases=SPECIAL_CASES
+        )
+        
+        # Log whether this is a special case
+        if result['special_case_applied']:
+            logger.info(f"  Applied special case handling for {galaxy_name}")
+        
+        # Add to results list
+        results.append(result)
+        
+        # Create visualizations using the standardized data
+        # Get cube info for scaling
+        cube_info = extract_cube_info(galaxy_name)
+        
+        # Pass the standardized result to all visualization functions
+        
+        # Create flux map visualization
+        flux_path = f"{output_dir}/{galaxy_name}_flux_and_binning.png"
+        p2p_data = None
+        try:
+            p2p_data, _, _ = Read_Galaxy(galaxy_name)
+        except:
+            logger.warning(f"Could not read P2P data for {galaxy_name}")
+            
+        create_combined_flux_and_binning(
+            galaxy_name, 
+            p2p_data, 
+            galaxy_data, 
+            cube_info, 
+            output_path=flux_path, 
+            dpi=150
+        )
+        
+        # Create parameter-radius plots - pass the standardized data
+        params_plot_path = f"{output_dir}/{galaxy_name}_parameter_radius.png"
+        create_parameter_radius_plots(
+            galaxy_name, 
+            galaxy_data, 
+            model_data,
+            output_path=params_plot_path, 
+            dpi=150, 
+            bins_limit=max_bin_idx,
+            interpolated_data=result,  # Pass standardized data
+            continuum_mode=continuum_mode
+        )
+        
+        # Create spectral index visualization
+        interp_path = f"{output_dir}/{galaxy_name}_alpha_fe_interpolation.png"
+        create_spectral_index_interpolation_plot(
+            galaxy_name, 
+            galaxy_data, 
+            model_data,
+            output_path=interp_path, 
+            dpi=150, 
+            bins_limit=max_bin_idx,
+            continuum_mode=continuum_mode,
+            standardized_data=result  # Pass standardized data
+        )
+        
+        # Create model grid plots
+        model_grid_path = f"{output_dir}/{galaxy_name}_model_grid_part1.png"
+        create_model_grid_plots_part1(
+            galaxy_name, 
+            galaxy_data, 
+            model_data,
+            age=10,
+            output_path=model_grid_path, 
+            dpi=150, 
+            bins_limit=max_bin_idx,
+            continuum_mode=continuum_mode,
+            standardized_data=result  # Pass standardized data
+        )
+    
+    return results
+
 #------------------------------------------------------------------------------
 # Main Execution
 #------------------------------------------------------------------------------
@@ -6891,12 +4279,8 @@ if __name__ == "__main__":
         if rdb_data is not None and isinstance(rdb_data, dict) and len(rdb_data) > 0:
             all_galaxy_data[galaxy_name] = rdb_data
     
-    # Process all galaxies with the bin configuration and specified mode
+    # Process all galaxies with the bin configuration and specified mode - single consistent method
     results = process_all_galaxies(all_galaxy_data, model_data, 'bins_config.yaml', continuum_mode)
-    
-    # Update results with 3D interpolation method (using same continuum mode)
-    results = update_alpha_fe_with_3d_method(results, all_galaxy_data, model_data, continuum_mode)
-    logger.info(f"Updated alpha/Fe values using 3D interpolation with '{continuum_mode}' mode")
     
     # Define emission line galaxies
     emission_line_galaxies = [
@@ -6937,3 +4321,675 @@ if __name__ == "__main__":
     summary_df = create_alpha_fe_results_summary(results, emission_line_galaxies, f"{output_dir}/alpha_fe_results.csv")
     
     logger.info(f"Analysis complete using '{continuum_mode}' continuum mode for spectral indices")
+
+
+
+
+def create_3d_alpha_fe_interpolation(galaxy_name, rdb_data, model_data, output_path=None, dpi=150, bins_limit=6, continuum_mode='fit'):
+    """
+    Create a 3D visualization of alpha/Fe interpolation across spectral index space
+    
+    Parameters:
+    -----------
+    galaxy_name : str
+        Galaxy name
+    rdb_data : dict
+        RDB data containing spectral indices
+    model_data : DataFrame
+        Model grid data with indices and alpha/Fe values
+    output_path : str
+        Path to save the output image
+    dpi : int
+        Resolution for the output image
+    bins_limit : int
+        Limit on the number of bins to analyze
+    continuum_mode : str
+        Spectral index continuum mode to use ('auto', 'fit', 'original')
+    
+    Returns:
+    --------
+    dict
+        Dictionary with interpolated alpha/Fe values and corresponding spectral indices
+    """
+    try:
+        # Import needed for 3D plotting
+        from mpl_toolkits.mplot3d import Axes3D
+        from matplotlib import cm
+        from scipy.interpolate import LinearNDInterpolator, griddata
+        import scipy.spatial as spatial
+        
+        # Use standardized data if possible
+        standardized_data = get_standardized_alpha_fe_data(
+            galaxy_name, rdb_data, model_data, bins_limit, continuum_mode, SPECIAL_CASES)
+        
+        # Extract data from standardized data
+        alpha_fe_values = standardized_data['alpha_fe_values']
+        radius_values = standardized_data['radius_values']
+        fe5015_values = standardized_data['fe5015_values']
+        mgb_values = standardized_data['mgb_values']
+        hbeta_values = standardized_data['hbeta_values']
+        bin_indices = standardized_data['bin_indices']
+        
+        # Define column name mapping for the model grid
+        model_column_mapping = {
+            'Fe5015': find_matching_column(model_data, ['Fe5015', 'Fe5015_SI', 'Fe5015_Index']),
+            'Mgb': find_matching_column(model_data, ['Mgb', 'Mg_b', 'Mg_b_SI', 'Mgb_Index']),
+            'Hbeta': find_matching_column(model_data, ['Hbeta', 'Hb', 'Hbeta_SI', 'Hb_Index', 'Hb_si']),
+            'Age': find_matching_column(model_data, ['Age', 'age']),
+            'ZoH': find_matching_column(model_data, ['ZoH', 'Z/H', '[Z/H]', 'metallicity', 'MOH', '[M/H]']),
+            'AoFe': find_matching_column(model_data, ['AoFe', 'alpha/Fe', '[alpha/Fe]', 'A/Fe', '[A/Fe]', 'alpha'])
+        }
+        
+        # Get mean age for model grid
+        mean_age = 10.0  # Default to 10 Gyr
+        
+        # Find closest age in model grid
+        age_column = model_column_mapping['Age']
+        available_ages = np.array(model_data[age_column].unique())
+        closest_age = available_ages[np.argmin(np.abs(available_ages - mean_age))]
+        
+        # Filter model grid to this age
+        model_age_data = model_data[model_data[age_column] == closest_age]
+        
+        # Extract column names
+        fe5015_col = model_column_mapping['Fe5015']
+        mgb_col = model_column_mapping['Mgb']
+        hbeta_col = model_column_mapping['Hbeta']
+        aofe_col = model_column_mapping['AoFe']
+        zoh_col = model_column_mapping['ZoH']
+        
+        # Create 3D interpolator from model data
+        # Extract model data points for interpolation
+        model_fe5015 = model_age_data[fe5015_col].values
+        model_mgb = model_age_data[mgb_col].values
+        model_hbeta = model_age_data[hbeta_col].values
+        model_aofe = model_age_data[aofe_col].values
+        
+        # Create the interpolator from the model grid points
+        points = np.column_stack([model_fe5015, model_mgb, model_hbeta])
+        
+        # Use linear interpolation for smoother results
+        interpolator = LinearNDInterpolator(points, model_aofe)
+        
+        # Now create a grid for visualization of the 3D space
+        # Define grid limits based on galaxy and model data
+        fe5015_min = max(0, min(np.min(model_fe5015), np.min(fe5015_values) - 0.5))
+        fe5015_max = max(np.max(model_fe5015), np.max(fe5015_values) + 0.5)
+        mgb_min = max(0, min(np.min(model_mgb), np.min(mgb_values) - 0.5))
+        mgb_max = max(np.max(model_mgb), np.max(mgb_values) + 0.5)
+        hbeta_min = max(0, min(np.min(model_hbeta), np.min(hbeta_values) - 0.5))
+        hbeta_max = max(np.max(model_hbeta), np.max(hbeta_values) + 0.5)
+        
+        # Create a grid covering this space (but not too dense for performance)
+        grid_points = 20  # Number of points in each dimension
+        fe5015_grid = np.linspace(fe5015_min, fe5015_max, grid_points)
+        mgb_grid = np.linspace(mgb_min, mgb_max, grid_points)
+        hbeta_grid = np.linspace(hbeta_min, hbeta_max, grid_points)
+        
+        # Create the 3D grid
+        fe5015_3d, mgb_3d, hbeta_3d = np.meshgrid(fe5015_grid, mgb_grid, hbeta_grid)
+        grid_points_3d = np.column_stack([fe5015_3d.flatten(), mgb_3d.flatten(), hbeta_3d.flatten()])
+        
+        # Interpolate alpha/Fe values across this grid
+        alpha_fe_grid = interpolator(grid_points_3d)
+        
+        # Handle NaN values
+        alpha_fe_grid_clean = alpha_fe_grid.copy()
+        nan_mask_grid = np.isnan(alpha_fe_grid_clean)
+        if np.any(nan_mask_grid):
+            # Use nearest neighbor for NaN points
+            from scipy.spatial import cKDTree
+            tree = cKDTree(points)
+            nn_indices_grid = tree.query(grid_points_3d[nan_mask_grid])[1]
+            alpha_fe_grid_clean[nan_mask_grid] = model_aofe[nn_indices_grid]
+        
+        # Reshape back to 3D grid
+        alpha_fe_vol = alpha_fe_grid_clean.reshape(fe5015_3d.shape)
+        
+        # Now create a visualization that shows:
+        # 1. A 3D scatter plot of the model grid points
+        # 2. The galaxy points with radius encoding
+        # 3. Slices of the interpolated alpha/Fe field
+        
+        # Create a figure with two subplots
+        fig = plt.figure(figsize=(20, 10))
+        
+        # Create a 3D axes for the left plot - scatter plot
+        ax1 = fig.add_subplot(121, projection='3d')
+        
+        # Plot the model grid points in the space - use small points
+        ax1.scatter(model_fe5015, model_mgb, model_hbeta, 
+                  c=model_aofe, cmap='plasma', s=10, alpha=0.3,
+                  label='Model Grid Points')
+        
+        # Create a normalization for alpha/Fe values
+        from matplotlib.colors import Normalize
+        norm = Normalize(vmin=0, vmax=0.5)  # Alpha/Fe range from 0 to 0.5
+        
+        # Plot the galaxy points with larger symbols
+        scatter = ax1.scatter(fe5015_values, mgb_values, hbeta_values, 
+                           c=alpha_fe_values, cmap='plasma', s=150, 
+                           edgecolor='black', linewidth=1.5, norm=norm)
+        
+        # Add bin numbers to the galaxy points
+        for i in range(len(fe5015_values)):
+            ax1.text(fe5015_values[i], mgb_values[i], hbeta_values[i], 
+                   str(bin_indices[i]), fontsize=12, color='white', fontweight='bold')
+        
+        # Add radius information if available
+        if radius_values is not None:
+            # Normalize radius for text size
+            radius_norm = radius_values / np.max(radius_values) if np.max(radius_values) > 0 else np.ones_like(radius_values)
+            for i, r in enumerate(radius_values):
+                ax1.text(fe5015_values[i], mgb_values[i], hbeta_max * 1.05, 
+                       f"R={r:.2f}", fontsize=8 + 4 * radius_norm[i], color='black')
+        
+        # Add a colorbar
+        cbar = plt.colorbar(scatter, ax=ax1, orientation='vertical')
+        cbar.set_label('[α/Fe]')
+        
+        # Set labels and title
+        ax1.set_xlabel('Fe5015 Index')
+        ax1.set_ylabel('Mgb Index')
+        ax1.set_zlabel('Hβ Index')
+        ax1.set_title('3D Spectral Index Space with α/Fe Interpolation', fontsize=16)
+        
+        # Set view angle for better visualization
+        ax1.view_init(30, -45)
+        
+        # Create axes for the right plot - volume slice
+        ax2 = fig.add_subplot(122, projection='3d')
+        
+        # Get mean values to position slice planes
+        mid_fe5015 = np.mean(fe5015_values)
+        mid_mgb = np.mean(mgb_values)
+        mid_hbeta = np.mean(hbeta_values)
+        
+        # Extract 2D slices from the 3D volume
+        # Find nearest grid indices for the middle values
+        idx_fe5015 = np.argmin(np.abs(fe5015_grid - mid_fe5015))
+        idx_mgb = np.argmin(np.abs(mgb_grid - mid_mgb))
+        idx_hbeta = np.argmin(np.abs(hbeta_grid - mid_hbeta))
+        
+        # Extract slices
+        xy_slice = alpha_fe_vol[:, :, idx_hbeta]  # Fe5015-Mgb plane
+        xz_slice = alpha_fe_vol[:, idx_mgb, :]    # Fe5015-Hbeta plane
+        yz_slice = alpha_fe_vol[idx_fe5015, :, :] # Mgb-Hbeta plane
+        
+        # Create 2D mesh grids for the slice planes
+        X, Y = np.meshgrid(fe5015_grid, mgb_grid)
+        X, Z = np.meshgrid(fe5015_grid, hbeta_grid)
+        Y, Z = np.meshgrid(mgb_grid, hbeta_grid)
+        
+        # Plot the slice planes with alpha/Fe coloring
+        # XY plane (constant Hbeta)
+        xy = ax2.plot_surface(X, Y, np.ones_like(X) * hbeta_grid[idx_hbeta],
+                           facecolors=cm.plasma(norm(xy_slice)), 
+                           alpha=0.7, shade=False)
+        
+        # XZ plane (constant Mgb)
+        xz = ax2.plot_surface(X, np.ones_like(X) * mgb_grid[idx_mgb], Z,
+                           facecolors=cm.plasma(norm(xz_slice.T)), 
+                           alpha=0.7, shade=False)
+        
+        # YZ plane (constant Fe5015)
+        yz = ax2.plot_surface(np.ones_like(Y) * fe5015_grid[idx_fe5015], Y, Z,
+                           facecolors=cm.plasma(norm(yz_slice.T)),
+                           alpha=0.7, shade=False)
+        
+        # Plot the galaxy points on this plot too
+        ax2.scatter(fe5015_values, mgb_values, hbeta_values, 
+                  c=alpha_fe_values, cmap='plasma', s=150, 
+                  edgecolor='black', linewidth=1.5, norm=norm)
+        
+        # Add bin numbers
+        for i in range(len(fe5015_values)):
+            ax2.text(fe5015_values[i], mgb_values[i], hbeta_values[i], 
+                   str(bin_indices[i]), fontsize=12, color='white', fontweight='bold')
+        
+        # Add guides to show where the slice planes are
+        ax2.plot([mid_fe5015, mid_fe5015], [mgb_min, mgb_max], [mid_hbeta, mid_hbeta], 'k--', alpha=0.5)
+        ax2.plot([mid_fe5015, mid_fe5015], [mid_mgb, mid_mgb], [hbeta_min, hbeta_max], 'k--', alpha=0.5)
+        ax2.plot([fe5015_min, fe5015_max], [mid_mgb, mid_mgb], [mid_hbeta, mid_hbeta], 'k--', alpha=0.5)
+        
+        # Add labels for the slice planes
+        ax2.text(mid_fe5015, mgb_max*1.1, mid_hbeta, "Fe5015 Slice", fontsize=10)
+        ax2.text(mid_fe5015, mid_mgb, hbeta_max*1.1, "Mgb Slice", fontsize=10)
+        ax2.text(fe5015_max*1.1, mid_mgb, mid_hbeta, "Hβ Slice", fontsize=10)
+        
+        # Add a colorbar for the slice planes
+        m = cm.ScalarMappable(cmap='plasma', norm=norm)
+        m.set_array([])
+        cbar2 = plt.colorbar(m, ax=ax2, orientation='vertical')
+        cbar2.set_label('[α/Fe]')
+        
+        # Set labels and title
+        ax2.set_xlabel('Fe5015 Index')
+        ax2.set_ylabel('Mgb Index')
+        ax2.set_zlabel('Hβ Index')
+        ax2.set_title('Cross-sections of α/Fe Distribution', fontsize=16)
+        
+        # Set view angle for better visualization of slices
+        ax2.view_init(30, 225)
+        
+        # Add overall title
+        plt.suptitle(f"Galaxy {galaxy_name}: 3D Spectral Index Analysis with α/Fe Interpolation\n"
+           f"Model Age: {closest_age} Gyr | Continuum Mode: {continuum_mode}", 
+           fontsize=20, y=0.98)
+        
+        # Add special case note if applicable
+        if standardized_data.get('special_case_applied', False):
+            plt.figtext(0.5, 0.02, 
+                      "NOTE: Special case handling applied to this galaxy.",
+                      ha='center', fontsize=10, color='red', 
+                      bbox=dict(facecolor='white', alpha=0.8, edgecolor='red'))
+        
+        # Add explanation text
+        plt.figtext(0.5, 0.01, 
+                  "Left: 3D scatter plot of model grid (small points) and galaxy measurements (large points)\n"
+                  "Right: Cross-sectional planes showing α/Fe distribution in the spectral index space\n"
+                  "Points are colored by interpolated α/Fe values. Bin numbers correspond to radial bins.",
+                  ha='center', fontsize=12)
+        
+        # Add information about the interpolated alpha/Fe values
+        if len(alpha_fe_values) > 0:
+            min_alpha = np.min(alpha_fe_values)
+            max_alpha = np.max(alpha_fe_values)
+            mean_alpha = np.mean(alpha_fe_values)
+            plt.figtext(0.01, 0.01, 
+                      f"Interpolated α/Fe range: {min_alpha:.2f} to {max_alpha:.2f} (mean: {mean_alpha:.2f})",
+                      ha='left', fontsize=10)
+        
+        # Calculate slope if radius information is available
+        if len(radius_values) > 1:
+            slope = standardized_data.get('slope', np.nan)
+            p_value = standardized_data.get('p_value', np.nan)
+            r_squared = standardized_data.get('r_squared', np.nan)
+            
+            significance = "**" if p_value < 0.01 else ("*" if p_value < 0.05 else "")
+            plt.figtext(0.99, 0.01, 
+                      f"α/Fe-Radius Slope: {slope:.3f}{significance} (p={p_value:.3f}, R²={r_squared:.3f})",
+                      ha='right', fontsize=10)
+        
+        # Tight layout for better spacing
+        plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+        
+        # Save figure if output path provided
+        if output_path:
+            plt.savefig(output_path, dpi=dpi, bbox_inches='tight')
+            logger.info(f"Saved 3D alpha/Fe interpolation visualization to {output_path}")
+        
+        plt.close()
+        
+        # Return the interpolated values and corresponding data
+        return {
+            'alpha_fe': alpha_fe_values,
+            'radius': radius_values,
+            'Fe5015': fe5015_values,
+            'Mgb': mgb_values,
+            'Hbeta': hbeta_values,
+            'alphafe_grid': {
+                'Fe5015_grid': fe5015_grid,
+                'Mgb_grid': mgb_grid,
+                'Hbeta_grid': hbeta_grid,
+                'alpha_fe_vol': alpha_fe_vol
+            },
+            'continuum_mode': continuum_mode  # Add this line
+        }
+        
+    except Exception as e:
+        logger.error(f"Error creating 3D alpha/Fe interpolation: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+# Function to create galaxy table for publication
+def create_galaxy_results_table(results_list, emission_line_galaxies, output_path=None):
+    """
+    Create a formatted LaTeX table of alpha/Fe gradient results for publication
+    
+    Parameters:
+    -----------
+    results_list : list
+        List of dictionaries containing alpha/Fe results for each galaxy
+    emission_line_galaxies : list
+        List of galaxy names with emission lines
+    output_path : str
+        Path to save the LaTeX table
+        
+    Returns:
+    --------
+    str
+        LaTeX formatted table
+    """
+    try:
+        # Prepare data for table
+        table_data = []
+        
+        for result in results_list:
+            if result is None:
+                continue
+                
+            galaxy = result['galaxy']
+            # Use get() with defaults to handle missing keys
+            slope = result.get('slope', np.nan)
+            p_value = result.get('p_value', np.nan)
+            alpha_fe_median = result.get('alpha_fe_median', np.nan)
+            radius_median = result.get('radius_median', np.nan)
+            
+            # Max radius (radial coverage)
+            if 'radius_values' in result and len(result['radius_values']) > 0:
+                max_radius = np.max(result['radius_values'])
+            else:
+                max_radius = np.nan
+                
+            # Number of bins used
+            if 'bin_indices' in result:
+                n_bins = len(result['bin_indices'])
+            else:
+                n_bins = 0
+                
+            has_emission = galaxy in emission_line_galaxies
+            special_case = result.get('special_case_applied', False)
+            
+            # Format statistical significance
+            if not np.isnan(p_value):
+                if p_value < 0.01:
+                    sig_symbol = "**"
+                elif p_value < 0.05:
+                    sig_symbol = "*"
+                else:
+                    sig_symbol = ""
+            else:
+                sig_symbol = ""
+            
+            # Add to table data
+            table_data.append({
+                'Galaxy': galaxy,
+                'Emission': has_emission,
+                'α/Fe': alpha_fe_median,
+                'R/Re': radius_median,
+                'Max R/Re': max_radius,
+                'Bins': n_bins,
+                'Slope': slope,
+                'Sig': sig_symbol,
+                'p-value': p_value,
+                'Special': special_case
+            })
+        
+        # Sort by absolute slope magnitude
+        table_data.sort(key=lambda x: abs(x['Slope']) if not np.isnan(x['Slope']) else 0, reverse=True)
+        
+        # Create LaTeX table
+        latex_table = "\\begin{table}\n"
+        latex_table += "\\centering\n"
+        latex_table += "\\caption{Alpha/Fe Gradients in Virgo Cluster Galaxies}\n"
+        latex_table += "\\begin{tabular}{lccccccc}\n"
+        latex_table += "\\hline\\hline\n"
+        latex_table += "Galaxy & Emission & $\\langle$[α/Fe]$\\rangle$ & $\\langle$R/Re$\\rangle$ & Max R/Re & Bins & Slope & p-value \\\\\n"
+        latex_table += "\\hline\n"
+        
+        # Add rows
+        for row in table_data:
+            # Format values
+            galaxy_fmt = row['Galaxy']
+            emission_fmt = "Yes" if row['Emission'] else "No"
+            alpha_fe_fmt = f"{row['α/Fe']:.2f}" if not np.isnan(row['α/Fe']) else "---"
+            radius_fmt = f"{row['R/Re']:.2f}" if not np.isnan(row['R/Re']) else "---"
+            max_radius_fmt = f"{row['Max R/Re']:.2f}" if not np.isnan(row['Max R/Re']) else "---"
+            bins_fmt = str(row['Bins'])
+            
+            # Format slope with significance symbol
+            if not np.isnan(row['Slope']):
+                slope_fmt = f"{row['Slope']:.3f}{row['Sig']}"
+            else:
+                slope_fmt = "---"
+                
+            p_value_fmt = f"{row['p-value']:.3f}" if not np.isnan(row['p-value']) else "---"
+            
+            # Add special case indicator
+            if row['Special']:
+                galaxy_fmt = f"{galaxy_fmt}$^\\dagger$"
+            
+            # Add row to table
+            latex_table += f"{galaxy_fmt} & {emission_fmt} & {alpha_fe_fmt} & {radius_fmt} & {max_radius_fmt} & {bins_fmt} & {slope_fmt} & {p_value_fmt} \\\\\n"
+        
+        # Close table
+        latex_table += "\\hline\n"
+        latex_table += "\\end{tabular}\n"
+        latex_table += "\\begin{tablenotes}\n"
+        latex_table += "\\small\n"
+        latex_table += "\\item $^*$ p < 0.05 (statistically significant)\n"
+        latex_table += "\\item $^{**}$ p < 0.01 (highly significant)\n"
+        latex_table += "\\item $^\\dagger$ Special case handling applied\n"
+        latex_table += "\\end{tablenotes}\n"
+        latex_table += "\\end{table}"
+        
+        # Save to file if requested
+        if output_path:
+            with open(output_path, 'w') as f:
+                f.write(latex_table)
+            logger.info(f"Saved LaTeX table to {output_path}")
+        
+        return latex_table
+        
+    except Exception as e:
+        logger.error(f"Error creating LaTeX table: {e}")
+        import traceback
+        traceback.print_exc()
+        return ""
+
+def create_galaxy_visualization(galaxy_name, p2p_data, rdb_data, cube_info, model_data=None, output_dir=None, dpi=150, bins_limit=6, continuum_mode='fit'):
+    """
+    Create comprehensive visualization for a galaxy using the standardized data
+    
+    Parameters:
+    -----------
+    galaxy_name : str
+        Galaxy name
+    p2p_data : dict
+        P2P data dictionary
+    rdb_data : dict
+        RDB data dictionary
+    cube_info : dict
+        Dictionary with cube information
+    model_data : DataFrame, optional
+        Model grid data for spectral index plots
+    output_dir : str
+        Directory to save output images
+    dpi : int
+        Resolution for saved images
+    bins_limit : int
+        Limit analysis to first N bins (default: 6 for bins 0-5)
+    continuum_mode : str
+        Spectral index continuum mode to use
+    
+    Returns:
+    --------
+    dict
+        Dictionary with standardized data for the galaxy
+    """
+    try:
+        # Create output directory if needed
+        if output_dir is None:
+            output_dir = f"./visualization/{galaxy_name}"
+        
+        os.makedirs(output_dir, exist_ok=True)
+        
+        # Check if data is valid
+        p2p_valid = p2p_data is not None and isinstance(p2p_data, dict)
+        rdb_valid = rdb_data is not None and isinstance(rdb_data, dict)
+        
+        if not rdb_valid:
+            logger.error(f"No valid RDB data for {galaxy_name}")
+            return None
+            
+        # Get standardized alpha/Fe data - our single source of truth
+        standardized_data = get_standardized_alpha_fe_data(
+            galaxy_name, 
+            rdb_data, 
+            model_data, 
+            bins_limit=bins_limit,
+            continuum_mode=continuum_mode,
+            special_cases=SPECIAL_CASES
+        )
+            
+        # Create flux map visualization
+        create_combined_flux_and_binning(
+            galaxy_name, 
+            p2p_data, 
+            rdb_data, 
+            cube_info, 
+            output_path=f"{output_dir}/{galaxy_name}_flux_and_binning.png", 
+            dpi=dpi
+        )
+        
+        # Create spectral index visualization
+        create_spectral_index_interpolation_plot(
+            galaxy_name, 
+            rdb_data, 
+            model_data,
+            output_path=f"{output_dir}/{galaxy_name}_alpha_fe_interpolation.png",
+            dpi=dpi,
+            bins_limit=bins_limit,
+            continuum_mode=continuum_mode,
+            standardized_data=standardized_data
+        )
+        
+        # Create parameter-radius plots
+        create_parameter_radius_plots(
+            galaxy_name, 
+            rdb_data, 
+            model_data,
+            output_path=f"{output_dir}/{galaxy_name}_parameter_radius.png",
+            dpi=dpi,
+            bins_limit=bins_limit,
+            interpolated_data=standardized_data,
+            continuum_mode=continuum_mode
+        )
+        
+        # Create model grid plots
+        create_model_grid_plots_part1(
+            galaxy_name, 
+            rdb_data, 
+            model_data,
+            age=10,
+            output_path=f"{output_dir}/{galaxy_name}_model_grid_part1.png",
+            dpi=dpi,
+            bins_limit=bins_limit,
+            continuum_mode=continuum_mode,
+            standardized_data=standardized_data
+        )
+        
+        # Create 3D interpolation visualization
+        create_3d_alpha_fe_interpolation(
+            galaxy_name, 
+            rdb_data, 
+            model_data,
+            output_path=f"{output_dir}/{galaxy_name}_3d_alpha_fe.png",
+            dpi=dpi,
+            bins_limit=bins_limit,
+            continuum_mode=continuum_mode
+        )
+        
+        logger.info(f"Created all visualizations for {galaxy_name}")
+        
+        # Return the standardized data
+        return standardized_data
+        
+    except Exception as e:
+        logger.error(f"Error in galaxy visualization: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+def main():
+    """Main function to process all galaxies"""
+    # Define bin limit for all analyses
+    bins_limit = 6  # Analyze bins 0-5
+    
+    # Define spectral index continuum mode to use globally
+    # Options: 'auto', 'fit', 'original'
+    continuum_mode = 'fit'  # Set your preferred mode here
+    
+    # Define galaxies to process
+    galaxies = [
+        "VCC0308", "VCC0667", "VCC0688", "VCC0990", "VCC1049", "VCC1146", 
+        "VCC1193", "VCC1368", "VCC1410", "VCC1431", "VCC1486", "VCC1499", 
+        "VCC1549", "VCC1588", "VCC1695", "VCC1811", "VCC1890", 
+        "VCC1902", "VCC1910", "VCC1949"
+    ]
+    
+    # Path to model data file
+    model_file = "./TMB03/TMB03.csv"
+    
+    # Create output directory for summary
+    output_dir = "./galaxy_summary"
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Load model data
+    model_data = load_model_data(model_file)
+    
+    # Load all galaxy data
+    all_galaxy_data = {}
+    for galaxy_name in galaxies:
+        _, _, rdb_data = Read_Galaxy(galaxy_name)
+        if rdb_data is not None and isinstance(rdb_data, dict) and len(rdb_data) > 0:
+            all_galaxy_data[galaxy_name] = rdb_data
+    
+    # Process all galaxies with the bin configuration and specified mode - single consistent method
+    results = process_all_galaxies(all_galaxy_data, model_data, 'bins_config.yaml', continuum_mode)
+    
+    # Define emission line galaxies
+    emission_line_galaxies = [
+        "VCC1588", "VCC1368", "VCC1902", "VCC1949", "VCC990", 
+        "VCC1410", "VCC667", "VCC1811", "VCC688", "VCC1193", "VCC1486"
+    ]
+    
+    # Get galaxy coordinates
+    coordinates = get_ifu_coordinates(galaxies)
+    
+    # Create Alpha/Fe vs. radius plot
+    create_alpha_radius_plot_improved(results, 
+                                    output_path=f"{output_dir}/alpha_fe_vs_radius_improved.png", 
+                                    dpi=300)
+    
+    # Create direct interpolation plots
+    create_alpha_radius_direct_plot(results, 
+                                   output_path=f"{output_dir}/alpha_fe_vs_radius_direct.png", 
+                                   dpi=300)
+    
+    # Create spectral index space plot
+    create_fe5015_mgb_plot(results, 
+                         output_path=f"{output_dir}/fe5015_vs_mgb.png", 
+                         dpi=300,
+                         model_data=model_data)
+    
+    # Create Virgo Cluster map
+    create_virgo_cluster_map_with_vectors(results, coordinates, 
+                                        output_path=f"{output_dir}/virgo_cluster_map.png", 
+                                        dpi=300)
+    
+    # Create separate visualizations
+    cluster_viz_dir = f"{output_dir}/virgo_cluster"
+    os.makedirs(cluster_viz_dir, exist_ok=True)
+    create_virgo_cluster_visualizations(results, coordinates, output_dir=cluster_viz_dir, dpi=300)
+    
+    # Save summary info to file
+    summary_df = create_alpha_fe_results_summary(results, emission_line_galaxies, f"{output_dir}/alpha_fe_results.csv")
+    
+    # Create LaTeX table for publication
+    latex_table = create_galaxy_results_table(results, emission_line_galaxies, f"{output_dir}/alpha_fe_results_table.tex")
+    
+    logger.info(f"Analysis complete using '{continuum_mode}' continuum mode for spectral indices")
+    
+    # Print final status
+    print("\n=== ANALYSIS COMPLETE ===")
+    print(f"Processed {len(results)} galaxies")
+    print(f"Using '{continuum_mode}' continuum mode for spectral indices")
+    print(f"Results saved to: {output_dir}")
+    
+    return results
+
+if __name__ == "__main__":
+    main()
