@@ -18,6 +18,7 @@ import logging
 import os
 from astropy.io import fits
 from mpl_toolkits.axes_grid1 import make_axes_locatable
+import matplotlib.gridspec as gridspec
 
 # Add these variable definitions at the beginning of your script, just after the imports and logging setup:
 
@@ -1653,7 +1654,7 @@ def create_spectral_index_interpolation_plot(galaxy_name, rdb_data, model_data, 
 def create_parameter_radius_plots(galaxy_name, rdb_data, model_data=None, output_path=None, 
                                 dpi=150, bins_limit=6, interpolated_data=None, continuum_mode='fit'):
     """
-    Create parameter vs. radius plots with consistent data
+    Create parameter vs. radius plots with consistent data and consistent R/Re units
     
     Parameters:
     -----------
@@ -1699,6 +1700,27 @@ def create_parameter_radius_plots(galaxy_name, rdb_data, model_data=None, output
         alpha_fe_values = standardized_data['alpha_fe_values']
         radius_values = standardized_data['radius_values']
         
+        # Get effective radius - needed for normalization
+        Re = params['effective_radius']
+        if Re is None or Re <= 0:
+            # Try to get from standardized data
+            Re = standardized_data.get('effective_radius')
+            
+        # Create normalized radius values for all parameters
+        if Re is not None and Re > 0:
+            # Use consistent R/Re units for all plots
+            if 'radius' in params and params['radius'] is not None:
+                # Normalize raw radius by Re
+                r_scaled = params['radius'] / Re
+                x_label = 'R/Re'
+            else:
+                r_scaled = None
+                x_label = 'Radius (arcsec)'
+        else:
+            # No Re available, use raw radius
+            r_scaled = params.get('radius')
+            x_label = 'Radius (arcsec)'
+            
         # Create figure with 2x3 grid of subplots
         fig, axes = plt.subplots(2, 3, figsize=(18, 10))
         axes = axes.flatten()
@@ -1711,16 +1733,17 @@ def create_parameter_radius_plots(galaxy_name, rdb_data, model_data=None, output
             
             if param_name in params and hasattr(params[param_name], '__len__') and len(params[param_name]) > 0:
                 y = params[param_name]
-                r = params['radius']
                 
-                if r is None or len(r) == 0:
+                # Use r_scaled (normalized radius) for ALL plots
+                if r_scaled is None or len(r_scaled) == 0:
                     ax.text(0.5, 0.5, f"No radius data available", 
                           ha='center', va='center', fontsize=12,
                           transform=ax.transAxes)
                     continue
                 
                 # Create sorted arrays for consistent plotting
-                sorted_pairs = sorted(zip(r, y), key=lambda pair: pair[0])
+                # Always use the normalized r_scaled here
+                sorted_pairs = sorted(zip(r_scaled, y), key=lambda pair: pair[0])
                 r_sorted = np.array([pair[0] for pair in sorted_pairs])
                 y_sorted = np.array([pair[1] for pair in sorted_pairs])
                 
@@ -1762,7 +1785,7 @@ def create_parameter_radius_plots(galaxy_name, rdb_data, model_data=None, output
                               bbox=dict(boxstyle='round', facecolor='white', alpha=0.7))
                 
                 # Set labels and title
-                ax.set_xlabel('R/Re' if params['effective_radius'] is not None else 'Radius (arcsec)', fontsize=12)
+                ax.set_xlabel(x_label, fontsize=12)
                 ax.set_ylabel(param_name, fontsize=12)
                 ax.set_title(f"{param_name} vs. Radius", fontsize=14)
                 
@@ -1770,7 +1793,7 @@ def create_parameter_radius_plots(galaxy_name, rdb_data, model_data=None, output
                 ax.grid(True, alpha=0.3, linestyle='--')
                 
                 # Add vertical line at Re=1 if using normalized radius
-                if params['effective_radius'] is not None:
+                if Re is not None and Re > 0:
                     ax.axvline(x=1, color='k', linestyle=':', alpha=0.5)
                 
                 # Set tick parameters
@@ -1833,13 +1856,17 @@ def create_parameter_radius_plots(galaxy_name, rdb_data, model_data=None, output
                       va='top', ha='left', color=trend_color,
                       bbox=dict(boxstyle='round', facecolor='white', alpha=0.7))
         
-        # Set labels and title
-        ax.set_xlabel('R/Re' if params['effective_radius'] is not None else 'Radius (arcsec)', fontsize=12)
+        # Set consistent x-axis label for the alpha/Fe plot
+        ax.set_xlabel(x_label, fontsize=12)
         ax.set_ylabel('[α/Fe] (standardized)', fontsize=12)
         ax.set_title('[α/Fe] vs. R/Re', fontsize=14)
         
         # Add grid and other formatting
         ax.grid(True, alpha=0.3, linestyle='--')
+        
+        # Add vertical line at Re=1 if using normalized radius
+        if Re is not None and Re > 0:
+            ax.axvline(x=1, color='k', linestyle=':', alpha=0.5)
         
         # Add special case note if applicable
         if standardized_data.get('special_case_applied', False):
@@ -1849,8 +1876,7 @@ def create_parameter_radius_plots(galaxy_name, rdb_data, model_data=None, output
                   bbox=dict(facecolor='white', alpha=0.8, edgecolor='red'))
         
         # Add overall title
-        Re = params['effective_radius']
-        re_info = f" (Re = {Re:.2f} arcsec)" if Re is not None else ""
+        re_info = f" (Re = {Re:.2f} arcsec)" if Re is not None and Re > 0 else ""
         plt.suptitle(f"Galaxy {galaxy_name}: Parameter-Radius Relations{re_info}\nContinuum Mode: {continuum_mode}", 
                    fontsize=16, y=0.98)
         
@@ -3943,7 +3969,329 @@ def create_virgo_distance_plots_only(results_list, coordinates, output_path=None
         import traceback
         traceback.print_exc()
 
-
+def create_snr_comparison_plots(file_paths, output_path=None, dpi=150):
+    """
+    Create a visualization with 3 SNR maps and a SNR vs R/Re scatter plot
+    
+    Parameters:
+    -----------
+    file_paths : list
+        List of paths to 3 IFU SNR files (pixels SNR, Voronoi bin SNR, Voronoi bin feedback SNR)
+    output_path : str, optional
+        Path to save the output image
+    dpi : int
+        Resolution for the output image
+    """
+    try:
+        # Check if we have 3 files
+        if len(file_paths) != 3:
+            raise ValueError("Please provide exactly 3 input files (pixel SNR, Voronoi bin SNR, Voronoi bin feedback SNR)")
+        
+        # Set up the figure with a 2x3 grid
+        fig = plt.figure(figsize=(15, 10))
+        gs = gridspec.GridSpec(2, 3, height_ratios=[1, 1.2])
+        
+        # Create the subplots - 3 SNR maps on top, SNR vs R/Re plot on bottom
+        ax_snr1 = plt.subplot(gs[0, 0])      # Pixel SNR map
+        ax_snr2 = plt.subplot(gs[0, 1])      # Voronoi bin SNR map
+        ax_snr3 = plt.subplot(gs[0, 2])      # Voronoi bin feedback SNR map
+        ax_snr_plot = plt.subplot(gs[1, :])  # SNR vs R/Re plot
+        
+        # SNR map titles
+        snr_titles = ['Pixel SNR', 'Voronoi Bin SNR', 'Radial Bin SNR']
+        
+        # Colors for different SNR types in the scatter plot
+        colors = ['blue', 'green', 'red']
+        markers = ['o', 'x', '+']  # Use 'o' for P2P, 'x' for VNB, '+' for RDB
+        labels = ['Pixels SNR', 'Voronoi bin SNR', 'Radial bin SNR']
+        
+        # Data containers for the scatter plot
+        p2p_radii = []
+        p2p_snr_values = []
+        vnb_radii = []
+        vnb_snr_values = []
+        rdb_radii = []
+        rdb_snr_values = []
+        
+        # Process each SNR file
+        for i, file_path in enumerate(file_paths):
+            try:
+                # Open the file - assuming it's a FITS file
+                with fits.open(file_path) as hdu:
+                    # Get basic information
+                    filename = os.path.basename(file_path)
+                    galaxy_name = filename.split('_')[0] if '_' in filename else filename.split('.')[0]
+                    
+                    # Extract SNR data 
+                    # Try different extensions to find SNR data
+                    snr_data = None
+                    for ext_name in ['SNR', 'SIGNAL_NOISE', 'SN', 0]:
+                        try:
+                            if isinstance(ext_name, int):
+                                snr_data = hdu[ext_name].data
+                            elif ext_name in hdu:
+                                snr_data = hdu[ext_name].data
+                            if snr_data is not None:
+                                break
+                        except:
+                            continue
+                    
+                    if snr_data is None:
+                        logger.warning(f"Could not find SNR data in {file_path}")
+                        continue
+                    
+                    # Get header information for WCS and scaling
+                    header = hdu[0].header
+                    
+                    # Get pixel scale
+                    try:
+                        if 'CDELT1' in header and 'CDELT2' in header:
+                            pixel_scale_x = abs(header['CDELT1']) * 3600  # Convert deg to arcsec
+                            pixel_scale_y = abs(header['CDELT2']) * 3600
+                        elif 'CD1_1' in header and 'CD2_2' in header:
+                            pixel_scale_x = abs(header['CD1_1']) * 3600
+                            pixel_scale_y = abs(header['CD2_2']) * 3600
+                        else:
+                            # Default values
+                            pixel_scale_x = pixel_scale_y = 0.2  # arcsec per pixel
+                    except:
+                        pixel_scale_x = pixel_scale_y = 0.2  # Default
+                    
+                    # Get effective radius (if available)
+                    Re = None
+                    for key in ['RE', 'REFF', 'EFFECTIVE_RADIUS', 'EFFRAD']:
+                        if key in header:
+                            Re = header[key]
+                            break
+                    
+                    if Re is None:
+                        # Default value or estimate from image size
+                        Re = max(snr_data.shape) * pixel_scale_x / 8  # Rough estimate
+                        logger.warning(f"Effective radius not found in header, using estimate: {Re:.2f} arcsec")
+                    
+                    # Calculate image dimensions in arcsec
+                    ny, nx = snr_data.shape
+                    extent_x = nx * pixel_scale_x
+                    extent_y = ny * pixel_scale_y
+                    
+                    # Create extent for plotting (centered at 0,0)
+                    extent = [-extent_x/2, extent_x/2, -extent_y/2, extent_y/2]
+                    
+                    # Plot the SNR map in the appropriate subplot
+                    ax = [ax_snr1, ax_snr2, ax_snr3][i]
+                    
+                    # Get valid data range for color scaling
+                    valid_mask = np.isfinite(snr_data) & (snr_data > 0)
+                    if np.any(valid_mask):
+                        vmin = np.percentile(snr_data[valid_mask], 1)
+                        vmax = np.percentile(snr_data[valid_mask], 99)
+                    else:
+                        vmin, vmax = 0, 50  # Default range
+                    
+                    # Plot SNR map
+                    im = ax.imshow(snr_data, origin='lower', vmin=vmin, vmax=vmax, 
+                                 cmap='viridis', extent=extent)
+                    
+                    # Add colorbar
+                    cbar = plt.colorbar(im, ax=ax)
+                    cbar.set_label('S/N')
+                    
+                    # Set title
+                    ax.set_title(snr_titles[i])
+                    
+                    # Add labels and formatting
+                    ax.set_xlabel('Offset (arcsec)')
+                    ax.set_ylabel('Offset (arcsec)')
+                    
+                    # Add ticks and grid
+                    ax.xaxis.set_minor_locator(AutoMinorLocator(5))
+                    ax.yaxis.set_minor_locator(AutoMinorLocator(5))
+                    ax.grid(True, alpha=0.3, linestyle='--')
+                    
+                    # Extract radial coordinates
+                    y, x = np.indices(snr_data.shape)
+                    x_center = nx / 2
+                    y_center = ny / 2
+                    
+                    # Calculate radial distance in pixels
+                    r_pixels = np.sqrt((x - x_center)**2 + (y - y_center)**2)
+                    
+                    # Convert to arcsec
+                    r_arcsec = r_pixels * pixel_scale_x
+                    
+                    # Convert to R/Re
+                    r_scaled = r_arcsec / Re
+                    
+                    # Different handling for each file type:
+                    if i == 0:  # Pixel SNR (P2P)
+                        # Flatten arrays for scatter plot
+                        r_flat = r_scaled.flatten()
+                        snr_flat = snr_data.flatten()
+                        
+                        # Filter out invalid values and select a reasonable number of points
+                        # to prevent plot from being too crowded
+                        valid = np.isfinite(snr_flat) & (snr_flat > 0)
+                        r_valid = r_flat[valid]
+                        snr_valid = snr_flat[valid]
+                        
+                        # If too many points, sample a subset
+                        max_points = 5000
+                        if len(r_valid) > max_points:
+                            indices = np.random.choice(len(r_valid), max_points, replace=False)
+                            r_valid = r_valid[indices]
+                            snr_valid = snr_valid[indices]
+                        
+                        # Store data for P2P scatter plot
+                        p2p_radii = r_valid
+                        p2p_snr_values = snr_valid
+                        
+                    elif i == 1:  # Voronoi Bin SNR (VNB)
+                        # Bin pixels by SNR value - using a tolerance to group similar values
+                        tolerance = 0.005  # SNR tolerance for grouping
+                        
+                        # Flatten SNR and radius arrays
+                        flat_snr = snr_data.flatten()
+                        flat_r = r_scaled.flatten()
+                        
+                        # Filter out invalid values
+                        valid_mask = np.isfinite(flat_snr) & (flat_snr > 0)
+                        valid_snr = flat_snr[valid_mask]
+                        valid_r = flat_r[valid_mask]
+                        
+                        # Find unique SNR values within tolerance
+                        unique_snr_values = []
+                        bin_r_means = []
+                        
+                        # Group by SNR value within tolerance
+                        processed_indices = set()
+                        
+                        for j in range(len(valid_snr)):
+                            if j in processed_indices:
+                                continue
+                                
+                            snr_value = valid_snr[j]
+                            # Find all pixels with similar SNR value
+                            similar_mask = np.abs(valid_snr - snr_value) < tolerance
+                            
+                            # Only consider this a bin if we have multiple pixels
+                            if np.sum(similar_mask) > 1:
+                                # Calculate mean radius for this bin
+                                mean_r = np.mean(valid_r[similar_mask])
+                                
+                                # Add to results
+                                unique_snr_values.append(snr_value)
+                                bin_r_means.append(mean_r)
+                                
+                                # Mark as processed
+                                processed_indices.update(np.where(similar_mask)[0])
+                        
+                        # Store data for VNB scatter plot
+                        vnb_radii = bin_r_means
+                        vnb_snr_values = unique_snr_values
+                        
+                    elif i == 2:  # Radial Bin SNR (RDB)
+                        # Same approach as VNB, but for RDB data
+                        tolerance = 0.005  # SNR tolerance for grouping
+                        
+                        # Flatten SNR and radius arrays
+                        flat_snr = snr_data.flatten()
+                        flat_r = r_scaled.flatten()
+                        
+                        # Filter out invalid values
+                        valid_mask = np.isfinite(flat_snr) & (flat_snr > 0)
+                        valid_snr = flat_snr[valid_mask]
+                        valid_r = flat_r[valid_mask]
+                        
+                        # Find unique SNR values within tolerance
+                        unique_snr_values = []
+                        bin_r_means = []
+                        
+                        # Group by SNR value within tolerance
+                        processed_indices = set()
+                        
+                        for j in range(len(valid_snr)):
+                            if j in processed_indices:
+                                continue
+                                
+                            snr_value = valid_snr[j]
+                            # Find all pixels with similar SNR value
+                            similar_mask = np.abs(valid_snr - snr_value) < tolerance
+                            
+                            # Only consider this a bin if we have multiple pixels
+                            if np.sum(similar_mask) > 1:
+                                # Calculate mean radius for this bin
+                                mean_r = np.mean(valid_r[similar_mask])
+                                
+                                # Add to results
+                                unique_snr_values.append(snr_value)
+                                bin_r_means.append(mean_r)
+                                
+                                # Mark as processed
+                                processed_indices.update(np.where(similar_mask)[0])
+                        
+                        # Store data for RDB scatter plot
+                        rdb_radii = bin_r_means
+                        rdb_snr_values = unique_snr_values
+            
+            except Exception as e:
+                logger.error(f"Error processing {file_path}: {e}")
+                import traceback
+                traceback.print_exc()
+        
+        # Create the scatter plot with one point per bin for VNB and RDB
+        # 1. Plot P2P data with 'o' markers
+        if len(p2p_radii) > 0 and len(p2p_snr_values) > 0:
+            ax_snr_plot.scatter(p2p_radii, p2p_snr_values, 
+                            s=5, alpha=0.7, color=colors[0], 
+                            marker=markers[0], label=labels[0])
+        
+        # 2. Plot VNB data with 'x' markers - one point per bin
+        if len(vnb_radii) > 0 and len(vnb_snr_values) > 0:
+            ax_snr_plot.scatter(vnb_radii, vnb_snr_values, 
+                            s=50, alpha=0.7, color=colors[1], 
+                            marker=markers[1], label=labels[1])
+        
+        # 3. Plot RDB data with '+' markers - one point per bin
+        if len(rdb_radii) > 0 and len(rdb_snr_values) > 0:
+            ax_snr_plot.scatter(rdb_radii, rdb_snr_values, 
+                            s=50, alpha=0.7, color=colors[2], 
+                            marker=markers[2], label=labels[2])
+        
+        # Add target SNR line
+        ax_snr_plot.axhline(y=20, linestyle='--', color='magenta', label='target SNR = 20')
+        
+        # Set labels and title for scatter plot
+        ax_snr_plot.set_xlabel('R/Re')
+        ax_snr_plot.set_ylabel('SNR')
+        ax_snr_plot.set_title('SNR vs. Normalized Radius (R/Re)')
+        
+        # Set y-axis range to match your reference plot
+        ax_snr_plot.set_ylim(0, 50)
+        
+        # Add grid and legend
+        ax_snr_plot.grid(True, alpha=0.3, linestyle='--')
+        ax_snr_plot.legend(loc='upper right')
+        
+        # Add minor ticks
+        ax_snr_plot.xaxis.set_minor_locator(AutoMinorLocator(5))
+        ax_snr_plot.yaxis.set_minor_locator(AutoMinorLocator(5))
+        
+        # Adjust layout
+        plt.tight_layout()
+        
+        # Save or show the figure
+        if output_path:
+            plt.savefig(output_path, dpi=dpi, bbox_inches='tight')
+            logger.info(f"Saved SNR comparison visualization to {output_path}")
+        else:
+            plt.show()
+        
+        plt.close()
+        
+    except Exception as e:
+        logger.error(f"Error creating SNR comparison plots: {e}")
+        import traceback
+        traceback.print_exc()
 
 def create_virgo_cluster_visualizations(results_list, coordinates, output_dir="./visualization", dpi=150):
     """
@@ -4140,6 +4488,11 @@ def process_all_galaxies(all_galaxy_data, model_data, config_path='bins_config.y
     # Load configuration
     config = load_bin_config(config_path)
     
+    # Galaxy-specific continuum mode settings
+    galaxy_continuum_modes = {
+        "VCC1049": "fit"  # Configure VCC1049 to use 'fit' mode
+    }
+    
     # Log the continuum mode being used
     logger.info(f"Using '{continuum_mode}' mode for spectral indices")
     
@@ -4147,7 +4500,12 @@ def process_all_galaxies(all_galaxy_data, model_data, config_path='bins_config.y
     results = []
     
     for galaxy_name, galaxy_data in all_galaxy_data.items():
-        logger.info(f"Processing {galaxy_name}...")
+        # Use galaxy-specific mode if available, otherwise use default
+        galaxy_mode = galaxy_continuum_modes.get(galaxy_name, continuum_mode)
+        if galaxy_name in galaxy_continuum_modes:
+            logger.info(f"Processing {galaxy_name} with specific mode: {galaxy_mode}")
+        else:
+            logger.info(f"Processing {galaxy_name}...")
         
         # Get bins to use for this galaxy
         bins_to_use = get_bins_to_use(galaxy_name, config)
@@ -4166,7 +4524,7 @@ def process_all_galaxies(all_galaxy_data, model_data, config_path='bins_config.y
             galaxy_data, 
             model_data, 
             bins_limit=max_bin_idx,
-            continuum_mode=continuum_mode,
+            continuum_mode=galaxy_mode,  # Use galaxy-specific mode if available
             special_cases=SPECIAL_CASES
         )
         
@@ -4187,7 +4545,7 @@ def process_all_galaxies(all_galaxy_data, model_data, config_path='bins_config.y
         flux_path = f"{output_dir}/{galaxy_name}_flux_and_binning.png"
         p2p_data = None
         try:
-            p2p_data, _, _ = Read_Galaxy(galaxy_name)
+            p2p_data, vnb_data, _ = Read_Galaxy(galaxy_name)
         except:
             logger.warning(f"Could not read P2P data for {galaxy_name}")
             
@@ -4210,7 +4568,7 @@ def process_all_galaxies(all_galaxy_data, model_data, config_path='bins_config.y
             dpi=150, 
             bins_limit=max_bin_idx,
             interpolated_data=result,  # Pass standardized data
-            continuum_mode=continuum_mode
+            continuum_mode=galaxy_mode  # Use galaxy-specific mode
         )
         
         # Create spectral index visualization
@@ -4222,7 +4580,7 @@ def process_all_galaxies(all_galaxy_data, model_data, config_path='bins_config.y
             output_path=interp_path, 
             dpi=150, 
             bins_limit=max_bin_idx,
-            continuum_mode=continuum_mode,
+            continuum_mode=galaxy_mode,  # Use galaxy-specific mode
             standardized_data=result  # Pass standardized data
         )
         
@@ -4236,9 +4594,78 @@ def process_all_galaxies(all_galaxy_data, model_data, config_path='bins_config.y
             output_path=model_grid_path, 
             dpi=150, 
             bins_limit=max_bin_idx,
-            continuum_mode=continuum_mode,
+            continuum_mode=galaxy_mode,  # Use galaxy-specific mode
             standardized_data=result  # Pass standardized data
         )
+        
+        # Create SNR comparison visualization using the data directly from df_1, df_2, df_3
+        try:
+            # Read all three data modes for SNR analysis
+            p2p_data, vnb_data, rdb_data = Read_Galaxy(galaxy_name)
+            
+            # Check if SNR data is available in all three modes
+            has_p2p_snr = p2p_data is not None and 'signal_noise' in p2p_data and 'snr' in p2p_data['signal_noise'].item()
+            has_vnb_snr = vnb_data is not None and 'snr' in vnb_data
+            has_rdb_snr = rdb_data is not None and 'snr' in rdb_data
+            
+            if has_p2p_snr and has_vnb_snr and has_rdb_snr:
+                # Extract SNR data from each mode
+                p2p_snr = p2p_data['signal_noise'].item()['snr']
+                vnb_snr = vnb_data['snr']
+                rdb_snr = rdb_data['snr']
+                
+                # Create temporary FITS files to use with create_snr_comparison_plots
+                temp_dir = os.path.join(output_dir, "temp_snr_files")
+                os.makedirs(temp_dir, exist_ok=True)
+                
+                # Create paths for temporary files
+                p2p_file = os.path.join(temp_dir, f"{galaxy_name}_p2p_snr.fits")
+                vnb_file = os.path.join(temp_dir, f"{galaxy_name}_vnb_snr.fits")
+                rdb_file = os.path.join(temp_dir, f"{galaxy_name}_rdb_snr.fits")
+                
+                # Save SNR data to temporary FITS files
+                for snr_data, file_path in [
+                    (p2p_snr, p2p_file),
+                    (vnb_snr, vnb_file),
+                    (rdb_snr, rdb_file)
+                ]:
+                    # Create a simple FITS file with the SNR data
+                    hdu = fits.PrimaryHDU(snr_data)
+                    hdul = fits.HDUList([hdu])
+                    
+                    # Add some basic header information
+                    hdu.header['OBJECT'] = galaxy_name
+                    if cube_info is not None and 'header' in cube_info and cube_info['header'] is not None:
+                        # Copy important WCS keys from the original header
+                        for key in ['CRVAL1', 'CRVAL2', 'CD1_1', 'CD1_2', 'CD2_1', 'CD2_2']:
+                            if key in cube_info['header']:
+                                hdu.header[key] = cube_info['header'][key]
+                    
+                    # Add effective radius if available
+                    if 'effective_radius' in result and result['effective_radius'] is not None:
+                        hdu.header['EFFRAD'] = result['effective_radius']
+                    
+                    # Save to file
+                    hdul.writeto(file_path, overwrite=True)
+                
+                # Create the SNR comparison plot using the temporary files
+                snr_output_path = f"{output_dir}/{galaxy_name}_snr_comparison.png"
+                create_snr_comparison_plots(
+                    [p2p_file, vnb_file, rdb_file],
+                    output_path=snr_output_path,
+                    dpi=150
+                )
+                
+                # Clean up temporary files
+                for file_path in [p2p_file, vnb_file, rdb_file]:
+                    if os.path.exists(file_path):
+                        os.remove(file_path)
+                
+                logger.info(f"Created SNR comparison visualization for {galaxy_name}")
+            else:
+                logger.info(f"Skipping SNR visualization for {galaxy_name} - SNR data not available in all modes")
+        except Exception as e:
+            logger.warning(f"Error creating SNR visualization for {galaxy_name}: {e}")
     
     return results
 
@@ -4914,10 +5341,11 @@ def main():
     
     # Define galaxies to process
     galaxies = [
-        "VCC0308", "VCC0667", "VCC0688", "VCC0990", "VCC1049", "VCC1146", 
-        "VCC1193", "VCC1368", "VCC1410", "VCC1431", "VCC1486", "VCC1499", 
-        "VCC1549", "VCC1588", "VCC1695", "VCC1811", "VCC1890", 
-        "VCC1902", "VCC1910", "VCC1949"
+        "VCC0308",
+        #  "VCC0667", "VCC0688", "VCC0990", "VCC1049", "VCC1146", 
+        # "VCC1193", "VCC1368", "VCC1410", "VCC1431", "VCC1486", "VCC1499", 
+        # "VCC1549", "VCC1588", "VCC1695", "VCC1811", "VCC1890", 
+        # "VCC1902", "VCC1910", "VCC1949"
     ]
     
     # Path to model data file
@@ -4941,10 +5369,10 @@ def main():
     results = process_all_galaxies(all_galaxy_data, model_data, 'bins_config.yaml', continuum_mode)
     
     # Define emission line galaxies
-    emission_line_galaxies = [
-        "VCC1588", "VCC1368", "VCC1902", "VCC1949", "VCC990", 
-        "VCC1410", "VCC667", "VCC1811", "VCC688", "VCC1193", "VCC1486"
-    ]
+    # emission_line_galaxies = [
+    #     "VCC1588", "VCC1368", "VCC1902", "VCC1949", "VCC990", 
+    #     "VCC1410", "VCC667", "VCC1811", "VCC688", "VCC1193", "VCC1486"
+    # ]
     
     # Get galaxy coordinates
     coordinates = get_ifu_coordinates(galaxies)

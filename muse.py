@@ -2558,7 +2558,8 @@ class MUSECube:
                                 em_flux_list=gas_model,  # Emission line spectrum
                                 velocity_correction=stellar_velocity,  # Stellar velocity correction
                                 gas_velocity_correction=gas_velocity,  # Gas velocity correction - key change
-                                continuum_mode="auto",  # Auto select continuum mode
+                                # continuum_mode="fit",  # Auto select continuum mode
+                                continuum_mode=self._continuum_mode,
                             )
                             calculator.plot_all_lines(mode=save_mode, save_path=save_path, number=bin_idx, show_index=True)
                             # print(save_path)
