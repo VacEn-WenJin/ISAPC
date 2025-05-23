@@ -16,6 +16,43 @@ from tqdm import tqdm
 output_dir = "virgo_cluster"
 os.makedirs(output_dir, exist_ok=True)
 
+# Define the galaxies from the table
+# Format: Name, RA (in hours, min, sec), Dec (in deg, min, sec), Type, r (in arcmin)
+galaxies_data = [
+    ("M60", "12h09m42s", "+14d11m13s", "E2", 9.97),
+    ("VCC 1588", "12h19m34s", "+14d52m50s", "Sd", 12.35),
+    ("VCC 1890", "12h26m56s", "+12d51m10s", "dE", 14.66),
+    ("VCC 1368", "12h17m01s", "+14d19m29s", "SBa", 12.46),
+    ("VCC 1902", "12h26m07s", "+12d57m12s", "SBa", 12.62),
+    ("VCC 1523", "12h19m24s", "+13d38m07s", "dE(N)", 16.75),
+    ("VCC 1949", "12h27m56s", "+12d17m51s", "dS0(N)", 13.59),
+    ("VCC 990", "12h13m10s", "+16d07m26s", "dS0(N)", 13.92),
+    ("VCC 1410", "12h17m53s", "+11d49m00s", "Sd", 13.92),
+    ("VCC 1695", "12h23m01s", "+12d43m32s", "dE", 13.72),
+    ("VCC 667", "12h09m43s", "+11d13m58s", "Sd", 13.55),
+    ("VCC 1549", "12h20m25s", "+13d04m33s", "dE(N)", 14.40),
+    ("VCC 308", "12h04m34s", "+12d58m54s", "dE", 13.54),
+    ("VCC 1431", "12h18m15s", "+11d07m23s", "dE", 13.59),
+    ("VCC 1811", "12h24m46s", "+13d10m11s", "Sc", 12.55),
+    ("VCC 688", "12h10m03s", "+11d22m43s", "Sc", 13.54),
+    ("VCC 1146", "12h15m22s", "+12d03m12s", "E", 12.18),
+    ("VCC 1049", "12h14m11s", "+13d29m30s", "dE(N)", 14.36),
+    ("VCC 1193", "12h15m53s", "+14d13m34s", "Sd", 13.81),
+    ("VCC 1910", "12h26m12s", "+12d24m05s", "dE(N)", 13.55),
+    ("VCC 1486", "12h19m54s", "+13d44m04s", "Sc", 15.16)
+]
+
+# Convert galaxy data to SkyCoord objects
+galaxies = []
+for name, ra_str, dec_str, gal_type, radius in galaxies_data:
+    coords = SkyCoord(ra_str, dec_str, frame='icrs')
+    galaxies.append({
+        'name': name,
+        'coords': coords,
+        'type': gal_type,
+        'radius': radius  # in arcmin
+    })
+
 # Center coordinates of the Virgo Cluster
 # M87 (Virgo A) is approximately at the center of the cluster
 center_ra = 187.7059  # in degrees (12h 30m 49.4s)
@@ -172,9 +209,41 @@ if len(subfields_g) > 0:
     
     print(f"Mosaic saved to {mosaic_filename}")
     
-    # Also save a version with grid lines and labels
+    # Also save a version with galaxy information
     plt.figure(figsize=(20, 20))
     plt.imshow(rgb_mosaic, origin='lower')
+    
+    # Define a function to convert sky coordinates to pixel coordinates in the mosaic
+    def skycoord_to_pixel(coord):
+        x, y = target_wcs.world_to_pixel(coord.ra, coord.dec)
+        return x, y
+    
+    # Add galaxies to the image
+    for galaxy in galaxies:
+        x, y = skycoord_to_pixel(galaxy['coords'])
+        
+        # Only annotate galaxies that fall within the image
+        if 0 <= x < mosaic_size and 0 <= y < mosaic_size:
+            # Convert radius in arcmin to pixel size
+            # 1 arcmin is 1/60 degrees
+            radius_deg = galaxy['radius'] / 60.0  # convert to degrees
+            # Calculate how many pixels this corresponds to in our image
+            pix_per_deg = mosaic_size / field_width.to(u.degree).value
+            radius_pixels = radius_deg * pix_per_deg
+            
+            # Draw a circle around the galaxy with radius proportional to r
+            circle = patches.Circle((x, y), radius_pixels*0.5, fill=False, 
+                                   edgecolor='yellow', linewidth=1.5, alpha=0.7)
+            plt.gca().add_patch(circle)
+            
+            # Add galaxy name and type
+            plt.text(x, y + radius_pixels*0.6, f"{galaxy['name']}", 
+                    color='white', fontsize=12, ha='center', va='bottom',
+                    bbox=dict(facecolor='black', alpha=0.7, pad=2))
+            
+            plt.text(x, y - radius_pixels*0.6, f"Type: {galaxy['type']}, r: {galaxy['radius']}'", 
+                    color='white', fontsize=10, ha='center', va='top',
+                    bbox=dict(facecolor='black', alpha=0.7, pad=2))
     
     # Add grid lines
     overlay = plt.gca().get_coords_overlay('fk5')
@@ -184,12 +253,12 @@ if len(subfields_g) > 0:
     overlay[0].set_axislabel('Right Ascension (J2000)')
     overlay[1].set_axislabel('Declination (J2000)')
     
-    plt.title("Virgo Cluster Mosaic with Coordinate Grid")
+    plt.title("Virgo Cluster Galaxies with Type and Radius Information")
     plt.tight_layout()
-    grid_filename = os.path.join(output_dir, "virgo_cluster_mosaic_with_grid.png")
-    plt.savefig(grid_filename, dpi=300, bbox_inches='tight')
+    annotated_filename = os.path.join(output_dir, "virgo_cluster_annotated.png")
+    plt.savefig(annotated_filename, dpi=300, bbox_inches='tight')
     plt.close()
     
-    print(f"Mosaic with grid saved to {grid_filename}")
+    print(f"Annotated mosaic saved to {annotated_filename}")
 
 print("Processing complete!")

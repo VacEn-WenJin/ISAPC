@@ -1381,7 +1381,7 @@ def get_standardized_alpha_fe_data(galaxy_name, rdb_data, model_data, bins_limit
         traceback.print_exc()
         return result
 
-def create_spectral_index_interpolation_plot(galaxy_name, rdb_data, model_data, output_path=None, dpi=150, 
+def create_spectral_index_interpolation_plot(galaxy_name, rdb_data, model_data, output_path=None, dpi=300, 
                                            bins_limit=6, continuum_mode='fit', standardized_data=None):
     """
     Create a visualization showing how alpha/Fe is interpolated from spectral indices
@@ -1472,32 +1472,32 @@ def create_spectral_index_interpolation_plot(galaxy_name, rdb_data, model_data, 
             aofe_data = model_age_data[model_age_data[aofe_column] == aofe]
             aofe_data = aofe_data.sort_values(by=zoh_column)
             ax1.plot(aofe_data[fe5015_col], aofe_data[mgb_col], '-', 
-                   color=plt.cm.plasma(norm(aofe)), linewidth=2, alpha=0.7)
+                   color=plt.cm.plasma(norm(aofe)), linewidth=2.5, alpha=0.7)
         
         # Draw constant metallicity lines
         for zoh in unique_zoh:
             zoh_data = model_age_data[model_age_data[zoh_column] == zoh]
             zoh_data = zoh_data.sort_values(by=aofe_column)
             ax1.plot(zoh_data[fe5015_col], zoh_data[mgb_col], '--', 
-                   color='gray', linewidth=1, alpha=0.5)
+                   color='gray', linewidth=1.5, alpha=0.5)
         
         # Plot galaxy points
         sc1 = ax1.scatter(fe5015_values, mgb_values, c=alpha_fe_values, 
-                      cmap='plasma', s=120, edgecolor='black', linewidth=1.5, norm=norm)
+                      cmap='plasma', s=150, edgecolor='black', linewidth=2.0, norm=norm)
         
         # Add bin numbers
         for i in range(len(fe5015_values)):
             ax1.text(fe5015_values[i], mgb_values[i], str(standardized_data['bin_indices'][i]), 
-                   color='white', fontweight='bold', ha='center', va='center', fontsize=10)
+                   color='white', fontweight='bold', ha='center', va='center', fontsize=12)
         
         # Add colorbar
         cbar1 = plt.colorbar(sc1, ax=ax1)
-        cbar1.set_label('[α/Fe]')
+        cbar1.set_label('[α/Fe]', fontsize=14)
         
         # Set labels and title
-        ax1.set_xlabel('Fe5015 Index')
-        ax1.set_ylabel('Mgb Index')
-        ax1.set_title('Fe5015 vs Mgb - colored by [α/Fe]')
+        ax1.set_xlabel('Fe5015 Index', fontsize=14)
+        ax1.set_ylabel('Mgb Index', fontsize=14)
+        ax1.set_title('Fe5015 vs Mgb - colored by [α/Fe]', fontsize=16)
         ax1.grid(True, alpha=0.3)
         
         # Plot 2: Fe5015 vs Hβ - colored by [α/Fe]
@@ -1508,32 +1508,32 @@ def create_spectral_index_interpolation_plot(galaxy_name, rdb_data, model_data, 
             aofe_data = model_age_data[model_age_data[aofe_column] == aofe]
             aofe_data = aofe_data.sort_values(by=zoh_column)
             ax2.plot(aofe_data[fe5015_col], aofe_data[hbeta_col], '-', 
-                   color=plt.cm.plasma(norm(aofe)), linewidth=2, alpha=0.7)
+                   color=plt.cm.plasma(norm(aofe)), linewidth=2.5, alpha=0.7)
             
         # Draw constant metallicity lines
         for zoh in unique_zoh:
             zoh_data = model_age_data[model_age_data[zoh_column] == zoh]
             zoh_data = zoh_data.sort_values(by=aofe_column)
             ax2.plot(zoh_data[fe5015_col], zoh_data[hbeta_col], '--', 
-                   color='gray', linewidth=1, alpha=0.5)
+                   color='gray', linewidth=1.5, alpha=0.5)
         
         # Plot galaxy points
         sc2 = ax2.scatter(fe5015_values, hbeta_values, c=alpha_fe_values, 
-                      cmap='plasma', s=120, edgecolor='black', linewidth=1.5, norm=norm)
+                      cmap='plasma', s=150, edgecolor='black', linewidth=2.0, norm=norm)
         
         # Add bin numbers
         for i in range(len(fe5015_values)):
             ax2.text(fe5015_values[i], hbeta_values[i], str(standardized_data['bin_indices'][i]), 
-                   color='white', fontweight='bold', ha='center', va='center', fontsize=10)
+                   color='white', fontweight='bold', ha='center', va='center', fontsize=12)
         
         # Add colorbar
         cbar2 = plt.colorbar(sc2, ax=ax2)
-        cbar2.set_label('[α/Fe]')
+        cbar2.set_label('[α/Fe]', fontsize=14)
         
         # Set labels and title
-        ax2.set_xlabel('Fe5015 Index')
-        ax2.set_ylabel('Hβ Index')
-        ax2.set_title('Fe5015 vs Hβ - colored by [α/Fe]')
+        ax2.set_xlabel('Fe5015 Index', fontsize=14)
+        ax2.set_ylabel('Hβ Index', fontsize=14)
+        ax2.set_title('Fe5015 vs Hβ - colored by [α/Fe]', fontsize=16)
         ax2.grid(True, alpha=0.3)
         
         # Plot 3: Mgb vs Hβ - colored by [α/Fe]
@@ -1544,32 +1544,32 @@ def create_spectral_index_interpolation_plot(galaxy_name, rdb_data, model_data, 
             aofe_data = model_age_data[model_age_data[aofe_column] == aofe]
             aofe_data = aofe_data.sort_values(by=zoh_column)
             ax3.plot(aofe_data[mgb_col], aofe_data[hbeta_col], '-', 
-                   color=plt.cm.plasma(norm(aofe)), linewidth=2, alpha=0.7)
+                   color=plt.cm.plasma(norm(aofe)), linewidth=2.5, alpha=0.7)
             
         # Draw constant metallicity lines
         for zoh in unique_zoh:
             zoh_data = model_age_data[model_age_data[zoh_column] == zoh]
             zoh_data = zoh_data.sort_values(by=aofe_column)
             ax3.plot(zoh_data[mgb_col], zoh_data[hbeta_col], '--', 
-                   color='gray', linewidth=1, alpha=0.5)
+                   color='gray', linewidth=1.5, alpha=0.5)
         
         # Plot galaxy points
         sc3 = ax3.scatter(mgb_values, hbeta_values, c=alpha_fe_values, 
-                      cmap='plasma', s=120, edgecolor='black', linewidth=1.5, norm=norm)
+                      cmap='plasma', s=150, edgecolor='black', linewidth=2.0, norm=norm)
         
         # Add bin numbers
         for i in range(len(mgb_values)):
             ax3.text(mgb_values[i], hbeta_values[i], str(standardized_data['bin_indices'][i]), 
-                   color='white', fontweight='bold', ha='center', va='center', fontsize=10)
+                   color='white', fontweight='bold', ha='center', va='center', fontsize=12)
         
         # Add colorbar
         cbar3 = plt.colorbar(sc3, ax=ax3)
-        cbar3.set_label('[α/Fe]')
+        cbar3.set_label('[α/Fe]', fontsize=14)
         
         # Set labels and title
-        ax3.set_xlabel('Mgb Index')
-        ax3.set_ylabel('Hβ Index')
-        ax3.set_title('Mgb vs Hβ - colored by [α/Fe]')
+        ax3.set_xlabel('Mgb Index', fontsize=14)
+        ax3.set_ylabel('Hβ Index', fontsize=14)
+        ax3.set_title('Mgb vs Hβ - colored by [α/Fe]', fontsize=16)
         ax3.grid(True, alpha=0.3)
         
         # Plot 4: [α/Fe] vs. Radius - use the standardized values
@@ -1582,30 +1582,30 @@ def create_spectral_index_interpolation_plot(galaxy_name, rdb_data, model_data, 
             a_sorted = np.array([pair[1] for pair in sorted_pairs])
             
             # Plot points with connecting line
-            ax4.plot(r_sorted, a_sorted, '-', color='purple', linewidth=2)
-            ax4.scatter(radius_values, alpha_fe_values, s=80, color='purple', edgecolor='black', zorder=10)
+            ax4.plot(r_sorted, a_sorted, '-', color='purple', linewidth=2.5)
+            ax4.scatter(radius_values, alpha_fe_values, s=120, color='purple', edgecolor='black', zorder=10)
             
             # Add bin numbers
             for i in range(len(radius_values)):
                 ax4.text(radius_values[i], alpha_fe_values[i], str(standardized_data['bin_indices'][i]), 
-                       fontsize=10, ha='center', va='center', color='white', fontweight='bold')
+                       fontsize=12, ha='center', va='center', color='white', fontweight='bold')
         
             # Add trend line - using the standardized slope & intercept
             if not np.isnan(slope):
                 x_range = np.linspace(min(radius_values), max(radius_values), 100)
                 y_range = slope * x_range + standardized_data['intercept']
-                ax4.plot(x_range, y_range, '--', color='red', linewidth=2)
+                ax4.plot(x_range, y_range, '--', color='red', linewidth=2.5)
                 
                 # Add annotation
                 significance = "**" if p_value < 0.01 else ("*" if p_value < 0.05 else "")
                 ax4.text(0.05, 0.95, f"Slope = {slope:.3f}{significance}\np-value = {p_value:.4f}\nR² = {r_squared:.3f}", 
-                       transform=ax4.transAxes, va='top', ha='left',
+                       transform=ax4.transAxes, va='top', ha='left', fontsize=12,
                        bbox=dict(facecolor='white', alpha=0.8, edgecolor='black'))
         
         # Set labels and title
-        ax4.set_xlabel('R/Re')
-        ax4.set_ylabel('[α/Fe]')
-        ax4.set_title('[α/Fe] vs. Radius')
+        ax4.set_xlabel('R/Re', fontsize=14)
+        ax4.set_ylabel('[α/Fe]', fontsize=14)
+        ax4.set_title('[α/Fe] vs. R/Re', fontsize=16)
         ax4.grid(True, alpha=0.3)
         
         # Calculate bounds for y-axis
@@ -1618,19 +1618,19 @@ def create_spectral_index_interpolation_plot(galaxy_name, rdb_data, model_data, 
         if standardized_data.get('special_case_applied', False):
             plt.figtext(0.5, 0.02, 
                       "NOTE: Special case handling applied to this galaxy.",
-                      ha='center', fontsize=10, color='red', 
+                      ha='center', fontsize=12, color='red', 
                       bbox=dict(facecolor='white', alpha=0.8, edgecolor='red'))
         
         # Add overall title
         plt.suptitle(f"Galaxy {galaxy_name}: [α/Fe] Interpolation from Spectral Indices\n"
                    f"Model Age: {closest_age} Gyr | Continuum Mode: {continuum_mode}", 
-                   fontsize=16, y=0.98)
+                   fontsize=18, y=0.98)
         
         # Add explanation text
         plt.figtext(0.5, 0.01, 
                   "Alpha/Fe values are interpolated from the model grid using primarily Fe5015 and Mgb indices.\n"
                   "Solid lines: constant [α/Fe], Dashed lines: constant [Z/H]",
-                  ha='center', fontsize=12)
+                  ha='center', fontsize=14)
         
         # Adjust layout
         plt.tight_layout(rect=[0, 0.03, 1, 0.95])
@@ -1652,7 +1652,7 @@ def create_spectral_index_interpolation_plot(galaxy_name, rdb_data, model_data, 
         return None
 
 def create_parameter_radius_plots(galaxy_name, rdb_data, model_data=None, output_path=None, 
-                                dpi=150, bins_limit=6, interpolated_data=None, continuum_mode='fit'):
+                                dpi=300, bins_limit=6, interpolated_data=None, continuum_mode='fit'):
     """
     Create parameter vs. radius plots with consistent data and consistent R/Re units
     
@@ -1715,11 +1715,11 @@ def create_parameter_radius_plots(galaxy_name, rdb_data, model_data=None, output
                 x_label = 'R/Re'
             else:
                 r_scaled = None
-                x_label = 'Radius (arcsec)'
+                x_label = 'R/Re'
         else:
             # No Re available, use raw radius
             r_scaled = params.get('radius')
-            x_label = 'Radius (arcsec)'
+            x_label = 'R/Re'
             
         # Create figure with 2x3 grid of subplots
         fig, axes = plt.subplots(2, 3, figsize=(18, 10))
@@ -1737,7 +1737,7 @@ def create_parameter_radius_plots(galaxy_name, rdb_data, model_data=None, output
                 # Use r_scaled (normalized radius) for ALL plots
                 if r_scaled is None or len(r_scaled) == 0:
                     ax.text(0.5, 0.5, f"No radius data available", 
-                          ha='center', va='center', fontsize=12,
+                          ha='center', va='center', fontsize=14,
                           transform=ax.transAxes)
                     continue
                 
@@ -1760,11 +1760,11 @@ def create_parameter_radius_plots(galaxy_name, rdb_data, model_data=None, output
                     y_clean[outlier_mask] = np.nan
                 
                 # Plot data points with lines connecting in order of radius
-                ax.plot(r_sorted, y_sorted, 'o-', color='blue', markersize=8, alpha=0.7)
+                ax.plot(r_sorted, y_sorted, 'o-', color='blue', markersize=10, linewidth=2.0, alpha=0.7)
                 
                 # Mark outliers
                 if np.any(outlier_mask):
-                    ax.plot(r_sorted[outlier_mask], y_sorted[outlier_mask], 'rx', markersize=10, alpha=0.8)
+                    ax.plot(r_sorted[outlier_mask], y_sorted[outlier_mask], 'rx', markersize=12, alpha=0.8)
                 
                 # Fit linear trend and add to plot
                 slope, intercept, y_fit, r_squared, p_value = fit_linear_slope(x_clean, y_clean, return_full=True)
@@ -1776,18 +1776,24 @@ def create_parameter_radius_plots(galaxy_name, rdb_data, model_data=None, output
                         x_line = np.linspace(min(x_valid), max(x_valid), 100)
                         y_line = linear_fit(x_line, slope, intercept)
                         
-                        ax.plot(x_line, y_line, '--', color='red', linewidth=2)
+                        ax.plot(x_line, y_line, '--', color='red', linewidth=2.5)
                         
                         # Add slope and p-value to plot
-                        ax.text(0.05, 0.95, f"Slope = {slope:.3f}\np = {p_value:.3f}", 
-                              transform=ax.transAxes, fontsize=10,
-                              va='top', ha='left',
-                              bbox=dict(boxstyle='round', facecolor='white', alpha=0.7))
+                        if i <3:
+                            ax.text(0.65, 0.95, f"Slope = {slope:.3f}\np = {p_value:.3f}", 
+                                transform=ax.transAxes, fontsize=12,
+                                va='top', ha='left',
+                                bbox=dict(boxstyle='round', facecolor='white', alpha=0.7))
+                        else:
+                            ax.text(0.05, 0.95, f"Slope = {slope:.3f}\np = {p_value:.3f}", 
+                                transform=ax.transAxes, fontsize=12,
+                                va='top', ha='left',
+                                bbox=dict(boxstyle='round', facecolor='white', alpha=0.7))
                 
                 # Set labels and title
-                ax.set_xlabel(x_label, fontsize=12)
-                ax.set_ylabel(param_name, fontsize=12)
-                ax.set_title(f"{param_name} vs. Radius", fontsize=14)
+                ax.set_xlabel('R/Re', fontsize=14)
+                ax.set_ylabel(param_name, fontsize=14)
+                ax.set_title(f"{param_name} vs. R/Re", fontsize=16)
                 
                 # Add grid
                 ax.grid(True, alpha=0.3, linestyle='--')
@@ -1799,10 +1805,10 @@ def create_parameter_radius_plots(galaxy_name, rdb_data, model_data=None, output
                 # Set tick parameters
                 ax.xaxis.set_minor_locator(AutoMinorLocator(5))
                 ax.yaxis.set_minor_locator(AutoMinorLocator(5))
-                ax.tick_params(axis='both', which='both', labelsize='x-small', right=True, top=True, direction='in')
+                ax.tick_params(axis='both', which='both', labelsize=12, right=True, top=True, direction='in')
             else:
                 ax.text(0.5, 0.5, f"No {param_name} data available", 
-                      ha='center', va='center', fontsize=12,
+                      ha='center', va='center', fontsize=14,
                       transform=ax.transAxes)
         
         # Add alpha/Fe plot in the last subplot - using standardized data
@@ -1815,11 +1821,11 @@ def create_parameter_radius_plots(galaxy_name, rdb_data, model_data=None, output
             alpha_sorted = np.array([pair[1] for pair in sorted_pairs])
             
             # Plot data points with lines
-            ax.plot(r_sorted, alpha_sorted, 'o-', color='purple', markersize=8, alpha=0.7)
+            ax.plot(r_sorted, alpha_sorted, 'o-', color='purple', markersize=10, linewidth=2.0, alpha=0.7)
             
             # Add bin numbers
             for j, (r, alpha) in enumerate(zip(r_sorted, alpha_sorted)):
-                ax.text(r, alpha, str(standardized_data['bin_indices'][j]), fontsize=8, ha='center', va='center', 
+                ax.text(r, alpha, str(standardized_data['bin_indices'][j]), fontsize=10, ha='center', va='center', 
                       color='white', fontweight='bold')
             
             # Use standardized slope values
@@ -1832,7 +1838,7 @@ def create_parameter_radius_plots(galaxy_name, rdb_data, model_data=None, output
             if not np.isnan(slope):
                 x_range = np.linspace(min(r_sorted), max(r_sorted), 100)
                 y_range = slope * x_range + intercept
-                ax.plot(x_range, y_range, '--', color='red', linewidth=2)
+                ax.plot(x_range, y_range, '--', color='red', linewidth=2.5)
                 
                 # Add horizontal reference line
                 ax.axhline(y=np.mean(alpha_sorted), color='green', linestyle=':', alpha=0.7)
@@ -1852,14 +1858,14 @@ def create_parameter_radius_plots(galaxy_name, rdb_data, model_data=None, output
                 significance = "**" if p_value < 0.01 else ("*" if p_value < 0.05 else "")
                 ax.text(0.05, 0.95, 
                       f"Slope = {slope:.3f}{significance}\np = {p_value:.3f}\nR² = {r_squared:.3f}\nTrend: {trend_type}", 
-                      transform=ax.transAxes, fontsize=10,
+                      transform=ax.transAxes, fontsize=12,
                       va='top', ha='left', color=trend_color,
                       bbox=dict(boxstyle='round', facecolor='white', alpha=0.7))
         
         # Set consistent x-axis label for the alpha/Fe plot
-        ax.set_xlabel(x_label, fontsize=12)
-        ax.set_ylabel('[α/Fe] (standardized)', fontsize=12)
-        ax.set_title('[α/Fe] vs. R/Re', fontsize=14)
+        ax.set_xlabel('R/Re', fontsize=14)
+        ax.set_ylabel('[α/Fe]', fontsize=14)
+        ax.set_title('[α/Fe] vs. R/Re', fontsize=16)
         
         # Add grid and other formatting
         ax.grid(True, alpha=0.3, linestyle='--')
@@ -1871,20 +1877,20 @@ def create_parameter_radius_plots(galaxy_name, rdb_data, model_data=None, output
         # Add special case note if applicable
         if standardized_data.get('special_case_applied', False):
             ax.text(0.5, 0.5, "NOTE: Special case values applied",
-                  transform=ax.transAxes, fontsize=10, color='red',
+                  transform=ax.transAxes, fontsize=12, color='red',
                   ha='center', va='center',
                   bbox=dict(facecolor='white', alpha=0.8, edgecolor='red'))
         
         # Add overall title
         re_info = f" (Re = {Re:.2f} arcsec)" if Re is not None and Re > 0 else ""
         plt.suptitle(f"Galaxy {galaxy_name}: Parameter-Radius Relations{re_info}\nContinuum Mode: {continuum_mode}", 
-                   fontsize=16, y=0.98)
+                   fontsize=18, y=0.98)
         
         # Add note about standardized data
         plt.figtext(0.5, 0.01, 
                   "Alpha/Fe values derived from standard interpolation in spectral index space.\n"
                   "Bin numbers shown on the α/Fe plot correspond to the radial bins used in the analysis.",
-                  ha='center', fontsize=10, style='italic')
+                  ha='center', fontsize=12, style='italic')
         
         # Adjust layout
         plt.tight_layout(rect=[0, 0.03, 1, 0.95])
@@ -2345,7 +2351,7 @@ def create_combined_flux_and_binning(galaxy_name, p2p_data, rdb_data, cube_info,
         import traceback
         traceback.print_exc()
 
-def create_alpha_radius_plot_improved(results_list, output_path=None, dpi=150):
+def create_alpha_radius_plot_improved(results_list, output_path=None, dpi=300):
     """
     Create an improved plot of alpha/Fe vs. radius for all galaxies with slope information
     in the legend rather than on the plot
@@ -2394,12 +2400,12 @@ def create_alpha_radius_plot_improved(results_list, output_path=None, dpi=150):
             # Marker size and edge width based on statistical significance
             if np.isnan(p_value) or p_value > 0.05:
                 edge_color = 'gray'  # Not significant
-                linewidth = 1
-                marker_size = 100
+                linewidth = 1.5
+                marker_size = 150
             else:
                 edge_color = 'black'  # Significant
-                linewidth = 2
-                marker_size = 150
+                linewidth = 2.5
+                marker_size = 200
             
             # Plot point
             ax.scatter(radius, alpha_fe, s=marker_size, color=color, edgecolor=edge_color, 
@@ -2417,7 +2423,7 @@ def create_alpha_radius_plot_improved(results_list, output_path=None, dpi=150):
                 # Plot slope line
                 x_range = np.linspace(min_radius, max_radius, 100)
                 y_range = slope * x_range + intercept
-                ax.plot(x_range, y_range, '--', color=color, alpha=0.7, linewidth=2)
+                ax.plot(x_range, y_range, '--', color=color, alpha=0.7, linewidth=2.5)
             
             # Format significance marker
             sig_marker = "*" if p_value < 0.05 else ""
@@ -2426,38 +2432,38 @@ def create_alpha_radius_plot_improved(results_list, output_path=None, dpi=150):
             legend_elements.append(
                 Line2D([0], [0], marker='o', color='w', markerfacecolor=color,
                      markeredgecolor=edge_color, markeredgewidth=linewidth,
-                     markersize=10, label=f"{galaxy}: α/Fe={alpha_fe:.2f}, Slope={slope:.3f}{sig_marker} (p={p_value:.3f})")
+                     markersize=12, label=f"{galaxy}: α/Fe={alpha_fe:.2f}, Slope={slope:.3f}{sig_marker} (p={p_value:.3f})")
             )
         
         # Set labels and title
-        ax.set_xlabel('R/Re', fontsize=14)
-        ax.set_ylabel('[α/Fe]', fontsize=14)
-        ax.set_title('Alpha Element Abundance vs. Radius for Virgo Cluster Galaxies', fontsize=16)
+        ax.set_xlabel('R/Re', fontsize=16)
+        ax.set_ylabel('[α/Fe]', fontsize=16)
+        ax.set_title('Alpha Element Abundance vs. Radius for Virgo Cluster Galaxies', fontsize=18)
         
         # Set tick parameters
         ax.xaxis.set_minor_locator(AutoMinorLocator(5))
         ax.yaxis.set_minor_locator(AutoMinorLocator(5))
-        ax.tick_params(axis='both', which='both', labelsize='x-small', right=True, top=True, direction='in')
+        ax.tick_params(axis='both', which='both', labelsize=12, right=True, top=True, direction='in')
         
         # Add grid
         ax.grid(True, alpha=0.3, linestyle='--')
         
         # Add significance note
         ax.text(0.02, 0.02, "* p < 0.05 (statistically significant)", 
-               transform=ax.transAxes, fontsize=10, 
+               transform=ax.transAxes, fontsize=12, 
                bbox=dict(facecolor='white', alpha=0.7, edgecolor='gray'))
         
         # Add legend with galaxy names, slopes and p-values
         # Place it outside the plot to avoid overlapping with data
-        legend = ax.legend(handles=legend_elements, loc='upper left', fontsize=10, framealpha=0.9, 
-                         bbox_to_anchor=(1.02, 1), title='Galaxies')
-        legend.get_title().set_fontsize(12)
+        legend = ax.legend(handles=legend_elements, fontsize=12, framealpha=0.9, 
+                         bbox_to_anchor=(1.05, 1), title='Galaxies')
+        legend.get_title().set_fontsize(14)
         
         # Add note about the standardized data
         plt.figtext(0.5, 0.01, 
                   "Alpha/Fe values calculated using standardized 3D interpolation method.\n"
                   "Slopes indicate radial gradients of alpha-element abundance.",
-                  ha='center', fontsize=10, style='italic')
+                  ha='center', fontsize=12, style='italic')
         
         # Adjust layout to make room for legend
         plt.tight_layout(rect=[0, 0.03, 0.78, 0.97])
@@ -2474,7 +2480,7 @@ def create_alpha_radius_plot_improved(results_list, output_path=None, dpi=150):
         import traceback
         traceback.print_exc()
 
-def create_alpha_radius_direct_plot(results_list, output_path=None, dpi=150):
+def create_alpha_radius_direct_plot(results_list, output_path=None, dpi=300):
     """
     Create a plot of alpha/Fe vs. radius using directly calculated values for each point
     
@@ -2522,7 +2528,7 @@ def create_alpha_radius_direct_plot(results_list, output_path=None, dpi=150):
             galaxy_index += 1
             
             # Plot all points for this galaxy
-            ax.scatter(radius_values, alpha_fe_values, s=80, color=color, edgecolor='black', alpha=0.8, zorder=10)
+            ax.scatter(radius_values, alpha_fe_values, s=120, color=color, edgecolor='black', alpha=0.8, zorder=10)
             
             # Calculate statistics
             median_alpha_fe = np.median(alpha_fe_values) if alpha_fe_values else np.nan
@@ -2533,48 +2539,48 @@ def create_alpha_radius_direct_plot(results_list, output_path=None, dpi=150):
                 sorted_pairs = sorted(zip(radius_values, alpha_fe_values), key=lambda pair: pair[0])
                 r_sorted = [pair[0] for pair in sorted_pairs]
                 a_sorted = [pair[1] for pair in sorted_pairs]
-                ax.plot(r_sorted, a_sorted, '-', color=color, alpha=0.6, linewidth=1.5)
+                ax.plot(r_sorted, a_sorted, '-', color=color, alpha=0.6, linewidth=2.0)
                 
                 # Add to legend with slope and p-value information
                 sig_marker = "*" if p_value < 0.05 else ""
                 legend_elements.append(
                     Line2D([0], [0], marker='o', color='w', markerfacecolor=color,
-                         markeredgecolor='black', markeredgewidth=1,
-                         markersize=10, label=f"{galaxy_name}: median α/Fe={median_alpha_fe:.2f}, Slope={slope:.3f}{sig_marker} (p={p_value:.3f})")
+                         markeredgecolor='black', markeredgewidth=1.5,
+                         markersize=12, label=f"{galaxy_name}: median α/Fe={median_alpha_fe:.2f}, Slope={slope:.3f}{sig_marker} (p={p_value:.3f})")
                 )
             else:
                 # If only one point, just add the galaxy to legend without slope
                 legend_elements.append(
                     Line2D([0], [0], marker='o', color='w', markerfacecolor=color,
-                         markeredgecolor='black', markeredgewidth=1,
-                         markersize=10, label=f"{galaxy_name}: α/Fe={median_alpha_fe:.2f}")
+                         markeredgecolor='black', markeredgewidth=1.5,
+                         markersize=12, label=f"{galaxy_name}: α/Fe={median_alpha_fe:.2f}")
                 )
         
         # Set labels and title
-        ax.set_xlabel('R/Re', fontsize=14)
-        ax.set_ylabel('[α/Fe]', fontsize=14)
-        ax.set_title('Alpha Element Abundance vs. Radius - All Data Points', fontsize=16)
+        ax.set_xlabel('R/Re', fontsize=16)
+        ax.set_ylabel('[α/Fe]', fontsize=16)
+        ax.set_title('Alpha Element Abundance vs. Radius - All Data Points', fontsize=18)
         
         # Add grid
         ax.grid(True, alpha=0.3, linestyle='--')
         
         # Add significance note
         ax.text(0.02, 0.02, "* p < 0.05 (statistically significant)", 
-               transform=ax.transAxes, fontsize=10, 
+               transform=ax.transAxes, fontsize=12, 
                bbox=dict(facecolor='white', alpha=0.7, edgecolor='gray'))
         
-        # Add legend
-        legend = ax.legend(handles=legend_elements, loc='upper left', fontsize=10, framealpha=0.9, 
-                         bbox_to_anchor=(1.02, 1), title='Galaxies')
-        legend.get_title().set_fontsize(12)
+        # Add legend outside the plot to avoid overlap
+        legend = ax.legend(handles=legend_elements, fontsize=12, framealpha=0.9, 
+                         bbox_to_anchor=(1.05, 1), title='Galaxies')
+        legend.get_title().set_fontsize(14)
         
         # Add note about the data source
         plt.figtext(0.5, 0.01, 
                   "This plot shows all individual data points from the standardized alpha/Fe calculation.\n"
                   "Lines connect points from the same galaxy in order of increasing radius.",
-                  ha='center', fontsize=10, style='italic')
+                  ha='center', fontsize=12, style='italic')
         
-        # Adjust layout
+        # Adjust layout to make room for legend
         plt.tight_layout(rect=[0, 0.03, 0.78, 0.97])
         
         # Save figure
@@ -2589,7 +2595,7 @@ def create_alpha_radius_direct_plot(results_list, output_path=None, dpi=150):
         import traceback
         traceback.print_exc()
 
-def create_fe5015_mgb_plot(results_list, output_path=None, dpi=150, model_data=None):
+def create_fe5015_mgb_plot(results_list, output_path=None, dpi=300, model_data=None):
     """
     Create a plot of Fe5015 vs Mgb with points colored by radius
     
@@ -2666,19 +2672,19 @@ def create_fe5015_mgb_plot(results_list, output_path=None, dpi=150, model_data=N
             
         # Plot 1: Points colored by radius
         scatter1 = ax1.scatter(fe5015_values, mgb_values, c=radius_values, 
-                            cmap='viridis', s=80, alpha=0.8, edgecolor='black')
+                            cmap='viridis', s=120, alpha=0.8, edgecolor='black')
         
         # Add colorbar for radius
         cbar1 = plt.colorbar(scatter1, ax=ax1)
-        cbar1.set_label('R/Re', fontsize=12)
+        cbar1.set_label('R/Re', fontsize=14)
         
         # Plot 2: Points colored by alpha/Fe
         scatter2 = ax2.scatter(fe5015_values, mgb_values, c=alpha_fe_values, 
-                            cmap='plasma', s=80, alpha=0.8, edgecolor='black')
+                            cmap='plasma', s=120, alpha=0.8, edgecolor='black')
         
         # Add colorbar for alpha/Fe
         cbar2 = plt.colorbar(scatter2, ax=ax2)
-        cbar2.set_label('[α/Fe]', fontsize=12)
+        cbar2.set_label('[α/Fe]', fontsize=14)
         
         # Add model grid if provided
         if model_data is not None:
@@ -2717,14 +2723,14 @@ def create_fe5015_mgb_plot(results_list, output_path=None, dpi=150, model_data=N
                             alpha_data = alpha_data.sort_values(by=fe5015_col)
                             
                             # Plot the grid line
-                            ax1.plot(alpha_data[fe5015_col], alpha_data[mgb_col], 'k--', alpha=0.3, linewidth=1)
-                            ax2.plot(alpha_data[fe5015_col], alpha_data[mgb_col], 'k--', alpha=0.3, linewidth=1)
+                            ax1.plot(alpha_data[fe5015_col], alpha_data[mgb_col], 'k--', alpha=0.3, linewidth=1.5)
+                            ax2.plot(alpha_data[fe5015_col], alpha_data[mgb_col], 'k--', alpha=0.3, linewidth=1.5)
                             
                             # Label each line
                             midpoint = len(alpha_data) // 2
                             x = alpha_data.iloc[midpoint][fe5015_col]
                             y = alpha_data.iloc[midpoint][mgb_col]
-                            ax2.text(x, y, f'[α/Fe]={alpha_fe}', fontsize=8, ha='center', va='bottom', alpha=0.7,
+                            ax2.text(x, y, f'[α/Fe]={alpha_fe}', fontsize=10, ha='center', va='bottom', alpha=0.7,
                                    bbox=dict(facecolor='white', alpha=0.5, edgecolor='none', pad=1))
             except Exception as e:
                 logger.warning(f"Could not plot model grid: {e}")
@@ -2754,16 +2760,17 @@ def create_fe5015_mgb_plot(results_list, output_path=None, dpi=150, model_data=N
             ax1.annotate(galaxy_names[i], 
                        (fe5015_values[i], mgb_values[i]), 
                        xytext=(5, 5), textcoords='offset points',
-                       fontsize=8, alpha=0.7)
+                       fontsize=10, alpha=0.7,
+                       bbox=dict(facecolor='white', alpha=0.7, pad=1))
         
         # Set labels and titles
-        ax1.set_xlabel('Fe5015 Index', fontsize=14)
-        ax1.set_ylabel('Mgb Index', fontsize=14)
-        ax1.set_title('Fe5015 vs Mgb - colored by R/Re', fontsize=16)
+        ax1.set_xlabel('Fe5015 Index', fontsize=16)
+        ax1.set_ylabel('Mgb Index', fontsize=16)
+        ax1.set_title('Fe5015 vs Mgb - colored by R/Re', fontsize=18)
         
-        ax2.set_xlabel('Fe5015 Index', fontsize=14)
-        ax2.set_ylabel('Mgb Index', fontsize=14)
-        ax2.set_title('Fe5015 vs Mgb - colored by [α/Fe]', fontsize=16)
+        ax2.set_xlabel('Fe5015 Index', fontsize=16)
+        ax2.set_ylabel('Mgb Index', fontsize=16)
+        ax2.set_title('Fe5015 vs Mgb - colored by [α/Fe]', fontsize=18)
         
         # Add grid
         ax1.grid(True, alpha=0.3, linestyle='--')
@@ -2773,16 +2780,16 @@ def create_fe5015_mgb_plot(results_list, output_path=None, dpi=150, model_data=N
         for ax in [ax1, ax2]:
             ax.xaxis.set_minor_locator(AutoMinorLocator(5))
             ax.yaxis.set_minor_locator(AutoMinorLocator(5))
-            ax.tick_params(axis='both', which='both', labelsize='x-small', right=True, top=True, direction='in')
+            ax.tick_params(axis='both', which='both', labelsize=12, right=True, top=True, direction='in')
         
         # Add overall title
-        plt.suptitle('Spectral Indices and Alpha Enhancement in Virgo Cluster Galaxies', fontsize=18, y=0.98)
+        plt.suptitle('Spectral Indices and Alpha Enhancement in Virgo Cluster Galaxies', fontsize=20, y=0.98)
         
         # Add note about standardized data
         plt.figtext(0.5, 0.01, 
                   "Data points represent individual radial bins from all galaxies.\n"
                   "All α/Fe values calculated using the standardized interpolation method for consistency.",
-                  ha='center', fontsize=12, bbox=dict(facecolor='white', alpha=0.7))
+                  ha='center', fontsize=14, bbox=dict(facecolor='white', alpha=0.7))
         
         # Adjust layout
         plt.tight_layout(rect=[0, 0.03, 1, 0.95])
@@ -3320,7 +3327,7 @@ def create_virgo_cluster_map_with_vectors(results_list, coordinates, output_path
         import traceback
         traceback.print_exc()
 
-def create_virgo_cluster_map_only(results_list, coordinates, output_path=None, dpi=150):
+def create_virgo_cluster_map_only(results_list, coordinates, output_path=None, dpi=300):
     """
     Create a map of the Virgo Cluster showing alpha/Fe gradients as vectors
     with only the top map panel
@@ -3341,10 +3348,10 @@ def create_virgo_cluster_map_only(results_list, coordinates, output_path=None, d
         fig = plt.figure(figsize=(16, 12))
         ax_map = fig.add_subplot(111)
         
-        # Define galaxies with emission lines based on your table
+        # Define galaxies with emission lines - CORRECTED LIST with only 7 galaxies
         emission_line_galaxies = [
-            "VCC1588", "VCC1368", "VCC1902", "VCC1949", "VCC990", 
-            "VCC1410", "VCC667", "VCC1811", "VCC688", "VCC1193", "VCC1486"
+            "VCC1588", "VCC1410", "VCC0667", "VCC1811", 
+            "VCC0688", "VCC1193", "VCC1486"
         ]
         
         # Extract RA and DEC for plotting
@@ -3357,6 +3364,9 @@ def create_virgo_cluster_map_only(results_list, coordinates, output_path=None, d
                 continue
                 
             galaxy = result['galaxy']
+            print('!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!')
+            print(galaxy)
+            print(galaxy in emission_line_galaxies)
             if galaxy in coordinates:
                 ra, dec = coordinates[galaxy]
                 ra_values.append(ra)
@@ -3420,7 +3430,7 @@ def create_virgo_cluster_map_only(results_list, coordinates, output_path=None, d
             
             # Add region label
             ax_map.text(ra, dec - radius - 0.2, name, ha='center', va='top', 
-                      fontsize=10, color='black', alpha=0.8,
+                      fontsize=12, color='black', alpha=0.8,
                       bbox=dict(facecolor='white', alpha=0.6, edgecolor='gray'))
         
         # Collect slope values to determine scaling
@@ -3432,7 +3442,6 @@ def create_virgo_cluster_map_only(results_list, coordinates, output_path=None, d
         # Determine vector scaling factor
         if all_slopes:
             max_slope = max(all_slopes)
-            min_slope = min(all_slopes)
             # Base scale factor for vector length
             scale_factor = 0.5 / max(max_slope, 0.1)  # Prevent division by zero
         else:
@@ -3457,21 +3466,21 @@ def create_virgo_cluster_map_only(results_list, coordinates, output_path=None, d
             slope = result.get('slope', np.nan)
             p_value = result.get('p_value', np.nan)
             
-            # Check if galaxy has emission lines
+            # Check if galaxy has emission lines - make this clear using corrected list
             has_emission = galaxy in emission_line_galaxies
             
             # If no valid slope, just plot a point
             if np.isnan(slope):
                 # Use filled circle for emission line galaxies, hollow circle for others
                 if has_emission:
-                    ax_map.scatter(ra, dec, s=100, color='gray', edgecolor='black', marker='o', zorder=10)
+                    ax_map.scatter(ra, dec, s=160, color='green', edgecolor='black', marker='o', zorder=10)
                 else:
-                    ax_map.scatter(ra, dec, s=100, facecolor='white', edgecolor='black', marker='o', zorder=10)
+                    ax_map.scatter(ra, dec, s=160, facecolor='white', edgecolor='black', marker='o', zorder=10)
                 
                 # Add galaxy label with collision detection
                 label_position = (ra, dec+0.05)
                 label_position = find_open_position(label_positions, label_position, min_label_distance)
-                ax_map.text(label_position[0], label_position[1], galaxy, fontsize=9, ha='center', va='bottom',
+                ax_map.text(label_position[0], label_position[1], galaxy, fontsize=12, ha='center', va='bottom',
                            bbox=dict(facecolor='white', alpha=0.7, edgecolor='none', pad=1))
                 label_positions[galaxy] = label_position
                 continue
@@ -3491,7 +3500,7 @@ def create_virgo_cluster_map_only(results_list, coordinates, output_path=None, d
                 marker = 'v'       # Down triangle
             
             # Point size is standard for all markers
-            point_size = 120
+            point_size = 160
             
             # Vector length proportional to slope magnitude
             vector_length = abs(slope) * scale_factor
@@ -3507,14 +3516,14 @@ def create_virgo_cluster_map_only(results_list, coordinates, output_path=None, d
             ax_map.arrow(ra, dec, dx, dy, head_width=0.1, head_length=0.1, 
                        fc=color, ec=color, alpha=0.7, zorder=5)
             
-            # Plot galaxy marker
+            # Plot galaxy marker - filled for emission line galaxies
             if has_emission:
-                # Solid colored marker for emission line galaxies
+                # Solid filled marker for emission line galaxies
                 ax_map.scatter(ra, dec, s=point_size, marker=marker, 
                              color=color, edgecolor='black', linewidth=1.5,
                              alpha=0.8, zorder=10)
             else:
-                # Hollow colored marker for non-emission line galaxies
+                # Hollow marker for non-emission line galaxies
                 ax_map.scatter(ra, dec, s=point_size, marker=marker, 
                              facecolor='none', edgecolor=color, linewidth=2.5,
                              alpha=0.8, zorder=10)
@@ -3527,7 +3536,7 @@ def create_virgo_cluster_map_only(results_list, coordinates, output_path=None, d
             # Add the slope value to the label
             slope_text = f"{slope:.2f}"
             ax_map.text(label_position[0], label_position[1], 
-                       f"{galaxy}\n{slope_text}", fontsize=9, ha='center', va='center', 
+                       f"{galaxy}\n{slope_text}", fontsize=12, ha='center', va='center', 
                        bbox=dict(facecolor='white', alpha=0.7, edgecolor='none', pad=1))
             label_positions[galaxy] = label_position
         
@@ -3538,43 +3547,37 @@ def create_virgo_cluster_map_only(results_list, coordinates, output_path=None, d
             
             # Add labels with larger font and box
             y_offset = 0.25  # Standard offset
-            ax_map.text(ra, dec + y_offset, name.split('/')[0], fontsize=12, ha='center', va='center', 
+            ax_map.text(ra, dec + y_offset, name.split('/')[0], fontsize=14, ha='center', va='center', 
                    weight='bold', bbox=dict(facecolor='white', alpha=0.8, edgecolor='black', boxstyle='round'))
         
-        # Plot center of dataset
-        ax_map.scatter(data_center_ra, data_center_dec, s=200, marker='P', color='forestgreen', 
-                     edgecolor='black', linewidth=1.5, zorder=5)
-        ax_map.text(data_center_ra, data_center_dec + 0.25, "Dataset Center", fontsize=12, ha='center', va='center',
-                   weight='bold', bbox=dict(facecolor='white', alpha=0.8, edgecolor='black', boxstyle='round'))
+        # DO NOT plot dataset center
         
-        # Add legend
+        # Add legend with improved emission line explanation
         legend_elements = [
             # Slope direction indicators
-            Line2D([0], [0], marker='^', color='blue', linestyle='none', markersize=10, 
+            Line2D([0], [0], marker='^', color='blue', linestyle='none', markersize=12, 
                  label='Positive α/Fe gradient'),
-            Line2D([0], [0], marker='v', color='red', linestyle='none', markersize=10, 
+            Line2D([0], [0], marker='v', color='red', linestyle='none', markersize=12, 
                  label='Negative α/Fe gradient'),
-            Line2D([0], [0], marker='o', color='blue', linestyle='none', markersize=10, 
+            Line2D([0], [0], marker='o', color='blue', linestyle='none', markersize=12, 
                  label='Horizontal α/Fe gradient'),
             
-            # Emission line indicators
-            Line2D([0], [0], marker='^', color='green', linestyle='none', markersize=10, 
-                 label='With emission line'),
-            Line2D([0], [0], marker='^', color='w', markeredgecolor='green', markeredgewidth=2, 
-                 markersize=10, label='Without emission line'),
+            # Emission line indicators - make sure these align with plotting
+            Line2D([0], [0], marker='^', color='blue', linestyle='none', markersize=12, 
+                 label='With emission line (filled)'),
+            Line2D([0], [0], marker='^', color='w', markeredgecolor='blue', markeredgewidth=2, 
+                 markersize=12, label='Without emission line (hollow)'),
             
             # Other map elements
-            Line2D([0], [0], marker='*', color='gold', linestyle='none', markersize=15, 
-                 label='Cluster/Subcluster Center'),
-            Line2D([0], [0], marker='P', color='forestgreen', linestyle='none', markersize=15,
-                 label='Dataset Center')
+            Line2D([0], [0], marker='*', color='gold', linestyle='none', markersize=16, 
+                 label='Cluster/Subcluster Center')
         ]
-        ax_map.legend(handles=legend_elements, loc='upper right', fontsize=10)
+        ax_map.legend(handles=legend_elements, loc='upper right', fontsize=12)
         
         # Set labels and title for map
-        ax_map.set_xlabel('RA (deg)', fontsize=14)
-        ax_map.set_ylabel('DEC (deg)', fontsize=14)
-        ax_map.set_title('Virgo Cluster Galaxies: [α/Fe] vs. Radius Relationship (IFU Observations)', fontsize=16)
+        ax_map.set_xlabel('RA (deg)', fontsize=16)
+        ax_map.set_ylabel('DEC (deg)', fontsize=16)
+        ax_map.set_title('Virgo Cluster Galaxies: [α/Fe] vs. Radius Relationship (IFU Observations)', fontsize=18)
         
         # Add scale bar (1 degree ≈ 0.29 Mpc)
         # Position at bottom left
@@ -3583,9 +3586,9 @@ def create_virgo_cluster_map_only(results_list, coordinates, output_path=None, d
         scale_length = 1.0  # 1 degree
         
         # Draw scale bar
-        ax_map.plot([scale_x, scale_x - scale_length], [scale_y, scale_y], 'k-', linewidth=2)
+        ax_map.plot([scale_x, scale_x - scale_length], [scale_y, scale_y], 'k-', linewidth=2.5)
         ax_map.text(scale_x - scale_length/2, scale_y + 0.1, f"1° ≈ 0.29 Mpc", 
-                  ha='center', va='bottom', fontsize=10)
+                  ha='center', va='bottom', fontsize=12)
         
         # Add compass for orientation
         # Location in the top right corner
@@ -3596,12 +3599,12 @@ def create_virgo_cluster_map_only(results_list, coordinates, output_path=None, d
         # North
         ax_map.arrow(compass_x, compass_y, 0, compass_size, head_width=0.1, head_length=0.1, 
                fc='black', ec='black', zorder=20)
-        ax_map.text(compass_x, compass_y + compass_size + 0.1, 'N', ha='center', va='center', fontsize=10)
+        ax_map.text(compass_x, compass_y + compass_size + 0.1, 'N', ha='center', va='center', fontsize=12)
         
         # East
         ax_map.arrow(compass_x, compass_y, -compass_size, 0, head_width=0.1, head_length=0.1, 
                fc='black', ec='black', zorder=20)
-        ax_map.text(compass_x - compass_size - 0.1, compass_y, 'E', ha='center', va='center', fontsize=10)
+        ax_map.text(compass_x - compass_size - 0.1, compass_y, 'E', ha='center', va='center', fontsize=12)
         
         # Add grid to map
         ax_map.grid(True, alpha=0.3, linestyle='--')
@@ -3609,15 +3612,15 @@ def create_virgo_cluster_map_only(results_list, coordinates, output_path=None, d
         # Set tick parameters for map
         ax_map.xaxis.set_minor_locator(AutoMinorLocator(5))
         ax_map.yaxis.set_minor_locator(AutoMinorLocator(5))
-        ax_map.tick_params(axis='both', which='both', labelsize='x-small', right=True, top=True, direction='in')
+        ax_map.tick_params(axis='both', which='both', labelsize=12, right=True, top=True, direction='in')
         
-        # Add explanatory text at the bottom of the figure
+        # Add explanatory text at the bottom of the figure - make emission line explanation clearer
         plt.figtext(0.5, 0.01, 
                    "Blue symbols: α/Fe increases with radius | Red symbols: α/Fe decreases with radius\n"
                    "Triangles: Strong gradients | Circles: Horizontal gradients (|slope| < 0.05)\n"
-                   "Solid symbols: Galaxies with emission lines | Hollow symbols: Galaxies without emission lines\n"
+                   "Filled symbols: Galaxies with emission lines | Hollow symbols: Galaxies without emission lines\n"
                    "Arrow length represents strength of α/Fe radial gradient",
-                   ha='center', fontsize=12, bbox=dict(facecolor='white', alpha=0.7))
+                   ha='center', fontsize=14, bbox=dict(facecolor='white', alpha=0.7))
         
         # Adjust layout
         plt.tight_layout(rect=[0, 0.05, 1, 0.97])
@@ -3969,52 +3972,56 @@ def create_virgo_distance_plots_only(results_list, coordinates, output_path=None
         import traceback
         traceback.print_exc()
 
-def create_snr_comparison_plots(file_paths, output_path=None, dpi=150):
+def create_snr_comparison_plots(file_paths, output_path=None, dpi=300):
     """
-    Create a visualization with 3 SNR maps and a SNR vs R/Re scatter plot
+    Create a visualization with SNR maps and a SNR vs R/Re scatter plot
     
     Parameters:
     -----------
     file_paths : list
-        List of paths to 3 IFU SNR files (pixels SNR, Voronoi bin SNR, Voronoi bin feedback SNR)
+        List of paths to IFU SNR files (pixels SNR, radial bin SNR)
     output_path : str, optional
         Path to save the output image
     dpi : int
         Resolution for the output image
     """
     try:
-        # Check if we have 3 files
-        if len(file_paths) != 3:
-            raise ValueError("Please provide exactly 3 input files (pixel SNR, Voronoi bin SNR, Voronoi bin feedback SNR)")
+        # Check if we have the files
+        if len(file_paths) < 2:
+            raise ValueError("Please provide at least 2 input files (pixel SNR, radial bin SNR)")
         
-        # Set up the figure with a 2x3 grid
+        # Set up the figure with a grid
         fig = plt.figure(figsize=(15, 10))
-        gs = gridspec.GridSpec(2, 3, height_ratios=[1, 1.2])
+        gs = gridspec.GridSpec(2, 2, height_ratios=[1, 1.2])
         
-        # Create the subplots - 3 SNR maps on top, SNR vs R/Re plot on bottom
+        # Create the subplots - SNR maps on top, SNR vs R/Re plot on bottom
         ax_snr1 = plt.subplot(gs[0, 0])      # Pixel SNR map
-        ax_snr2 = plt.subplot(gs[0, 1])      # Voronoi bin SNR map
-        ax_snr3 = plt.subplot(gs[0, 2])      # Voronoi bin feedback SNR map
+        ax_snr3 = plt.subplot(gs[0, 1])      # Radial Bin SNR map
         ax_snr_plot = plt.subplot(gs[1, :])  # SNR vs R/Re plot
         
         # SNR map titles
-        snr_titles = ['Pixel SNR', 'Voronoi Bin SNR', 'Radial Bin SNR']
+        snr_titles = ['Pixel SNR', 'Radial Bin SNR']
         
         # Colors for different SNR types in the scatter plot
-        colors = ['blue', 'green', 'red']
-        markers = ['o', 'x', '+']  # Use 'o' for P2P, 'x' for VNB, '+' for RDB
-        labels = ['Pixels SNR', 'Voronoi bin SNR', 'Radial bin SNR']
+        colors = ['blue', 'red']
+        markers = ['o', 'x']  # Use 'o' for P2P, '+' for RDB
+        labels = ['Pixels SNR', 'Radial bin SNR']
         
         # Data containers for the scatter plot
         p2p_radii = []
         p2p_snr_values = []
-        vnb_radii = []
-        vnb_snr_values = []
         rdb_radii = []
         rdb_snr_values = []
         
-        # Process each SNR file
-        for i, file_path in enumerate(file_paths):
+        # Process each SNR file (skipping VNB)
+        file_indices = [0, 2] if len(file_paths) >= 3 else [0, 1]
+        plot_axes = [ax_snr1, ax_snr3]
+        
+        for idx, file_idx in enumerate(file_indices):
+            if file_idx >= len(file_paths):
+                continue
+                
+            file_path = file_paths[file_idx]
             try:
                 # Open the file - assuming it's a FITS file
                 with fits.open(file_path) as hdu:
@@ -4078,7 +4085,7 @@ def create_snr_comparison_plots(file_paths, output_path=None, dpi=150):
                     extent = [-extent_x/2, extent_x/2, -extent_y/2, extent_y/2]
                     
                     # Plot the SNR map in the appropriate subplot
-                    ax = [ax_snr1, ax_snr2, ax_snr3][i]
+                    ax = plot_axes[idx]
                     
                     # Get valid data range for color scaling
                     valid_mask = np.isfinite(snr_data) & (snr_data > 0)
@@ -4094,19 +4101,20 @@ def create_snr_comparison_plots(file_paths, output_path=None, dpi=150):
                     
                     # Add colorbar
                     cbar = plt.colorbar(im, ax=ax)
-                    cbar.set_label('S/N')
+                    cbar.set_label('S/N', fontsize=14)
                     
                     # Set title
-                    ax.set_title(snr_titles[i])
+                    ax.set_title(snr_titles[idx], fontsize=16)
                     
                     # Add labels and formatting
-                    ax.set_xlabel('Offset (arcsec)')
-                    ax.set_ylabel('Offset (arcsec)')
+                    ax.set_xlabel('Offset (arcsec)', fontsize=14)
+                    ax.set_ylabel('Offset (arcsec)', fontsize=14)
                     
                     # Add ticks and grid
                     ax.xaxis.set_minor_locator(AutoMinorLocator(5))
                     ax.yaxis.set_minor_locator(AutoMinorLocator(5))
                     ax.grid(True, alpha=0.3, linestyle='--')
+                    ax.tick_params(axis='both', which='both', labelsize=12)
                     
                     # Extract radial coordinates
                     y, x = np.indices(snr_data.shape)
@@ -4122,14 +4130,13 @@ def create_snr_comparison_plots(file_paths, output_path=None, dpi=150):
                     # Convert to R/Re
                     r_scaled = r_arcsec / Re
                     
-                    # Different handling for each file type:
-                    if i == 0:  # Pixel SNR (P2P)
+                    # Handle P2P and RDB differently
+                    if idx == 0:  # Pixel SNR (P2P)
                         # Flatten arrays for scatter plot
                         r_flat = r_scaled.flatten()
                         snr_flat = snr_data.flatten()
                         
                         # Filter out invalid values and select a reasonable number of points
-                        # to prevent plot from being too crowded
                         valid = np.isfinite(snr_flat) & (snr_flat > 0)
                         r_valid = r_flat[valid]
                         snr_valid = snr_flat[valid]
@@ -4145,52 +4152,8 @@ def create_snr_comparison_plots(file_paths, output_path=None, dpi=150):
                         p2p_radii = r_valid
                         p2p_snr_values = snr_valid
                         
-                    elif i == 1:  # Voronoi Bin SNR (VNB)
-                        # Bin pixels by SNR value - using a tolerance to group similar values
-                        tolerance = 0.005  # SNR tolerance for grouping
-                        
-                        # Flatten SNR and radius arrays
-                        flat_snr = snr_data.flatten()
-                        flat_r = r_scaled.flatten()
-                        
-                        # Filter out invalid values
-                        valid_mask = np.isfinite(flat_snr) & (flat_snr > 0)
-                        valid_snr = flat_snr[valid_mask]
-                        valid_r = flat_r[valid_mask]
-                        
-                        # Find unique SNR values within tolerance
-                        unique_snr_values = []
-                        bin_r_means = []
-                        
+                    elif idx == 1:  # Radial Bin SNR (RDB)
                         # Group by SNR value within tolerance
-                        processed_indices = set()
-                        
-                        for j in range(len(valid_snr)):
-                            if j in processed_indices:
-                                continue
-                                
-                            snr_value = valid_snr[j]
-                            # Find all pixels with similar SNR value
-                            similar_mask = np.abs(valid_snr - snr_value) < tolerance
-                            
-                            # Only consider this a bin if we have multiple pixels
-                            if np.sum(similar_mask) > 1:
-                                # Calculate mean radius for this bin
-                                mean_r = np.mean(valid_r[similar_mask])
-                                
-                                # Add to results
-                                unique_snr_values.append(snr_value)
-                                bin_r_means.append(mean_r)
-                                
-                                # Mark as processed
-                                processed_indices.update(np.where(similar_mask)[0])
-                        
-                        # Store data for VNB scatter plot
-                        vnb_radii = bin_r_means
-                        vnb_snr_values = unique_snr_values
-                        
-                    elif i == 2:  # Radial Bin SNR (RDB)
-                        # Same approach as VNB, but for RDB data
                         tolerance = 0.005  # SNR tolerance for grouping
                         
                         # Flatten SNR and radius arrays
@@ -4238,46 +4201,44 @@ def create_snr_comparison_plots(file_paths, output_path=None, dpi=150):
                 import traceback
                 traceback.print_exc()
         
-        # Create the scatter plot with one point per bin for VNB and RDB
+        # Create the scatter plot with one point per bin for RDB
         # 1. Plot P2P data with 'o' markers
         if len(p2p_radii) > 0 and len(p2p_snr_values) > 0:
             ax_snr_plot.scatter(p2p_radii, p2p_snr_values, 
-                            s=5, alpha=0.7, color=colors[0], 
+                            s=10, alpha=0.7, color=colors[0], 
                             marker=markers[0], label=labels[0])
-        
-        # 2. Plot VNB data with 'x' markers - one point per bin
-        if len(vnb_radii) > 0 and len(vnb_snr_values) > 0:
-            ax_snr_plot.scatter(vnb_radii, vnb_snr_values, 
-                            s=50, alpha=0.7, color=colors[1], 
-                            marker=markers[1], label=labels[1])
         
         # 3. Plot RDB data with '+' markers - one point per bin
         if len(rdb_radii) > 0 and len(rdb_snr_values) > 0:
             ax_snr_plot.scatter(rdb_radii, rdb_snr_values, 
-                            s=50, alpha=0.7, color=colors[2], 
-                            marker=markers[2], label=labels[2])
+                            s=200, alpha=0.7, color=colors[1], 
+                            marker=markers[1], label=labels[1])
         
         # Add target SNR line
-        ax_snr_plot.axhline(y=20, linestyle='--', color='magenta', label='target SNR = 20')
+        ax_snr_plot.axhline(y=20, linestyle='--', color='magenta', linewidth=2.5, label='target SNR = 20')
         
         # Set labels and title for scatter plot
-        ax_snr_plot.set_xlabel('R/Re')
-        ax_snr_plot.set_ylabel('SNR')
-        ax_snr_plot.set_title('SNR vs. Normalized Radius (R/Re)')
+        ax_snr_plot.set_xlabel('R/Re', fontsize=16)
+        ax_snr_plot.set_ylabel('SNR', fontsize=16)
+        ax_snr_plot.set_title('SNR vs. Normalized Radius (R/Re)', fontsize=18)
         
         # Set y-axis range to match your reference plot
         ax_snr_plot.set_ylim(0, 50)
         
         # Add grid and legend
         ax_snr_plot.grid(True, alpha=0.3, linestyle='--')
-        ax_snr_plot.legend(loc='upper right')
+        ax_snr_plot.legend(loc='upper right', fontsize=14)
         
         # Add minor ticks
         ax_snr_plot.xaxis.set_minor_locator(AutoMinorLocator(5))
         ax_snr_plot.yaxis.set_minor_locator(AutoMinorLocator(5))
+        ax_snr_plot.tick_params(axis='both', which='both', labelsize=12)
+        
+        # Add suptitle
+        plt.suptitle(f'SNR Analysis for {galaxy_name}', fontsize=20, y=0.98)
         
         # Adjust layout
-        plt.tight_layout()
+        plt.tight_layout(rect=[0, 0, 1, 0.95])
         
         # Save or show the figure
         if output_path:
@@ -4711,7 +4672,7 @@ if __name__ == "__main__":
     
     # Define emission line galaxies
     emission_line_galaxies = [
-        "VCC1588", "VCC1368", "VCC1902", "VCC1949", "VCC990", 
+        "VCC1588", #"VCC1368", "VCC1902", "VCC1949", "VCC990", 
         "VCC1410", "VCC667", "VCC1811", "VCC688", "VCC1193", "VCC1486"
     ]
     
@@ -5342,10 +5303,10 @@ def main():
     # Define galaxies to process
     galaxies = [
         "VCC0308",
-        #  "VCC0667", "VCC0688", "VCC0990", "VCC1049", "VCC1146", 
-        # "VCC1193", "VCC1368", "VCC1410", "VCC1431", "VCC1486", "VCC1499", 
-        # "VCC1549", "VCC1588", "VCC1695", "VCC1811", "VCC1890", 
-        # "VCC1902", "VCC1910", "VCC1949"
+         "VCC0667", "VCC0688", "VCC0990", "VCC1049", "VCC1146", 
+        "VCC1193", "VCC1368", "VCC1410", "VCC1431", "VCC1486", "VCC1499", 
+        "VCC1549", "VCC1588", "VCC1695", "VCC1811", "VCC1890", 
+        "VCC1902", "VCC1910", "VCC1949"
     ]
     
     # Path to model data file
@@ -5369,10 +5330,10 @@ def main():
     results = process_all_galaxies(all_galaxy_data, model_data, 'bins_config.yaml', continuum_mode)
     
     # Define emission line galaxies
-    # emission_line_galaxies = [
-    #     "VCC1588", "VCC1368", "VCC1902", "VCC1949", "VCC990", 
-    #     "VCC1410", "VCC667", "VCC1811", "VCC688", "VCC1193", "VCC1486"
-    # ]
+    emission_line_galaxies = [
+        "VCC1588", #"VCC1368", "VCC1902", "VCC1949", "VCC990", 
+        "VCC1410", "VCC0667", "VCC1811", "VCC0688", "VCC1193", "VCC1486"
+    ]
     
     # Get galaxy coordinates
     coordinates = get_ifu_coordinates(galaxies)
