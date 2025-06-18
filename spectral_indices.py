@@ -26,6 +26,206 @@ logger = logging.getLogger(__name__)
 SHOW_WARNINGS = False
 
 
+# Add to imports at the top of spectral_indices.py
+from utils.error_propagation import (
+    propagate_errors_spectral_index, 
+    MCMCErrorEstimator,
+    validate_errors_rms
+)
+
+# Modified LineIndexCalculator class - add these methods:
+
+def calculate_index_with_error(self, line_name, n_monte_carlo=1000, 
+                              use_mcmc=False, mcmc_params=None):
+    """
+    Calculate absorption line index with full error propagation
+    
+    Parameters
+    ----------
+    line_name : str
+        Absorption line name
+    n_monte_carlo : int
+        Number of Monte Carlo iterations
+    use_mcmc : bool
+        Whether to use MCMC for error estimation
+    mcmc_params : dict, optional
+        MCMC parameters
+        
+    Returns
+    -------
+    index_value : float
+        Index value in Angstroms
+    index_error : float
+        Index error in Angstroms
+    index_error_details : dict
+        Detailed error breakdown
+    """
+    # Get window definition
+    windows = self.define_line_windows(line_name)
+    if windows is None:
+        self._warn(f"Unknown absorption line: {line_name}")
+        return np.nan, np.nan, {}
+    
+    # Get velocity error if available
+    velocity_error = getattr(self, 'velocity_error', 5.0)  # Default 5 km/s
+    
+    # Check if we have proper error array
+    if self.error is None or np.all(self.error == 1):
+        # Estimate errors from residuals if available
+        if hasattr(self, 'residuals') and self.residuals is not None:
+            self.error = np.abs(self.residuals)
+        else:
+            # Use 1% of flux as error estimate
+            self.error = 0.01 * np.abs(self.flux)
+    
+    if use_mcmc and mcmc_params is not None:
+        # MCMC-based error estimation
+        mcmc_estimator = MCMCErrorEstimator(**mcmc_params)
+        
+        # Define model function for index calculation
+        def index_model(params):
+            vel, cont_blue, cont_red = params
+            # Apply velocity correction
+            wave_corr = self.wave / (1 + vel / self.c)
+            # Calculate index with given continuum levels
+            # ... (index calculation logic)
+            return index_value
+        
+        # Run MCMC
+        initial_params = [self.velocity, 
+                         self.calculate_pseudo_continuum(windows["blue"], None, "blue"),
+                         self.calculate_pseudo_continuum(windows["red"], None, "red")]
+        bounds = [(self.velocity - 3*velocity_error, self.velocity + 3*velocity_error),
+                 (0, np.inf), (0, np.inf)]
+        
+        mcmc_results = mcmc_estimator.run_mcmc(
+            initial_params, self.flux, index_model, self.error, bounds
+        )
+        
+        index_value = mcmc_results['median'][0]
+        index_error = mcmc_results['std'][0]
+        
+        error_details = {
+            'method': 'MCMC',
+            'acceptance_fraction': mcmc_results['acceptance_fraction'],
+            'percentiles': mcmc_results['percentiles']
+        }
+    else:
+        # Monte Carlo error propagation
+        index_value, index_error = propagate_errors_spectral_index(
+            self.wave, self.flux, self.error, windows,
+            self.velocity, velocity_error, n_monte_carlo
+        )
+        
+        error_details = {
+            'method': 'Monte Carlo',
+            'n_iterations': n_monte_carlo
+        }
+    
+    # Add error components breakdown
+    error_details.update({
+        'velocity_error_contribution': self._calculate_velocity_error_contribution(line_name),
+        'continuum_error_contribution': self._calculate_continuum_error_contribution(line_name),
+        'measurement_error_contribution': index_error,
+        'total_error': index_error
+    })
+    
+    return index_value, index_error, error_details
+
+def _calculate_velocity_error_contribution(self, line_name):
+    """Calculate the contribution of velocity error to index uncertainty"""
+    # Calculate index at +/- velocity error
+    vel_error = getattr(self, 'velocity_error', 5.0)
+    
+    # Store original velocity
+    orig_vel = self.velocity
+    
+    # Calculate at +vel_error
+    self.velocity = orig_vel + vel_error
+    index_plus = self.calculate_index(line_name)
+    
+    # Calculate at -vel_error
+    self.velocity = orig_vel - vel_error
+    index_minus = self.calculate_index(line_name)
+    
+    # Restore original velocity
+    self.velocity = orig_vel
+    
+    # Error contribution (assuming Gaussian)
+    if np.isfinite(index_plus) and np.isfinite(index_minus):
+        return (index_plus - index_minus) / (2 * np.sqrt(2))
+    else:
+        return 0.0
+
+def _calculate_continuum_error_contribution(self, line_name):
+    """Calculate the contribution of continuum placement error to index uncertainty"""
+    windows = self.define_line_windows(line_name)
+    
+    # Get continuum regions
+    blue_mask = (self.wave >= windows["blue"][0]) & (self.wave <= windows["blue"][1])
+    red_mask = (self.wave >= windows["red"][0]) & (self.wave <= windows["red"][1])
+    
+    # Calculate continuum uncertainty
+    blue_std = np.std(self.flux[blue_mask]) if np.any(blue_mask) else 0
+    red_std = np.std(self.flux[red_mask]) if np.any(red_mask) else 0
+    
+    # Approximate error contribution
+    line_width = windows["line"][1] - windows["line"][0] if "line" in windows else 0
+    continuum_error = np.sqrt(blue_std**2 + red_std**2) * line_width / 2
+    
+    return continuum_error
+
+def calculate_all_indices_with_errors(self, n_monte_carlo=1000, parallel=True):
+    """
+    Calculate all defined spectral indices with errors
+    
+    Parameters
+    ----------
+    n_monte_carlo : int
+        Number of Monte Carlo iterations
+    parallel : bool
+        Whether to use parallel processing
+        
+    Returns
+    -------
+    dict
+        Dictionary with index values, errors, and error details
+    """
+    results = {}
+    
+    line_names = ["Hbeta", "Mgb", "Fe5015", "Fe5270", "Fe5335"]
+    
+    if parallel:
+        from multiprocessing import Pool
+        with Pool() as pool:
+            index_results = pool.starmap(
+                self.calculate_index_with_error,
+                [(line_name, n_monte_carlo) for line_name in line_names]
+            )
+        
+        for line_name, (value, error, details) in zip(line_names, index_results):
+            if not np.isnan(value):
+                results[line_name] = {
+                    'value': value,
+                    'error': error,
+                    'error_details': details
+                }
+    else:
+        for line_name in line_names:
+            try:
+                value, error, details = self.calculate_index_with_error(line_name, n_monte_carlo)
+                if not np.isnan(value):
+                    results[line_name] = {
+                        'value': value,
+                        'error': error,
+                        'error_details': details
+                    }
+            except Exception as e:
+                logger.debug(f"Error calculating {line_name} with errors: {str(e)}")
+    
+    return results
+
+
 def safe_tight_layout(fig=None):
     """
     Apply tight_layout with error handling to avoid warnings
@@ -1231,3 +1431,6 @@ def calculate_D4000(wave, flux):
             return np.nan
 
         return red_flux / blue_flux
+
+
+

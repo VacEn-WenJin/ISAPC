@@ -1,0 +1,40 @@
+ENHANCED ALPHA/FE ANALYSIS - FINAL SUMMARY
+============================================================
+Analysis Date: 2025-06-01 22:24:52.951327
+Total Galaxies: 19
+Successful Analyses: 0
+Success Rate: 0.0%
+
+LINEAR GRADIENT STATISTICS:
+------------------------------
+Significant gradients (p<0.05): 0
+Positive gradients: 0
+Negative gradients: 0
+Flat profiles: 0
+High quality results: 0
+Special cases applied: 0
+
+FAILED GALAXIES:
+--------------------
+  VCC0308
+  VCC0667
+  VCC0688
+  VCC1049
+  VCC1146
+  VCC1193
+  VCC1368
+  VCC1410
+  VCC1431
+  VCC1486
+  VCC1499
+  VCC1549
+  VCC1588
+  VCC1695
+  VCC1811
+  VCC1890
+  VCC1902
+  VCC1910
+  VCC1949
+
+KEY FINDINGS:
+---------------

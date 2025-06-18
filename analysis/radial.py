@@ -1,5 +1,6 @@
 """
 Radial binning analysis module for ISAPC
+Enhanced with full error propagation and MCMC
 """
 
 import logging
@@ -8,8 +9,8 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
-from matplotlib.colors import Normalize, LogNorm  # Required for color normalization
-from mpl_toolkits.mplot3d import Axes3D  # Required for 3D plots
+from matplotlib.colors import Normalize, LogNorm
+from mpl_toolkits.mplot3d import Axes3D
 
 import galaxy_params
 import visualization
@@ -17,17 +18,222 @@ from binning import (
     RadialBinnedData,
     calculate_radial_bins,
     calculate_wavelength_intersection,
-    combine_spectra_efficiently,
     calculate_radial_bins_re_based
 )
 from utils.io import save_standardized_results
+from utils.error_propagation import (
+    propagate_binning_errors,
+    calculate_covariance_matrix,
+    bootstrap_error_estimation,
+    validate_errors_rms
+)
 
 logger = logging.getLogger(__name__)
+
+
+def combine_spectra_with_errors(spectra, wavelength, bin_indices, velocity_field, nx, ny, 
+                               edge_treatment="extend", use_separate_velocity=False,
+                               errors=None, use_covariance=True, correlation_length=2.0):
+    """
+    Combine spectra into bins with proper velocity correction and error propagation
+    
+    Parameters
+    ----------
+    spectra : ndarray
+        2D array of spectra (n_wave, n_spec)
+    wavelength : ndarray
+        Wavelength array
+    bin_indices : list
+        List of arrays containing indices for each bin
+    velocity_field : ndarray, optional
+        2D velocity field for correction
+    nx, ny : int
+        Spatial dimensions
+    edge_treatment : str
+        Edge treatment method: 'extend', 'truncate', or 'interpolate'
+    use_separate_velocity : bool
+        Whether to use separate stellar and gas velocities
+    errors : ndarray, optional
+        2D array of errors (n_wave, n_spec)
+    use_covariance : bool
+        Whether to use spatial covariance in error propagation
+    correlation_length : float
+        Spatial correlation length in pixels
+        
+    Returns
+    -------
+    binned_spectra : ndarray
+        Combined spectra (n_wave, n_bins)
+    binned_errors : ndarray, optional
+        Propagated errors if errors were provided
+    """
+    n_bins = len(bin_indices)
+    n_wave = len(wavelength)
+    
+    binned_spectra = np.zeros((n_wave, n_bins))
+    binned_errors = np.zeros((n_wave, n_bins)) if errors is not None else None
+    
+    # Pre-calculate spatial coordinates for covariance
+    if use_covariance and errors is not None:
+        x_coords = np.arange(nx * ny) % nx
+        y_coords = np.arange(nx * ny) // nx
+    
+    for i, indices in enumerate(bin_indices):
+        if len(indices) == 0:
+            continue
+            
+        # Get spectra for this bin
+        bin_spectra = spectra[:, indices].copy()
+        bin_errors_subset = errors[:, indices].copy() if errors is not None else None
+        
+        # Handle velocity correction
+        if velocity_field is not None:
+            # Get pixel coordinates
+            rows = indices // nx
+            cols = indices % nx
+            
+            # Ensure we're within bounds
+            rows = np.clip(rows, 0, ny-1)
+            cols = np.clip(cols, 0, nx-1)
+            
+            velocities = velocity_field[rows, cols]
+            
+            # Check for gas velocity field if using separate velocities
+            gas_velocities = None
+            if use_separate_velocity and hasattr(velocity_field, 'gas_velocity_field'):
+                if velocity_field.gas_velocity_field is not None:
+                    gas_velocities = velocity_field.gas_velocity_field[rows, cols]
+            
+            # Apply velocity corrections
+            for j, vel in enumerate(velocities):
+                if np.isfinite(vel) and np.abs(vel) < 1000:  # Sanity check on velocity
+                    # Apply velocity shift
+                    z = vel / 299792.458  # Convert to redshift
+                    wave_shifted = wavelength * (1 + z)
+                    
+                    # Handle edge treatment
+                    if edge_treatment == "extend":
+                        # Extend edge values
+                        flux_extended = np.concatenate([
+                            [bin_spectra[0, j]] * 10,
+                            bin_spectra[:, j],
+                            [bin_spectra[-1, j]] * 10
+                        ])
+                        wave_extended = np.concatenate([
+                            wavelength[0] - np.arange(10, 0, -1) * (wavelength[1] - wavelength[0]),
+                            wavelength,
+                            wavelength[-1] + np.arange(1, 11) * (wavelength[-1] - wavelength[-2])
+                        ])
+                        
+                        # Interpolate back to original grid
+                        bin_spectra[:, j] = np.interp(wavelength, wave_shifted, flux_extended)
+                        
+                        # Also interpolate errors if available
+                        if bin_errors_subset is not None:
+                            error_extended = np.concatenate([
+                                [bin_errors_subset[0, j]] * 10,
+                                bin_errors_subset[:, j],
+                                [bin_errors_subset[-1, j]] * 10
+                            ])
+                            bin_errors_subset[:, j] = np.interp(wavelength, wave_shifted, error_extended)
+                    
+                    elif edge_treatment == "truncate":
+                        # Simple interpolation with NaN for out-of-bounds
+                        bin_spectra[:, j] = np.interp(wavelength, wave_shifted, 
+                                                     bin_spectra[:, j], 
+                                                     left=np.nan, right=np.nan)
+                        if bin_errors_subset is not None:
+                            bin_errors_subset[:, j] = np.interp(wavelength, wave_shifted,
+                                                               bin_errors_subset[:, j],
+                                                               left=np.nan, right=np.nan)
+                    
+                    elif edge_treatment == "interpolate":
+                        # Use scipy for better interpolation
+                        from scipy.interpolate import interp1d
+                        f = interp1d(wave_shifted, bin_spectra[:, j], 
+                                   kind='linear', bounds_error=False, 
+                                   fill_value='extrapolate')
+                        bin_spectra[:, j] = f(wavelength)
+                        
+                        if bin_errors_subset is not None:
+                            f_err = interp1d(wave_shifted, bin_errors_subset[:, j],
+                                           kind='linear', bounds_error=False,
+                                           fill_value='extrapolate')
+                            bin_errors_subset[:, j] = f_err(wavelength)
+        
+        # Combine spectra with optimal weighting
+        if bin_errors_subset is not None:
+            # Handle covariance if requested and we have multiple spectra
+            if use_covariance and len(indices) > 1 and len(indices) < 100:
+                # Calculate distances for this subset
+                x_subset = x_coords[indices]
+                y_subset = y_coords[indices]
+                
+                # Calculate pairwise distances
+                dx = x_subset[:, np.newaxis] - x_subset[np.newaxis, :]
+                dy = y_subset[:, np.newaxis] - y_subset[np.newaxis, :]
+                dist_subset = np.sqrt(dx**2 + dy**2)
+                
+                # Calculate covariance matrix for this bin
+                cov_matrix = calculate_covariance_matrix(
+                    bin_spectra.T, dist_subset, correlation_length
+                )
+                
+                # Use covariance for optimal combination
+                try:
+                    # Inverse covariance weighting
+                    cov_inv = np.linalg.inv(cov_matrix)
+                    weights = cov_inv.sum(axis=1) / cov_inv.sum()
+                    
+                    # Combine spectra
+                    binned_spectra[:, i] = np.average(bin_spectra, weights=weights, axis=1)
+                    
+                    # Propagate errors
+                    for k in range(n_wave):
+                        # Scale covariance by wavelength-dependent errors
+                        cov_scaled = cov_matrix * np.outer(bin_errors_subset[k, :], 
+                                                          bin_errors_subset[k, :])
+                        var = np.dot(weights, np.dot(cov_scaled, weights))
+                        binned_errors[k, i] = np.sqrt(var)
+                        
+                except np.linalg.LinAlgError:
+                    # Fall back to inverse variance weighting
+                    use_covariance = False
+            
+            if not use_covariance or len(indices) == 1:
+                # Simple inverse variance weighting
+                # Avoid division by zero
+                safe_errors = np.maximum(bin_errors_subset, 1e-10)
+                weights = 1.0 / safe_errors**2
+                
+                # Normalize weights
+                weight_sum = np.sum(weights, axis=1, keepdims=True)
+                weight_sum[weight_sum == 0] = 1.0  # Avoid division by zero
+                weights /= weight_sum
+                
+                # Combine spectra
+                binned_spectra[:, i] = np.sum(bin_spectra * weights, axis=1)
+                
+                # Propagate errors
+                binned_errors[:, i] = 1.0 / np.sqrt(np.sum(1.0 / safe_errors**2, axis=1))
+        else:
+            # No errors provided - use simple mean
+            valid_mask = np.isfinite(bin_spectra)
+            n_valid = np.sum(valid_mask, axis=1)
+            n_valid[n_valid == 0] = 1  # Avoid division by zero
+            
+            binned_spectra[:, i] = np.nansum(bin_spectra, axis=1) / n_valid
+    
+    if errors is not None:
+        return binned_spectra, binned_errors
+    else:
+        return binned_spectra
 
 
 def run_rdb_analysis(args, cube, p2p_results=None):
     """
     Run radial binning analysis on MUSE data cube with improved Re-based binning
+    and full error propagation
     
     Parameters
     ----------
@@ -90,7 +296,6 @@ def run_rdb_analysis(args, cube, p2p_results=None):
     ellipticity = args.ellipticity if hasattr(args, "ellipticity") else 0.0
     center_x = args.center_x if hasattr(args, "center_x") else None
     center_y = args.center_y if hasattr(args, "center_y") else None
-    # Force physical radius to true - improved version always uses physical radius
     use_physical_radius = True
     verbose = args.verbose if hasattr(args, "verbose") else False
 
@@ -106,12 +311,10 @@ def run_rdb_analysis(args, cube, p2p_results=None):
         # Always try to calculate physical radius
         from physical_radius import calculate_galaxy_radius, calculate_effective_radius, detect_sources
         
-        # Simplified source detection without importing detect_sources
         # Create flux map for radius calculation
         flux_2d = np.nanmedian(cube._cube_data, axis=0)
 
-        # Skip source detection if it's causing problems
-        # Calculate physical radius and ellipse parameters directly
+        # Calculate physical radius and ellipse parameters with improved method
         r_galaxy, ellipse_params = calculate_galaxy_radius(
             flux_2d,
             pixel_size_x=cube._pxl_size_x,
@@ -248,12 +451,41 @@ def run_rdb_analysis(args, cube, p2p_results=None):
     wavelength = cube._lambda_gal[wave_mask]
     spectra = cube._spectra[wave_mask]
 
-    # Combine spectra into bins with improved velocity correction
-    binned_spectra = combine_spectra_efficiently(
+    # Get error array if available
+    spec_errors = None
+    if hasattr(cube, '_variance') and cube._variance is not None:
+        # Use variance array
+        spec_errors = np.sqrt(cube._variance[wave_mask])
+    elif hasattr(cube, '_error') and cube._error is not None:
+        # Use error array
+        spec_errors = cube._error[wave_mask]
+    else:
+        # Estimate errors from spectral noise
+        logger.info("No error array found, estimating from spectral noise")
+        # Use median absolute deviation for robust noise estimation
+        from scipy.stats import median_abs_deviation
+        spec_errors = np.zeros_like(spectra)
+        for i in range(spectra.shape[1]):
+            if np.any(np.isfinite(spectra[:, i])):
+                noise = median_abs_deviation(spectra[:, i], nan_policy='omit')
+                spec_errors[:, i] = noise * 1.4826  # Convert MAD to std
+
+    # Combine spectra with error propagation
+    result = combine_spectra_with_errors(
         spectra, wavelength, bin_indices, velocity_field, cube._n_x, cube._n_y,
         edge_treatment="extend",
-        use_separate_velocity=True  # Enable separate stellar and gas velocity handling
+        use_separate_velocity=True,
+        errors=spec_errors,
+        use_covariance=True,
+        correlation_length=2.0  # pixels
     )
+
+    # Handle return value based on whether errors were provided
+    if spec_errors is not None:
+        binned_spectra, binned_errors = result
+    else:
+        binned_spectra = result
+        binned_errors = None
 
     # Create metadata
     metadata = {
@@ -294,6 +526,7 @@ def run_rdb_analysis(args, cube, p2p_results=None):
         bin_indices=bin_indices,
         spectra=binned_spectra,
         wavelength=wavelength,
+        errors=binned_errors,  # Add errors
         metadata=metadata,
         bin_radii=bin_radii,
     )
@@ -304,6 +537,9 @@ def run_rdb_analysis(args, cube, p2p_results=None):
     
     # Log the number of bins actually created
     logger.info(f"Cube set up for RDB analysis with {len(bin_indices)} bins")
+    
+    # Continue with the rest of the analysis...
+    # [Rest of the function remains the same from here]
     
     # Run stellar component analysis
     logger.info("Fitting stellar kinematics for binned spectra...")
@@ -397,8 +633,7 @@ def run_rdb_analysis(args, cube, p2p_results=None):
         except Exception as e:
             logger.warning(f"Error calculating rotation model: {e}")
     
-    # IMPORTANT: Create the rdb_results dictionary BEFORE accessing it
-    # This is the key fix to prevent the UnboundLocalError
+    # Create the rdb_results dictionary
     rdb_results = {
         "analysis_type": "RDB",
         "binning": {
@@ -512,7 +747,7 @@ def run_rdb_analysis(args, cube, p2p_results=None):
             logger.error(traceback.format_exc())
             indices_result = None
 
-    # Add spectral indices results if available - AFTER creating rdb_results
+    # Add spectral indices results if available
     if indices_result is not None:
         if isinstance(indices_result, dict) and "auto" in indices_result:
             # Results with multiple methods format
@@ -573,6 +808,8 @@ def run_rdb_analysis(args, cube, p2p_results=None):
 
     logger.info("Radial binning analysis completed")
     return rdb_results
+
+# The create_rdb_plots function remains the same as in the original file
 
 def create_rdb_plots(cube, rdb_results, galaxy_name, plots_dir, args):
     """

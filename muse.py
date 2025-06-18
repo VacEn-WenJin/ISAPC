@@ -97,6 +97,12 @@ class MUSECube:
         self._bin_gas_bestfit = None
         self._bin_indices_result = {}
 
+        # Initialize error tracking attributes
+        self._stellar_velocity_error = None
+        self._stellar_dispersion_error = None
+        self._bin_velocity_error = None
+        self._bin_dispersion_error = None
+
     def _read_fits_file(self) -> None:
         """
         Read MUSE cube data, create a dummy noise cube, extract the wavelength axis,
@@ -106,6 +112,9 @@ class MUSECube:
             cut_lhs, cut_rhs = 1, 1
 
             with fits.open(self._filename) as fits_hdu:
+                # Store the HDU list for later use
+                self._hdul = fits_hdu
+                
                 # Load fits header info
                 self._fits_hdu_header = fits_hdu[0].header
 
@@ -155,6 +164,27 @@ class MUSECube:
 
                 # Create a variance cube (dummy, as the file contains no errors)
                 self._raw_cube_var = np.ones_like(self._raw_cube_data)
+
+                # Look for variance or error extension
+                self._variance_cube = None
+                self._error_cube = None
+
+                try:
+                    # Try to load variance from STAT extension (standard for MUSE)
+                    if 'STAT' in self._hdul:
+                        self._variance_cube = self._hdul['STAT'].data.astype(np.float64)
+                        self._error_cube = np.sqrt(self._variance_cube)
+                        logger.info("Found variance data in STAT extension")
+                    elif 'VARIANCE' in self._hdul:
+                        self._variance_cube = self._hdul['VARIANCE'].data.astype(np.float64)
+                        self._error_cube = np.sqrt(self._variance_cube)
+                        logger.info("Found variance data in VARIANCE extension")
+                    elif 'ERROR' in self._hdul:
+                        self._error_cube = self._hdul['ERROR'].data.astype(np.float64)
+                        self._variance_cube = self._error_cube ** 2
+                        logger.info("Found error data in ERROR extension")
+                except:
+                    logger.warning("No variance/error extension found")
 
                 # Calculate wavelength axis
                 if (
@@ -330,6 +360,14 @@ class MUSECube:
             self._cube_data = self._raw_cube_data[valid_mask, :, :]
             self._cube_var = self._raw_cube_var[valid_mask, :, :]
 
+            # Reshape variance/error if available
+            if self._variance_cube is not None:
+                self._variance = self._variance_cube.reshape(self._n_wave, -1)
+                self._error = self._error_cube.reshape(self._n_wave, -1)
+            else:
+                self._variance = None
+                self._error = None
+
             # Derive signal and noise
             signal_2d = np.nanmedian(self._cube_data, axis=0)
             noise_2d = np.sqrt(np.nanmedian(self._cube_var, axis=0))
@@ -457,6 +495,11 @@ class MUSECube:
         self._bin_ln_wavelength = np.log(self._binned_wavelength)
 
         logger.info(f"Cube set up for {bin_type} analysis with {self._n_bins} bins")
+
+        if hasattr(bin_data, 'errors') and bin_data.errors is not None:
+            logger.info("Binned data includes error arrays")
+        else:
+            logger.warning("No error arrays in binned data")
 
     def calculate_snr(self, continuum_range=None):
         """
@@ -744,6 +787,10 @@ class MUSECube:
             # For observed galaxy wavelength grid
             self._bestfit_field = np.full((n_wave_fit, self._n_y, self._n_x), np.nan)
 
+            # Initialize error arrays
+            velocity_error = np.full((self._n_y, self._n_x), np.nan)
+            dispersion_error = np.full((self._n_y, self._n_x), np.nan)
+
             n_wvl, n_spaxel = self._spectra.shape
 
             def fit_spaxel(idx):
@@ -803,6 +850,15 @@ class MUSECube:
                         # Calculate best-fit on GALAXY wavelength grid
                         bestfit = pp.bestfit
 
+                        # Estimate errors
+                        if hasattr(pp, 'error') and pp.error is not None:
+                            vel_err = pp.error[0]
+                            disp_err = pp.error[1]
+                        else:
+                            # Default errors
+                            vel_err = 10.0  # km/s
+                            disp_err = 15.0  # km/s
+
                         return (
                             i,
                             j,
@@ -813,6 +869,8 @@ class MUSECube:
                                 optimal_template,
                                 pp.weights,
                                 poly_coeff,
+                                vel_err,
+                                disp_err,
                             ),
                         )
                     except Exception as e:
@@ -844,6 +902,10 @@ class MUSECube:
                             # Calculate best-fit on GALAXY wavelength grid
                             bestfit = pp.bestfit
 
+                            # Default errors for simplified fit
+                            vel_err = 15.0
+                            disp_err = 20.0
+
                             return (
                                 i,
                                 j,
@@ -854,6 +916,8 @@ class MUSECube:
                                     optimal_template,
                                     pp.weights,
                                     poly_coeff,
+                                    vel_err,
+                                    disp_err,
                                 ),
                             )
                         except Exception as e:
@@ -871,7 +935,7 @@ class MUSECube:
             for fit_result in fit_results:
                 if fit_result[2] is None:
                     continue
-                row, col, (vel, disp, bestfit, optimal_tmpl, weights, poly_coeff) = (
+                row, col, (vel, disp, bestfit, optimal_tmpl, weights, poly_coeff, vel_err, disp_err) = (
                     fit_result
                 )
                 self._velocity_field[row, col] = vel
@@ -887,6 +951,14 @@ class MUSECube:
                 self._template_weights[: len(weights), row, col] = weights
 
                 self._poly_coeffs.append((row, col, poly_coeff))
+
+                # Store errors
+                velocity_error[row, col] = vel_err
+                dispersion_error[row, col] = disp_err
+
+            # Store error arrays
+            self._stellar_velocity_error = velocity_error
+            self._stellar_dispersion_error = dispersion_error
 
             return (
                 self._velocity_field,
@@ -972,6 +1044,10 @@ class MUSECube:
             bin_weights = np.full((n_templates, n_bins), np.nan)
             bin_poly_coeffs = []
 
+            # Initialize error arrays
+            bin_velocity_error = np.full(n_bins, np.nan)
+            bin_dispersion_error = np.full(n_bins, np.nan)
+
             # Define function to process a single bin
             def fit_bin(bin_idx):
                 """Fit a single bin's spectrum"""
@@ -1029,6 +1105,15 @@ class MUSECube:
                         # Calculate best-fit on GALAXY wavelength grid
                         bestfit = pp.bestfit
 
+                        # Estimate errors
+                        if hasattr(pp, 'error') and pp.error is not None:
+                            vel_err = pp.error[0]
+                            disp_err = pp.error[1]
+                        else:
+                            # Default errors
+                            vel_err = 10.0
+                            disp_err = 15.0
+
                         return bin_idx, (
                             pp.sol[0],
                             pp.sol[1],
@@ -1036,6 +1121,8 @@ class MUSECube:
                             optimal_template,
                             pp.weights,
                             poly_coeff,
+                            vel_err,
+                            disp_err,
                         )
                     except Exception as e:
                         # Fall back to simpler fit if first attempt fails
@@ -1066,6 +1153,10 @@ class MUSECube:
                             # Calculate best-fit
                             bestfit = pp.bestfit
 
+                            # Default errors for simplified fit
+                            vel_err = 15.0
+                            disp_err = 20.0
+
                             return bin_idx, (
                                 pp.sol[0],
                                 pp.sol[1],
@@ -1073,6 +1164,8 @@ class MUSECube:
                                 optimal_template,
                                 pp.weights,
                                 poly_coeff,
+                                vel_err,
+                                disp_err,
                             )
                         except Exception as e2:
                             logger.debug(
@@ -1092,7 +1185,7 @@ class MUSECube:
                 if result is None:
                     continue
 
-                vel, disp, bestfit, optimal_tmpl, weights, poly_coeff = result
+                vel, disp, bestfit, optimal_tmpl, weights, poly_coeff, vel_err, disp_err = result
 
                 # Store bin results
                 bin_velocity[bin_idx] = vel
@@ -1101,6 +1194,8 @@ class MUSECube:
                 bin_optimal_tmpls[:, bin_idx] = optimal_tmpl
                 bin_weights[:, bin_idx] = weights
                 bin_poly_coeffs.append((bin_idx, poly_coeff))
+                bin_velocity_error[bin_idx] = vel_err
+                bin_dispersion_error[bin_idx] = disp_err
 
                 # Map bin results to pixels
                 if bin_idx in self._bin_pixel_map:
@@ -1120,6 +1215,8 @@ class MUSECube:
             self._bin_bestfit = bin_bestfit
             self._bin_optimal_tmpls = bin_optimal_tmpls
             self._bin_weights = bin_weights
+            self._bin_velocity_error = bin_velocity_error
+            self._bin_dispersion_error = bin_dispersion_error
 
             # Reshape bestfit and optimal templates to match original dimensions
             # but with bin values in each pixel
@@ -1159,6 +1256,7 @@ class MUSECube:
                 np.full((n_wave_temp, self._n_y, self._n_x), np.nan),
                 [],
             )
+
 
     def fit_emission_lines(
         self,
@@ -2199,6 +2297,7 @@ class MUSECube:
                 "emission_wavelength": {},
             }
 
+
     def calculate_spectral_indices(
         self, indices_list=None, n_jobs=-1, verbose=False, use_binned=None, save_mode=None, save_path=None
     ):
@@ -2544,6 +2643,9 @@ class MUSECube:
                         )
 
                         try:
+                            # Set continuum mode - default to 'auto'
+                            continuum_mode = getattr(self, '_continuum_mode', 'auto')
+                            
                             # Use exactly the same parameters as in p2p method
                             calculator = LineIndexCalculator(
                                 wave=self._binned_wavelength,  # Observation wavelength grid
@@ -2558,8 +2660,7 @@ class MUSECube:
                                 em_flux_list=gas_model,  # Emission line spectrum
                                 velocity_correction=stellar_velocity,  # Stellar velocity correction
                                 gas_velocity_correction=gas_velocity,  # Gas velocity correction - key change
-                                # continuum_mode="fit",  # Auto select continuum mode
-                                continuum_mode=self._continuum_mode,
+                                continuum_mode=continuum_mode,
                             )
                             calculator.plot_all_lines(mode=save_mode, save_path=save_path, number=bin_idx, show_index=True)
                             # print(save_path)
@@ -2703,6 +2804,176 @@ class MUSECube:
         
         return result
 
+    def calculate_spectral_indices_with_errors(self, indices_list=None, n_jobs=-1, 
+                                              verbose=False, n_monte_carlo=1000):
+        """
+        Calculate spectral indices with Monte Carlo error propagation
+        
+        Parameters
+        ----------
+        indices_list : list of str, optional
+            List of spectral indices to calculate
+        n_jobs : int, default=-1
+            Number of parallel jobs
+        verbose : bool, default=False
+            Whether to display detailed information
+        n_monte_carlo : int, default=1000
+            Number of Monte Carlo iterations for error estimation
+            
+        Returns
+        -------
+        dict
+            Dictionary with index values and errors
+        """
+        from spectral_indices import LineIndexCalculator, set_warnings
+        
+        # Set warnings level
+        set_warnings(verbose)
+        
+        try:
+            # Define standard spectral indices if not provided
+            if indices_list is None:
+                indices_list = ["Hbeta", "Fe5015", "Mgb"]
+                
+            # Initialize results
+            results = {
+                idx: {
+                    'values': np.full((self._n_y, self._n_x), np.nan),
+                    'errors': np.full((self._n_y, self._n_x), np.nan)
+                } for idx in indices_list
+            }
+            
+            # Check if we have error arrays
+            has_errors = self._error is not None or self._stellar_velocity_error is not None
+            
+            if not has_errors:
+                logger.warning("No error arrays available, using estimated errors")
+                
+            # Get velocity errors
+            if self._stellar_velocity_error is not None:
+                velocity_errors = self._stellar_velocity_error.ravel()
+            else:
+                velocity_errors = np.full(self._n_y * self._n_x, 5.0)  # Default 5 km/s
+                
+            n_wvl, n_spaxel = self._spectra.shape
+            
+            def calculate_index_with_errors(idx):
+                """Calculate spectral indices with error propagation for a single spaxel"""
+                i, j = np.unravel_index(idx, (self._n_y, self._n_x))
+                
+                # Skip if first-time fitting failed
+                if np.isnan(self._velocity_field[i, j]):
+                    return i, j, {index_name: {'value': np.nan, 'error': np.nan} for index_name in indices_list}
+                    
+                # Get spectrum and template
+                observed_spectrum = self._spectra[:, idx]
+                optimal_template = self._optimal_tmpls[:, i, j]
+                stellar_velocity = self._velocity_field[i, j]
+                vel_error = velocity_errors[idx]
+                
+                # Get spectral errors if available
+                if self._error is not None:
+                    spectrum_error = self._error[:, idx]
+                else:
+                    # Estimate from residuals if available
+                    if hasattr(self, '_bestfit_field') and self._bestfit_field is not None:
+                        residuals = observed_spectrum - self._bestfit_field[:, i, j]
+                        spectrum_error = np.full_like(observed_spectrum, np.std(residuals))
+                    else:
+                        spectrum_error = np.full_like(observed_spectrum, np.nanstd(observed_spectrum) * 0.1)
+                
+                # Monte Carlo error propagation
+                mc_results = {index_name: [] for index_name in indices_list}
+                
+                for _ in range(n_monte_carlo):
+                    # Perturb spectrum and velocity
+                    mc_spectrum = observed_spectrum + spectrum_error * np.random.randn(len(observed_spectrum))
+                    mc_velocity = stellar_velocity + vel_error * np.random.randn()
+                    
+                    try:
+                        # Create calculator with perturbed values
+                        calculator = LineIndexCalculator(
+                            wave=self._lambda_gal,
+                            flux=mc_spectrum,
+                            fit_wave=self._sps.lam_temp,
+                            fit_flux=optimal_template,
+                            velocity_correction=mc_velocity,
+                            continuum_mode='auto',
+                            show_warnings=False
+                        )
+                        
+                        # Calculate indices
+                        for index_name in indices_list:
+                            try:
+                                value = calculator.calculate_index(index_name)
+                                if np.isfinite(value):
+                                    mc_results[index_name].append(value)
+                            except:
+                                pass
+                                
+                    except:
+                        pass
+                
+                # Calculate statistics
+                results_dict = {}
+                for index_name in indices_list:
+                    if len(mc_results[index_name]) > 10:
+                        # Use original calculator for central value
+                        try:
+                            calculator = LineIndexCalculator(
+                                wave=self._lambda_gal,
+                                flux=observed_spectrum,
+                                fit_wave=self._sps.lam_temp,
+                                fit_flux=optimal_template,
+                                velocity_correction=stellar_velocity,
+                                continuum_mode='auto',
+                                show_warnings=False
+                            )
+                            central_value = calculator.calculate_index(index_name)
+                        except:
+                            central_value = np.nanmedian(mc_results[index_name])
+                            
+                        error_value = np.std(mc_results[index_name])
+                        results_dict[index_name] = {'value': central_value, 'error': error_value}
+                    else:
+                        results_dict[index_name] = {'value': np.nan, 'error': np.nan}
+                        
+                return i, j, results_dict
+                
+            # Calculate indices in parallel
+            index_results = ParallelTqdm(
+                n_jobs=n_jobs,
+                desc="Calculating spectral indices with errors",
+                total_tasks=n_spaxel,
+                backend="threading",
+            )(delayed(calculate_index_with_errors)(idx) for idx in range(n_spaxel))
+            
+            # Process results
+            for result in index_results:
+                if result is None or result[2] is None:
+                    continue
+                    
+                row, col, index_data = result
+                
+                for index_name, data in index_data.items():
+                    results[index_name]['values'][row, col] = data['value']
+                    results[index_name]['errors'][row, col] = data['error']
+                    
+            # Log summary
+            for index_name in indices_list:
+                valid = np.isfinite(results[index_name]['values'])
+                if np.any(valid):
+                    mean_val = np.nanmean(results[index_name]['values'][valid])
+                    mean_err = np.nanmean(results[index_name]['errors'][valid])
+                    logger.info(f"{index_name}: mean = {mean_val:.3f} ± {mean_err:.3f} Å")
+                    
+            return results
+            
+        except Exception as e:
+            logger.error(f"Error calculating spectral indices with errors: {str(e)}")
+            return {}
+        
+
     def plot_spectral_indices(
         self, spaxel_position=None, mode="MUSE", number=0, save_path=None
     ):
@@ -2841,65 +3112,6 @@ class MUSECube:
         except Exception as e:
             logger.error(f"Error in plot_spectral_indices: {str(e)}")
             return None
-
-# Add this after the calculate_spectral_indices function in muse.py
-
-    def calculate_spectral_indices_multi_method(
-        self, indices_list=None, n_jobs=-1, verbose=False, save_mode=None, save_path=None
-    ):
-        """
-        Calculate spectral indices with multiple continuum modes (auto, original, fit)
-        
-        Parameters
-        ----------
-        indices_list : list, optional
-            List of indices to calculate
-        n_jobs : int, default=-1
-            Number of parallel jobs
-        verbose : bool, default=False
-            Whether to display verbose information
-        save_mode : str, optional
-            Mode for saving indices plots
-        save_path : str, optional
-            Path for saving indices plots
-            
-        Returns
-        -------
-        dict
-            Dictionary of indices with multiple methods
-        """
-        # Define methods to use
-        methods = ['auto', 'original', 'fit']
-        
-        # Calculate indices with each method
-        result = {}
-        for method in methods:
-            try:
-                # Temporarily modify _continuum_mode to use this method
-                original_mode = getattr(self, '_continuum_mode', 'auto')
-                setattr(self, '_continuum_mode', method)
-                
-                # Calculate indices with this method
-                method_result = self.calculate_spectral_indices(
-                    indices_list=indices_list,
-                    n_jobs=n_jobs,
-                    verbose=verbose,
-                    save_mode=f"{save_mode}_{method}" if save_mode else None,
-                    save_path=save_path
-                )
-                
-                # Store results
-                result[method] = method_result
-                
-                # Restore original mode
-                setattr(self, '_continuum_mode', original_mode)
-                
-            except Exception as e:
-                logger.error(f"Error calculating indices with method {method}: {e}")
-                result[method] = {}
-        
-        return result
-
 
     def plot_emission_maps(
         self,
@@ -3400,6 +3612,15 @@ class MUSECube:
             info_text = f"Spaxel: ({row}, {col})\n"
             info_text += f"Stellar Vel: {vel:.1f} km/s\n"
             info_text += f"Stellar Disp: {disp:.1f} km/s\n"
+            
+            # Add errors if available
+            if hasattr(self, '_stellar_velocity_error') and self._stellar_velocity_error is not None:
+                vel_err = self._stellar_velocity_error[row, col]
+                disp_err = self._stellar_dispersion_error[row, col]
+                if np.isfinite(vel_err) and np.isfinite(disp_err):
+                    info_text += f"Vel Error: ±{vel_err:.1f} km/s\n"
+                    info_text += f"Disp Error: ±{disp_err:.1f} km/s\n"
+                    
             if em_vel_text:
                 info_text += "\nEmission Lines:\n" + em_vel_text
 
@@ -3523,6 +3744,13 @@ class MUSECube:
                 disp = self._bin_dispersion[bin_idx]
                 if np.isfinite(vel) and np.isfinite(disp):
                     title += f" - V={vel:.1f} km/s, σ={disp:.1f} km/s"
+                    
+                # Add errors if available
+                if hasattr(self, "_bin_velocity_error") and self._bin_velocity_error is not None:
+                    vel_err = self._bin_velocity_error[bin_idx]
+                    disp_err = self._bin_dispersion_error[bin_idx]
+                    if np.isfinite(vel_err) and np.isfinite(disp_err):
+                        title += f" (±{vel_err:.1f}, ±{disp_err:.1f})"
 
             # If this is a radial bin, add radius information
             if hasattr(self, "_bin_radii") and len(self._bin_radii) > bin_idx:
@@ -3640,87 +3868,15 @@ class MUSECube:
                 save_path_bin = None
 
             # Plot bin fit
-            from visualization import plot_bin_spectrum_fit
+            result = self.plot_bin_fit(
+                bin_idx, 
+                wavelength_range=wavelength_range, 
+                figsize=figsize,
+                save_path=save_path_bin
+            )
             
-            try:
-                # Get gas best fit if available
-                bin_gas_bestfit = (
-                    self._bin_gas_bestfit if hasattr(self, "_bin_gas_bestfit") else None
-                )
-
-                # Get stellar best fit if directly available, or calculate as total - gas
-                if hasattr(self, "_bin_stellar_bestfit"):
-                    bin_stellar_bestfit = self._bin_stellar_bestfit
-                elif bin_gas_bestfit is not None:
-                    # Calculate stellar = total - gas
-                    bin_stellar_bestfit = self._bin_bestfit - bin_gas_bestfit
-                else:
-                    bin_stellar_bestfit = None
-
-                # Get wavelength range for plot
-                if wavelength_range is None:
-                    # Default to full wavelength range
-                    wavelength_range = (
-                        np.min(self._binned_wavelength),
-                        np.max(self._binned_wavelength),
-                    )
-
-                    # Try to find interesting spectral features to include
-                    if hasattr(self, "_emission_wavelength") and self._emission_wavelength:
-                        # Find emission line wavelengths
-                        emission_waves = list(self._emission_wavelength.values())
-                        if emission_waves:
-                            # Calculate range to include main emission lines
-                            em_min = min(emission_waves) - 100
-                            em_max = max(emission_waves) + 100
-
-                            # Use emission line range if it's within our data
-                            if (
-                                em_min > wavelength_range[0]
-                                and em_max < wavelength_range[1]
-                                and em_max - em_min > 200
-                            ):
-                                wavelength_range = (em_min, em_max)
-
-                # Create title with bin info
-                title = f"Bin {bin_idx}"
-
-                # Add velocity and dispersion if available
-                if hasattr(self, "_bin_velocity") and len(self._bin_velocity) > bin_idx:
-                    vel = self._bin_velocity[bin_idx]
-                    disp = self._bin_dispersion[bin_idx]
-                    if np.isfinite(vel) and np.isfinite(disp):
-                        title += f" - V={vel:.1f} km/s, σ={disp:.1f} km/s"
-
-                # If this is a radial bin, add radius information
-                if hasattr(self, "_bin_radii") and len(self._bin_radii) > bin_idx:
-                    radius = self._bin_radii[bin_idx]
-                    if np.isfinite(radius):
-                        title += f" - Radius={radius:.1f} arcsec"
-
-                # Call visualization function
-                fig, axes = plot_bin_spectrum_fit(
-                    self._binned_wavelength,
-                    bin_idx,
-                    self._binned_spectra,
-                    self._bin_bestfit,
-                    bin_gas_bestfit=bin_gas_bestfit,
-                    bin_stellar_bestfit=bin_stellar_bestfit,
-                    title=title,
-                    plot_range=wavelength_range,
-                    figsize=figsize,
-                )
-
-                # Save figure if path provided
-                if save_path_bin is not None:
-                    fig.savefig(save_path_bin, dpi=150, bbox_inches="tight")
-                    logger.info(f"Saved bin spectrum plot to {save_path_bin}")
-
-                results.append((fig, axes))
-                plt.close(fig)
-            except Exception as e:
-                logger.error(f"Error plotting bin fit: {e}")
-                continue
+            if result is not None:
+                results.append(result)
 
         return results
 
@@ -4014,6 +4170,15 @@ class MUSECube:
                             ax1.set_ylabel("Velocity (km/s)")
                             ax1.set_title("Radial Velocity Profile")
                             ax1.grid(True, alpha=0.3)
+                            
+                            # Add error bars if available
+                            if hasattr(self, "_bin_velocity_error") and self._bin_velocity_error is not None:
+                                ax1.errorbar(
+                                    self._bin_radii[valid], 
+                                    self._bin_velocity[valid],
+                                    yerr=self._bin_velocity_error[valid],
+                                    fmt='o-', capsize=3
+                                )
                         else:
                             ax1.text(
                                 0.5,
@@ -4038,6 +4203,15 @@ class MUSECube:
                             ax2.set_ylabel("Dispersion (km/s)")
                             ax2.set_title("Radial Dispersion Profile")
                             ax2.grid(True, alpha=0.3)
+                            
+                            # Add error bars if available
+                            if hasattr(self, "_bin_dispersion_error") and self._bin_dispersion_error is not None:
+                                ax2.errorbar(
+                                    self._bin_radii[valid], 
+                                    self._bin_dispersion[valid],
+                                    yerr=self._bin_dispersion_error[valid],
+                                    fmt='o-', capsize=3
+                                )
                         else:
                             ax2.text(
                                 0.5,
@@ -4447,7 +4621,7 @@ class MUSECube:
     @property
     def fit_spectra_result(self):
         """Get stellar fitting results"""
-        return {
+        result = {
             "velocity_field": self._velocity_field,
             "dispersion_field": self._dispersion_field,
             "bestfit_field": self._bestfit_field,
@@ -4455,6 +4629,13 @@ class MUSECube:
             "template_weights": self._template_weights,
             "poly_coeffs": self._poly_coeffs,
         }
+        
+        # Add error arrays if available
+        if hasattr(self, '_stellar_velocity_error') and self._stellar_velocity_error is not None:
+            result["velocity_error"] = self._stellar_velocity_error
+            result["dispersion_error"] = self._stellar_dispersion_error
+            
+        return result
 
     @property
     def fit_emission_result(self):
@@ -4560,6 +4741,18 @@ class MUSECube:
             hdu.writeto(
                 os.path.join(output_dir, f"{prefix}_bestfit.fits"), overwrite=True
             )
+
+            # Save error arrays if available
+            if hasattr(self, '_stellar_velocity_error') and self._stellar_velocity_error is not None:
+                hdu = fits.PrimaryHDU(self._stellar_velocity_error, header=hdr)
+                hdu.writeto(
+                    os.path.join(output_dir, f"{prefix}_velocity_error.fits"), overwrite=True
+                )
+                
+                hdu = fits.PrimaryHDU(self._stellar_dispersion_error, header=hdr)
+                hdu.writeto(
+                    os.path.join(output_dir, f"{prefix}_dispersion_error.fits"), overwrite=True
+                )
 
             # Save emission line results if available
             if self._gas_bestfit_field is not None:

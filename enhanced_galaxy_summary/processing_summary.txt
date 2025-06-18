@@ -1,0 +1,25 @@
+Enhanced Alpha/Fe Analysis Processing Summary
+==================================================
+
+Analysis Date: 2025-06-01 15:56:22.115976
+Continuum Mode: fit
+Bins Limit: 6
+Model File: ./TMB03/TMB03.csv
+
+Processing Statistics:
+  total_galaxies: 19
+  successful_rdb: 17
+  successful_vnb: 10
+  failed_galaxies: []
+  special_cases: 0
+
+Results Statistics:
+  total_galaxies: 18
+  valid_results: 18
+  significant_gradients: 0
+  flat_gradients: 1
+  positive_gradients: 11
+  negative_gradients: 4
+  special_cases: 0
+  emission_line_galaxies: 7
+  high_quality_fits: 18
