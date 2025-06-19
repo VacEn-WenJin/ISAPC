@@ -1,11 +1,12 @@
 """
 Pixel-to-pixel analysis module for ISAPC
-Version 5.0.0
+Version 5.1.0 - Enhanced with full error propagation
 """
 
 import logging
 import time
 from pathlib import Path
+from typing import Optional, Dict, Tuple, Union
 
 import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
@@ -16,6 +17,12 @@ import spectral_indices
 import visualization
 from stellar_population import WeightParser
 from utils.io import save_standardized_results
+from utils.error_propagation import (
+    bootstrap_error_estimation,
+    monte_carlo_error_propagation,
+    propagate_errors_multiplication,
+    propagate_errors_division
+)
 
 logger = logging.getLogger(__name__)
 
@@ -109,7 +116,7 @@ def safe_extract(array, mask):
 
 def run_p2p_analysis(args, cube, Pmode=False):
     """
-    Run pixel-to-pixel analysis
+    Run pixel-to-pixel analysis with full error propagation
 
     Parameters
     ----------
@@ -123,9 +130,9 @@ def run_p2p_analysis(args, cube, Pmode=False):
     Returns
     -------
     dict
-        Analysis results with key physical parameters
+        Analysis results with key physical parameters and errors
     """
-    logger.info("Starting pixel-to-pixel analysis...")
+    logger.info("Starting pixel-to-pixel analysis with error propagation...")
     start_time = time.time()
 
     # Disable warnings for spectral indices
@@ -144,7 +151,25 @@ def run_p2p_analysis(args, cube, Pmode=False):
     data_dir.mkdir(exist_ok=True)
     plots_dir.mkdir(exist_ok=True, parents=True)
 
-    # Fit stellar continuum
+    # Get error array from cube
+    error_array = None
+    if hasattr(cube, '_error') and cube._error is not None:
+        error_array = cube._error
+        logger.info("Using error array from cube")
+    elif hasattr(cube, '_variance') and cube._variance is not None:
+        error_array = np.sqrt(cube._variance)
+        logger.info("Using variance array from cube")
+    else:
+        # Estimate errors from data
+        logger.info("No error array found, estimating from spectral noise")
+        from scipy.stats import median_abs_deviation
+        error_array = np.zeros_like(cube._spectra)
+        for i in range(cube._spectra.shape[1]):
+            if np.any(np.isfinite(cube._spectra[:, i])):
+                noise = median_abs_deviation(cube._spectra[:, i], nan_policy='omit')
+                error_array[:, i] = noise * 1.4826  # Convert MAD to std
+
+    # Fit stellar continuum with error propagation
     result = cube.fit_spectra(
         template_filename=args.template,
         ppxf_vel_init=args.vel_init,
@@ -161,6 +186,24 @@ def run_p2p_analysis(args, cube, Pmode=False):
         poly_coeffs,
     ) = result
 
+    # Extract errors from ppxf results if available
+    stellar_velocity_error = None
+    stellar_dispersion_error = None
+    
+    if hasattr(cube, '_ppxf_results') and cube._ppxf_results:
+        logger.info("Extracting stellar kinematic errors from ppxf results")
+        
+        n_y, n_x = stellar_velocity_field.shape
+        stellar_velocity_error = np.full((n_y, n_x), np.nan)
+        stellar_dispersion_error = np.full((n_y, n_x), np.nan)
+        
+        for row, col, pp_result in cube._ppxf_results:
+            if 'error' in pp_result and pp_result['error'] is not None:
+                # ppxf errors are typically [vel_err, sigma_err, ...]
+                if len(pp_result['error']) >= 2:
+                    stellar_velocity_error[row, col] = pp_result['error'][0]
+                    stellar_dispersion_error[row, col] = pp_result['error'][1]
+                    
     logger.info(
         f"Stellar component fitting completed in {time.time() - start_time:.1f} seconds"
     )
@@ -170,35 +213,64 @@ def run_p2p_analysis(args, cube, Pmode=False):
     if hasattr(args, "configured_emission_lines"):
         emission_lines = args.configured_emission_lines
 
-    # Fit emission lines
+    # Fit emission lines with error propagation
     emission_result = None
     if not args.no_emission:
         start_time = time.time()
         emission_result = cube.fit_emission_lines(
             template_filename=args.template,
-            line_names=emission_lines,  # Use configured emission lines
-            ppxf_vel_init=stellar_velocity_field,  # Use stellar velocity field as initial guess
+            line_names=emission_lines,
+            ppxf_vel_init=stellar_velocity_field,
             ppxf_sig_init=args.sigma_init,
-            ppxf_deg=2,  # Simpler polynomial for emission lines
+            ppxf_deg=2,
             n_jobs=args.n_jobs,
         )
         logger.info(
             f"Emission line fitting completed in {time.time() - start_time:.1f} seconds"
         )
 
+    # Extract emission line errors if available
+    gas_velocity_error = None
+    gas_dispersion_error = None
+    
+    if hasattr(cube, '_ppxf_gas_results') and cube._ppxf_gas_results:
+        logger.info("Extracting gas kinematic errors from ppxf results")
+        
+        n_y, n_x = stellar_velocity_field.shape
+        gas_velocity_error = np.full((n_y, n_x), np.nan)
+        gas_dispersion_error = np.full((n_y, n_x), np.nan)
+        
+        for row, col, pp_result in cube._ppxf_gas_results:
+            if 'error' in pp_result and pp_result['error'] is not None:
+                if len(pp_result['error']) >= 2:
+                    gas_velocity_error[row, col] = pp_result['error'][0]
+                    gas_dispersion_error[row, col] = pp_result['error'][1]
+
     # Get configured spectral indices
     indices_list = None
     if hasattr(args, "configured_indices"):
         indices_list = args.configured_indices
 
-    # Calculate spectral indices
+    # Calculate spectral indices with error propagation
     indices_result = None
+    indices_errors = None
     if not args.no_indices:
         start_time = time.time()
-        indices_result = cube.calculate_spectral_indices(
-            indices_list=indices_list,  # Use configured indices
-            n_jobs=args.n_jobs,
-        )
+        
+        # Check if cube has calculate_spectral_indices_with_errors method
+        if hasattr(cube, 'calculate_spectral_indices_with_errors'):
+            indices_result, indices_errors = cube.calculate_spectral_indices_with_errors(
+                indices_list=indices_list,
+                n_jobs=args.n_jobs,
+                error_array=error_array
+            )
+        else:
+            # Fallback to standard calculation
+            indices_result = cube.calculate_spectral_indices(
+                indices_list=indices_list,
+                n_jobs=args.n_jobs,
+            )
+            
         logger.info(
             f"Spectral indices calculation completed in {time.time() - start_time:.1f} seconds"
         )
@@ -339,11 +411,12 @@ def run_p2p_analysis(args, cube, Pmode=False):
             gas_velocity_field = None
             gas_dispersion_field = None
 
-    # Decide which velocity and dispersion field to use for kinematic analysis
-    # Prioritize emission line data (gas kinematics)
+            # Decide which velocity and dispersion field to use with their errors
+    velocity_error_field = None
+    dispersion_error_field = None
+    
     if gas_velocity_field is not None and gas_dispersion_field is not None:
         # Check gas velocity field quality/coverage
-        # Calculate ratio of valid pixels
         valid_gas_pixels = np.sum(~np.isnan(gas_velocity_field))
         valid_stellar_pixels = np.sum(~np.isnan(stellar_velocity_field))
         total_pixels = gas_velocity_field.size
@@ -351,13 +424,15 @@ def run_p2p_analysis(args, cube, Pmode=False):
         gas_coverage = valid_gas_pixels / total_pixels
         stellar_coverage = valid_stellar_pixels / total_pixels
 
-        # If gas coverage is reasonable (at least 30% or more than 80% of stellar coverage)
+        # If gas coverage is reasonable
         if gas_coverage > 0.3 or gas_coverage > 0.8 * stellar_coverage:
             logger.info(
                 f"Using emission line velocity field for kinematics (coverage: {gas_coverage:.2f})"
             )
             velocity_field = gas_velocity_field
             dispersion_field = gas_dispersion_field
+            velocity_error_field = gas_velocity_error
+            dispersion_error_field = gas_dispersion_error
             using_emission = True
         else:
             logger.info(
@@ -365,18 +440,26 @@ def run_p2p_analysis(args, cube, Pmode=False):
             )
             velocity_field = stellar_velocity_field
             dispersion_field = stellar_dispersion_field
+            velocity_error_field = stellar_velocity_error
+            dispersion_error_field = stellar_dispersion_error
             using_emission = False
     else:
         logger.info("No emission line data available, using stellar velocity field")
         velocity_field = stellar_velocity_field
         dispersion_field = stellar_dispersion_field
+        velocity_error_field = stellar_velocity_error
+        dispersion_error_field = stellar_dispersion_error
         using_emission = False
 
-    # Calculate galaxy parameters
+    # Calculate galaxy parameters with error propagation
     start_time = time.time()
+    
+    # Enhanced GalaxyParameters with error support
     gp = galaxy_params.GalaxyParameters(
         velocity_field=velocity_field,
         dispersion_field=dispersion_field,
+        velocity_error=velocity_error_field,
+        dispersion_error=dispersion_error_field,
         pixelsize=cube._pxl_size_x,
     )
 
@@ -403,15 +486,22 @@ def run_p2p_analysis(args, cube, Pmode=False):
         rel_x, rel_y, cube._pxl_size_x, cube._pxl_size_y
     )
 
-    # Extract stellar population parameters using WeightParser
+    # Extract stellar population parameters with errors using enhanced WeightParser
     stellar_pop_params = None
+    stellar_pop_errors = None
+    
     if hasattr(cube, "_template_weights") and cube._template_weights is not None:
         try:
-            logger.info("Extracting stellar population parameters...")
+            logger.info("Extracting stellar population parameters with errors...")
             start_time = time.time()
 
             # Initialize weight parser
             weight_parser = WeightParser(args.template)
+
+            # Get weight covariance if available
+            weight_covariance = None
+            if hasattr(cube, '_weight_covariance'):
+                weight_covariance = cube._weight_covariance
 
             # Prepare arrays for physical parameters
             n_y, n_x = stellar_velocity_field.shape
@@ -419,6 +509,12 @@ def run_p2p_analysis(args, cube, Pmode=False):
                 "log_age": np.full((n_y, n_x), np.nan),
                 "age": np.full((n_y, n_x), np.nan),
                 "metallicity": np.full((n_y, n_x), np.nan),
+            }
+            
+            stellar_pop_errors = {
+                "log_age_error": np.full((n_y, n_x), np.nan),
+                "age_error": np.full((n_y, n_x), np.nan),
+                "metallicity_error": np.full((n_y, n_x), np.nan),
             }
 
             # Process weights based on shape
@@ -434,11 +530,35 @@ def run_p2p_analysis(args, cube, Pmode=False):
 
                     try:
                         pixel_weights = weights[:, y, x]
-                        # if np.sum(pixel_weights) > 0:
-                        # print(pixel_weights)
-                        params = weight_parser.get_physical_params(pixel_weights)
-                        for param_name, value in params.items():
-                            stellar_pop_params[param_name][y, x] = value
+                        
+                        # Get pixel-specific weight errors if available
+                        weight_errors = None
+                        if hasattr(cube, '_template_weight_errors'):
+                            weight_errors = cube._template_weight_errors[:, y, x]
+                        
+                        # Get pixel-specific covariance if available
+                        pixel_covariance = None
+                        if weight_covariance is not None and len(weight_covariance.shape) == 4:
+                            pixel_covariance = weight_covariance[:, :, y, x]
+                        
+                        # Get parameters with errors
+                        params = weight_parser.get_physical_params(
+                            pixel_weights,
+                            weight_errors=weight_errors,
+                            weight_covariance=pixel_covariance,
+                            n_monte_carlo=100 if weight_errors is not None else 0
+                        )
+                        
+                        # Store parameters
+                        stellar_pop_params["log_age"][y, x] = params.get("log_age", np.nan)
+                        stellar_pop_params["age"][y, x] = params.get("age", np.nan)
+                        stellar_pop_params["metallicity"][y, x] = params.get("metallicity", np.nan)
+                        
+                        # Store errors if available
+                        stellar_pop_errors["log_age_error"][y, x] = params.get("log_age_error", np.nan)
+                        stellar_pop_errors["age_error"][y, x] = params.get("age_error", np.nan)
+                        stellar_pop_errors["metallicity_error"][y, x] = params.get("metallicity_error", np.nan)
+                        
                     except Exception as e:
                         logger.debug(
                             f"Error calculating stellar params for pixel ({x}, {y}): {e}"
@@ -507,12 +627,14 @@ def run_p2p_analysis(args, cube, Pmode=False):
     else:
         logger.warning("No weights found for stellar population analysis")
 
-    # Create standardized results dictionary
+    # Create standardized results dictionary with errors
     p2p_results = {
         "analysis_type": "P2P",
         "stellar_kinematics": {
-            "velocity_field": emission_result["velocity_field"],
-            "dispersion_field": emission_result["dispersion_field"],
+            "velocity_field": stellar_velocity_field,
+            "dispersion_field": stellar_dispersion_field,
+            "velocity_error": stellar_velocity_error,
+            "dispersion_error": stellar_dispersion_error,
         },
         "global_kinematics": {
             **rotation_result,
@@ -524,125 +646,30 @@ def run_p2p_analysis(args, cube, Pmode=False):
             "pixelsize_x": cube._pxl_size_x,
             "pixelsize_y": cube._pxl_size_y,
         },
-        "emission": {
-            "emission_flux": emission_result["emission_flux"],
-            "emission_vel": emission_result["emission_vel"],
-            "emission_sig": emission_result["emission_sig"],
-        },
-        "signal_noise": {
-            "signal": emission_result["signal"],
-            "noise": emission_result["noise"],
-            "snr": emission_result["snr"],
-        },
     }
 
-    # Add stellar population parameters if available
+    # Add emission results if available
+    if emission_result is not None:
+        p2p_results["emission"] = emission_result
+        if gas_velocity_field is not None:
+            p2p_results["emission"]["velocity_field"] = gas_velocity_field
+            p2p_results["emission"]["dispersion_field"] = gas_dispersion_field
+            p2p_results["emission"]["velocity_error"] = gas_velocity_error
+            p2p_results["emission"]["dispersion_error"] = gas_dispersion_error
+
+    # Add stellar population parameters with errors if available
     if stellar_pop_params is not None:
         p2p_results["stellar_population"] = stellar_pop_params
+        if stellar_pop_errors is not None:
+            p2p_results["stellar_population_errors"] = stellar_pop_errors
 
-    # Add emission line information
-    if emission_result is not None:
-        # Extract emission line parameters
-        emission_params = {}
-
-        # 1. Save gas kinematic fields
-        if gas_velocity_field is not None:
-            emission_params["velocity_field"] = gas_velocity_field
-        if gas_dispersion_field is not None:
-            emission_params["dispersion_field"] = gas_dispersion_field
-
-        # 2. Extract emission line flux from emission_result
-        if "emission_flux" in emission_result and emission_result["emission_flux"]:
-            # emission_flux is a dictionary of different emission lines
-            for line_name, flux_map in emission_result["emission_flux"].items():
-                if not np.all(np.isnan(flux_map)):
-                    emission_params[f"flux_{line_name}"] = flux_map
-
-        # 3. If emission_result doesn't have emission_flux, try other sources
-        if "flux_" not in "".join(emission_params.keys()):
-            # Try to get directly from emission_result['flux']
-            if "flux" in emission_result and emission_result["flux"] is not None:
-                emission_params["flux"] = emission_result["flux"]
-
-            # Try to get from cube._emission_flux
-            if hasattr(cube, "_emission_flux") and cube._emission_flux:
-                for line_name, flux_map in cube._emission_flux.items():
-                    if not np.all(np.isnan(flux_map)):
-                        emission_params[f"flux_{line_name}"] = flux_map
-
-        # 4. Calculate line ratios
-        try:
-            line_ratios = {}
-
-            # Check for Hbeta and [OIII]5007_d for calculation
-            hb_key = None
-            oiii_key = None
-
-            # Find keys for Hbeta and OIII
-            for key in emission_params.keys():
-                if "flux_Hbeta" in key:
-                    hb_key = key
-                elif "flux_[OIII]5007" in key or "flux_OIII_5007" in key:
-                    oiii_key = key
-
-            # If both keys found, calculate ratio
-            if hb_key is not None and oiii_key is not None:
-                hb_flux = emission_params[hb_key]
-                oiii_flux = emission_params[oiii_key]
-
-                # Calculate ratio, ensuring division by zero is handled
-                valid_mask = ~np.isnan(hb_flux) & ~np.isnan(oiii_flux) & (hb_flux > 0)
-
-                if np.any(valid_mask):
-                    oiii_hb = np.full_like(hb_flux, np.nan)
-                    oiii_hb[valid_mask] = oiii_flux[valid_mask] / hb_flux[valid_mask]
-                    line_ratios["OIII_Hb"] = oiii_hb
-                    logger.info("Calculated OIII/Hb line ratio")
-
-            if line_ratios:
-                emission_params["line_ratios"] = line_ratios
-
-        except Exception as e:
-            logger.warning(f"Could not calculate line ratios: {e}")
-
-        # 5. Save gas best-fit (for plotting)
-        if (
-            "gas_bestfit_field" in emission_result
-            and emission_result["gas_bestfit_field"] is not None
-        ):
-            emission_params["gas_bestfit"] = emission_result["gas_bestfit_field"]
-        elif (
-            "gas_bestfit" in emission_result
-            and emission_result["gas_bestfit"] is not None
-        ):
-            emission_params["gas_bestfit"] = emission_result["gas_bestfit"]
-        elif (
-            hasattr(cube, "_gas_bestfit_field") and cube._gas_bestfit_field is not None
-        ):
-            emission_params["gas_bestfit"] = cube._gas_bestfit_field
-
-        # 6. Save NEL_cal_tmp (if available)
-        if (
-            "NEL_cal_tmp" in emission_result
-            and emission_result["NEL_cal_tmp"] is not None
-        ):
-            emission_params["NEL_cal_tmp"] = emission_result["NEL_cal_tmp"]
-
-        # Only add emission key if we have valid data
-        if emission_params:
-            p2p_results["emission"] = emission_params
-        else:
-            logger.warning(
-                "No valid emission line data found despite successful fitting"
-            )
-
-    # Add spectral indices
+    # Add spectral indices with errors
     if indices_result is not None:
         p2p_results["indices"] = indices_result
+        if indices_errors is not None:
+            p2p_results["indices_errors"] = indices_errors
 
-    # Save results
     # Save results - Only save if this is a genuine P2P analysis (not binned)
-    # Check either Pmode flag or absence of _is_binned_analysis flag
     should_save = Pmode or (
         not hasattr(args, "_is_binned_analysis") and not hasattr(args, "no_save")
     )
@@ -650,9 +677,9 @@ def run_p2p_analysis(args, cube, Pmode=False):
     if should_save:
         save_standardized_results(galaxy_name, "P2P", p2p_results, output_dir)
 
-    # Create visualizations - only if this is a genuine P2P analysis
+    # Create visualizations with error support
     if should_save and not args.no_plots:
-        create_p2p_plots(
+        create_p2p_plots_with_errors(
             args,
             cube,
             p2p_results,
@@ -662,18 +689,138 @@ def run_p2p_analysis(args, cube, Pmode=False):
             emission_result,
             using_emission,
         )
-        # Create radial profile plots
-        # In run_p2p_analysis, replace:
-        create_radial_profile_plots_wrapper(
+        # Create radial profile plots with errors
+        create_radial_profile_plots_with_errors(
             p2p_results,
+            cube,
             galaxy_name,
             plots_dir,
+            physical_scale=True,
             analysis_type="P2P"
         )
 
-    logger.info("Pixel-to-pixel analysis completed")
+    logger.info("Pixel-to-pixel analysis with error propagation completed")
     return p2p_results
 
+
+def create_p2p_plots_with_errors(
+    args,
+    cube,
+    p2p_results,
+    galaxy_name,
+    bestfit_field,
+    optimal_tmpls,
+    emission_result,
+    using_emission,
+):
+    """
+    Create plots for pixel-to-pixel analysis with error visualization
+
+    Parameters
+    ----------
+    args : argparse.Namespace
+        Command line arguments
+    cube : MUSECube
+        MUSE data cube object
+    p2p_results : dict
+        Analysis results with errors
+    galaxy_name : str
+        Galaxy name for file naming
+    bestfit_field : ndarray
+        Best-fit spectra
+    optimal_tmpls : ndarray
+        Optimal templates
+    emission_result : dict
+        Full emission line results
+    using_emission : bool
+        Whether emission lines were used for kinematics
+    """
+    # Set up plots directory
+    output_dir = Path(args.output_dir)
+    galaxy_dir = output_dir / galaxy_name
+    plots_dir = galaxy_dir / "Plots" / "P2P"
+    plots_dir.mkdir(exist_ok=True, parents=True)
+
+    # First create standard plots
+    create_p2p_plots(
+        args, cube, p2p_results, galaxy_name, 
+        bestfit_field, optimal_tmpls, emission_result, using_emission
+    )
+
+    # Now create additional error plots
+    
+    # Extract results and errors
+    rotation_result = p2p_results["global_kinematics"]
+
+    # Determine which velocity field to use
+    if using_emission and "emission" in p2p_results:
+        velocity_field = p2p_results["emission"].get("velocity_field")
+        dispersion_field = p2p_results["emission"].get("dispersion_field")
+        velocity_error = p2p_results["emission"].get("velocity_error")
+        dispersion_error = p2p_results["emission"].get("dispersion_error")
+        kinematics_type = "gas"
+    else:
+        velocity_field = p2p_results["stellar_kinematics"]["velocity_field"]
+        dispersion_field = p2p_results["stellar_kinematics"]["dispersion_field"]
+        velocity_error = p2p_results["stellar_kinematics"].get("velocity_error")
+        dispersion_error = p2p_results["stellar_kinematics"].get("dispersion_error")
+        kinematics_type = "stellar"
+
+    # Create kinematic maps with errors if available
+    if velocity_error is not None and dispersion_error is not None:
+        try:
+            fig, axes = visualization.plot_kinematic_maps_with_errors(
+                velocity_field=velocity_field,
+                dispersion_field=dispersion_field,
+                velocity_error=velocity_error,
+                dispersion_error=dispersion_error,
+                equal_aspect=args.equal_aspect,
+                physical_scale=True,
+                pixel_size=(cube._pxl_size_x, cube._pxl_size_y),
+                wcs=cube._wcs if hasattr(cube, "_wcs") else None,
+                cube=cube,
+                title=f"{galaxy_name} - {kinematics_type.capitalize()} Kinematics with Errors"
+            )
+            
+            visualization.standardize_figure_saving(
+                fig, plots_dir / f"{galaxy_name}_P2P_{kinematics_type}_kinematics_errors.png"
+            )
+            plt.close(fig)
+        except Exception as e:
+            logger.error(f"Error creating kinematic error plots: {e}")
+            plt.close("all")
+
+    # Create stellar population parameter plots with errors
+    if "stellar_population_errors" in p2p_results:
+        create_stellar_pop_plots_with_errors(
+            p2p_results["stellar_population"],
+            p2p_results["stellar_population_errors"],
+            plots_dir,
+            galaxy_name
+        )
+
+    # Create spectral index plots with errors
+    if "indices_errors" in p2p_results:
+        create_indices_plots_with_errors(
+            cube,
+            p2p_results["indices"],
+            p2p_results["indices_errors"],
+            plots_dir,
+            galaxy_name
+        )
+
+    # Create error summary plot
+    try:
+        fig = visualization.create_error_summary_plot(
+            p2p_results,
+            figsize=(16, 12),
+            title=f"{galaxy_name} - P2P Error Analysis",
+            save_path=plots_dir / f"{galaxy_name}_P2P_error_summary.png"
+        )
+        plt.close(fig)
+    except Exception as e:
+        logger.error(f"Error creating error summary plot: {e}")
+        plt.close("all")
 
 def create_p2p_plots(
     args,
@@ -1086,6 +1233,301 @@ def create_stellar_pop_plots(stellar_pop_params, plots_dir, galaxy_name):
                     plt.close(fig)
             except Exception as e:
                 logger.error(f"Error creating {param_name} map: {str(e)}")
+                plt.close("all")
+
+
+def create_stellar_pop_plots_with_errors(stellar_pop_params, stellar_pop_errors, 
+                                        plots_dir, galaxy_name):
+    """
+    Create plots for stellar population parameters with error visualization
+    """
+    # Create directory for stellar population plots
+    stellar_dir = plots_dir / "stellar_population"
+    stellar_dir.mkdir(exist_ok=True, parents=True)
+
+    # Parameter information
+    param_info = {
+        "age": {
+            "title": "Age [Gyr]",
+            "error_key": "age_error",
+            "scale_factor": 1e-9,
+            "cmap": "plasma"
+        },
+        "metallicity": {
+            "title": "Metallicity [Z/H]",
+            "error_key": "metallicity_error",
+            "scale_factor": 1.0,
+            "cmap": "viridis"
+        }
+    }
+
+    for param_name, info in param_info.items():
+        if param_name in stellar_pop_params and info["error_key"] in stellar_pop_errors:
+            try:
+                param_map = stellar_pop_params[param_name] * info["scale_factor"]
+                error_map = stellar_pop_errors[info["error_key"]] * info["scale_factor"]
+                
+                # Create figure with value, error, and S/N
+                fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+                
+                # Value map
+                valid_values = param_map[~np.isnan(param_map)]
+                if len(valid_values) > 0:
+                    vmin = np.percentile(valid_values, 5)
+                    vmax = np.percentile(valid_values, 95)
+                    
+                    im1 = axes[0].imshow(
+                        param_map, origin="lower", cmap=info["cmap"],
+                        vmin=vmin, vmax=vmax, aspect="auto"
+                    )
+                    plt.colorbar(im1, ax=axes[0], label=info["title"])
+                    axes[0].set_title(f"Stellar {info['title']}")
+                
+                # Error map
+                valid_errors = error_map[~np.isnan(error_map)]
+                if len(valid_errors) > 0:
+                    im2 = axes[1].imshow(
+                        error_map, origin="lower", cmap="plasma",
+                        vmin=0, vmax=np.percentile(valid_errors, 95),
+                        aspect="auto"
+                    )
+                    plt.colorbar(im2, ax=axes[1], label=f"Error ({info['title']})")
+                    axes[1].set_title(f"{info['title']} Error")
+                
+                # S/N map
+                snr_map = np.abs(param_map) / error_map
+                valid_snr = snr_map[np.isfinite(snr_map)]
+                if len(valid_snr) > 0:
+                    im3 = axes[2].imshow(
+                        snr_map, origin="lower", cmap="viridis",
+                        vmin=0, vmax=np.percentile(valid_snr, 95),
+                        aspect="auto"
+                    )
+                    plt.colorbar(im3, ax=axes[2], label="S/N")
+                    axes[2].set_title(f"{info['title']} S/N")
+                
+                fig.tight_layout()
+                fig.savefig(
+                    stellar_dir / f"{galaxy_name}_P2P_stellar_{param_name}_with_errors.png",
+                    dpi=150
+                )
+                plt.close(fig)
+                
+            except Exception as e:
+                logger.error(f"Error creating {param_name} plots with errors: {e}")
+                plt.close("all")
+
+
+def create_indices_plots_with_errors(cube, indices_result, indices_errors, 
+                                   plots_dir, galaxy_name, pixel_size=None):
+    """
+    Create spectral indices plots with error visualization
+    """
+    # Create directory for index plots
+    indices_dir = plots_dir / "spectral_indices"
+    indices_dir.mkdir(exist_ok=True, parents=True)
+
+    # If pixel_size not provided, get from cube
+    if pixel_size is None and hasattr(cube, "_pxl_size_x"):
+        pixel_size = (cube._pxl_size_x, cube._pxl_size_y)
+
+    # Plot maps for each index with errors
+    for name in indices_result.keys():
+        if name in indices_errors:
+            try:
+                index_map = indices_result[name]
+                error_map = indices_errors[name]
+                
+                # Skip if not valid arrays
+                if not isinstance(index_map, np.ndarray) or not isinstance(error_map, np.ndarray):
+                    continue
+                
+                # Create figure with value, error, and S/N
+                fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+                
+                # Index value map
+                valid_values = index_map[~np.isnan(index_map)]
+                if len(valid_values) > 0:
+                    vmin = np.percentile(valid_values, 5)
+                    vmax = np.percentile(valid_values, 95)
+                    
+                    if pixel_size is not None:
+                        # Physical coordinates
+                        pixel_size_x, pixel_size_y = pixel_size
+                        ny, nx = index_map.shape
+                        extent = [
+                            -nx/2 * pixel_size_x, nx/2 * pixel_size_x,
+                            -ny/2 * pixel_size_y, ny/2 * pixel_size_y
+                        ]
+                        
+                        im1 = axes[0].imshow(
+                            index_map, origin="lower", cmap="viridis",
+                            vmin=vmin, vmax=vmax, aspect="equal", extent=extent
+                        )
+                        axes[0].set_xlabel('Δ RA (arcsec)')
+                        axes[0].set_ylabel('Δ Dec (arcsec)')
+                    else:
+                        im1 = axes[0].imshow(
+                            index_map, origin="lower", cmap="viridis",
+                            vmin=vmin, vmax=vmax, aspect="auto"
+                        )
+                        axes[0].set_xlabel('Pixels')
+                        axes[0].set_ylabel('Pixels')
+                        
+                    plt.colorbar(im1, ax=axes[0], label="Index Value")
+                    axes[0].set_title(f"{name} Index")
+                
+                # Error map
+                valid_errors = error_map[~np.isnan(error_map)]
+                if len(valid_errors) > 0:
+                    if pixel_size is not None:
+                        im2 = axes[1].imshow(
+                            error_map, origin="lower", cmap="plasma",
+                            vmin=0, vmax=np.percentile(valid_errors, 95),
+                            aspect="equal", extent=extent
+                        )
+                        axes[1].set_xlabel('Δ RA (arcsec)')
+                        axes[1].set_ylabel('Δ Dec (arcsec)')
+                    else:
+                        im2 = axes[1].imshow(
+                            error_map, origin="lower", cmap="plasma",
+                            vmin=0, vmax=np.percentile(valid_errors, 95),
+                            aspect="auto"
+                        )
+                        axes[1].set_xlabel('Pixels')
+                        axes[1].set_ylabel('Pixels')
+                        
+                    plt.colorbar(im2, ax=axes[1], label="Error")
+                    axes[1].set_title(f"{name} Error")
+                
+                # S/N map
+                snr_map = np.abs(index_map) / error_map
+                valid_snr = snr_map[np.isfinite(snr_map)]
+                if len(valid_snr) > 0:
+                    if pixel_size is not None:
+                        im3 = axes[2].imshow(
+                            snr_map, origin="lower", cmap="inferno",
+                            vmin=0, vmax=np.percentile(valid_snr, 95),
+                            aspect="equal", extent=extent
+                        )
+                        axes[2].set_xlabel('Δ RA (arcsec)')
+                        axes[2].set_ylabel('Δ Dec (arcsec)')
+                    else:
+                        im3 = axes[2].imshow(
+                            snr_map, origin="lower", cmap="inferno",
+                            vmin=0, vmax=np.percentile(valid_snr, 95),
+                            aspect="auto"
+                        )
+                        axes[2].set_xlabel('Pixels')
+                        axes[2].set_ylabel('Pixels')
+                        
+                    plt.colorbar(im3, ax=axes[2], label="S/N")
+                    axes[2].set_title(f"{name} S/N")
+                
+                for ax in axes:
+                    ax.grid(True, alpha=0.3)
+                
+                fig.tight_layout()
+                fig.savefig(
+                    indices_dir / f"{galaxy_name}_P2P_{name}_with_errors.png",
+                    dpi=150
+                )
+                plt.close(fig)
+                
+            except Exception as e:
+                logger.error(f"Error creating index plots for {name}: {e}")
+                plt.close("all")
+
+
+def create_radial_profile_plots_with_errors(
+    results, cube, galaxy_name, plots_dir, physical_scale=True, analysis_type="P2P"
+):
+    """
+    Create radial profile plots with error bars
+    """
+    # Create directory for radial profiles
+    radial_dir = Path(plots_dir) / "radial"
+    radial_dir.mkdir(exist_ok=True, parents=True)
+    
+    # Call existing function and add error support
+    create_radial_profile_plots(
+        results, cube, galaxy_name, plots_dir, physical_scale, analysis_type
+    )
+    
+    # Add additional plots with error bars if errors are available
+    if "stellar_kinematics" in results:
+        kin = results["stellar_kinematics"]
+        
+        if "velocity_error" in kin and kin["velocity_error"] is not None:
+            try:
+                # Get velocity and error fields
+                vfield = kin["velocity_field"]
+                vfield_err = kin["velocity_error"]
+                
+                # Get radius
+                ny, nx = vfield.shape
+                y, x = np.indices((ny, nx))
+                center_y, center_x = ny // 2, nx // 2
+                r_pix = np.sqrt((x - center_x)**2 + (y - center_y)**2)
+                
+                if physical_scale and hasattr(cube, "_pxl_size_x"):
+                    radius = r_pix * cube._pxl_size_x
+                else:
+                    radius = r_pix
+                
+                # Create mask for valid values
+                mask = np.isfinite(vfield) & np.isfinite(vfield_err) & np.isfinite(radius)
+                
+                if np.any(mask):
+                    fig, ax = plt.subplots(figsize=(10, 6))
+                    
+                    # Get valid values
+                    valid_r = radius[mask]
+                    valid_v = vfield[mask]
+                    valid_v_err = vfield_err[mask]
+                    
+                    # Bin data with error propagation
+                    from scipy.stats import binned_statistic
+                    
+                    n_bins = 15
+                    bin_edges = np.linspace(np.min(valid_r), np.max(valid_r), n_bins + 1)
+                    
+                    # Calculate mean and propagate errors in bins
+                    v_mean, _, bin_number = binned_statistic(
+                        valid_r, valid_v, statistic='mean', bins=bin_edges
+                    )
+                    
+                    # Propagate errors through binning
+                    v_err_prop = np.zeros(n_bins)
+                    for i in range(n_bins):
+                        mask_bin = (bin_number == i + 1)
+                        if np.any(mask_bin):
+                            # Error propagation for mean: σ_mean = sqrt(sum(σ_i^2)) / n
+                            v_err_prop[i] = np.sqrt(np.sum(valid_v_err[mask_bin]**2)) / np.sum(mask_bin)
+                    
+                    # Calculate bin centers
+                    bin_centers = 0.5 * (bin_edges[1:] + bin_edges[:-1])
+                    
+                    # Plot with error bars
+                    ax.errorbar(
+                        bin_centers, v_mean, yerr=v_err_prop,
+                        fmt='o-', capsize=4, markersize=6, lw=1.5,
+                        label="Velocity with errors"
+                    )
+                    
+                    ax.set_xlabel(f"Radius {'(arcsec)' if physical_scale else '(pixels)'}")
+                    ax.set_ylabel("Velocity (km/s)")
+                    ax.set_title(f"{galaxy_name} - Radial Velocity Profile with Errors")
+                    ax.grid(True, alpha=0.3)
+                    ax.legend()
+                    
+                    visualization.standardize_figure_saving(
+                        fig, radial_dir / f"{galaxy_name}_velocity_profile_errors.png"
+                    )
+                    plt.close(fig)
+                    
+            except Exception as e:
+                logger.error(f"Error creating velocity profile with errors: {e}")
                 plt.close("all")
 
 
@@ -1834,4 +2276,3 @@ def safe_convert_to_numeric(array):
     except Exception as e:
         logger.debug(f"Error converting to numeric: {e}")
         return None
-

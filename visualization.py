@@ -1,6 +1,6 @@
 """
-Visualization utilities for ISAPC
-Handles consistent plotting for all analysis types
+Enhanced visualization utilities for ISAPC with error visualization capabilities
+Handles consistent plotting for all analysis types with uncertainty display
 """
 
 import logging
@@ -13,6 +13,13 @@ import numpy as np
 from matplotlib.colors import LogNorm, Normalize
 from matplotlib.collections import LineCollection
 from matplotlib.patches import Ellipse
+from typing import Optional, Tuple, Dict, Any, Union
+
+from typing import List
+import warnings
+from scipy import stats
+from matplotlib.patches import Rectangle
+from mpl_toolkits.axes_grid1 import make_axes_locatable
 
 logger = logging.getLogger(__name__)
 
@@ -40,9 +47,10 @@ def safe_tight_layout(fig=None):
             pass
 
 
-def safe_plot_array(values, bin_map, ax=None, title=None, cmap='viridis', label=None, vmin=None, vmax=None):
+def safe_plot_array(values, bin_map, ax=None, title=None, cmap='viridis', label=None, 
+                   vmin=None, vmax=None, errors=None, show_snr=False, snr_threshold=None):
     """
-    Safely plot values mapped onto bins, handling non-numeric data types
+    Safely plot values mapped onto bins, handling non-numeric data types with error support
     
     Parameters
     ----------
@@ -60,6 +68,12 @@ def safe_plot_array(values, bin_map, ax=None, title=None, cmap='viridis', label=
         Colorbar label
     vmin, vmax : float, optional
         Value range limits
+    errors : array-like, optional
+        Error values for each bin
+    show_snr : bool, default=False
+        Show S/N ratio instead of values
+    snr_threshold : float, optional
+        Mark regions below this S/N threshold
         
     Returns
     -------
@@ -91,35 +105,97 @@ def safe_plot_array(values, bin_map, ax=None, title=None, cmap='viridis', label=
         # Create NaN array as fallback
         numeric_values = np.full(np.max(bin_map_int) + 1, np.nan)
     
+    # Convert errors to numeric if provided
+    numeric_errors = None
+    if errors is not None:
+        try:
+            if isinstance(errors, np.ndarray) and np.issubdtype(errors.dtype, np.number):
+                numeric_errors = errors
+            else:
+                numeric_errors = np.zeros(len(errors), dtype=float)
+                for i, err in enumerate(errors):
+                    try:
+                        numeric_errors[i] = float(err)
+                    except (ValueError, TypeError):
+                        numeric_errors[i] = np.nan
+        except Exception as e:
+            logger.warning(f"Error converting errors to numeric: {e}")
+            numeric_errors = None
+    
     # Create value map using bin numbers
     value_map = np.full_like(bin_map, np.nan, dtype=float)
     
     # Valid bins are non-negative and within range of values
     max_bin = min(np.max(bin_map_int), len(numeric_values) - 1)
     
+    # Calculate S/N if requested and errors available
+    if show_snr and numeric_errors is not None:
+        # Calculate S/N ratio
+        snr_values = np.zeros_like(numeric_values)
+        for i in range(len(numeric_values)):
+            if np.isfinite(numeric_values[i]) and np.isfinite(numeric_errors[i]) and numeric_errors[i] > 0:
+                snr_values[i] = np.abs(numeric_values[i]) / numeric_errors[i]
+            else:
+                snr_values[i] = np.nan
+        
+        # Use S/N values for plotting
+        plot_values = snr_values
+        if label and not label.endswith('S/N'):
+            label = f"{label} S/N"
+    else:
+        plot_values = numeric_values
+    
     # Populate value map
     for bin_idx in range(max_bin + 1):
         # Safety check to avoid index errors
-        if bin_idx < len(numeric_values):
-            value = numeric_values[bin_idx]
+        if bin_idx < len(plot_values):
+            value = plot_values[bin_idx]
             # Check if value is valid
             if np.isfinite(value):
                 value_map[bin_map_int == bin_idx] = value
     
-    # Create masked array for better visualization
-    masked_data = np.ma.array(value_map, mask=~np.isfinite(value_map))
-    
-    # Determine color limits
-    if vmin is None or vmax is None:
-        valid_data = masked_data.compressed()
-        if len(valid_data) > 0:
-            if vmin is None:
-                vmin = np.nanpercentile(valid_data, 5)
-            if vmax is None:
-                vmax = np.nanpercentile(valid_data, 95)
-    
-    # Plot the data
-    im = ax.imshow(masked_data, origin='lower', cmap=cmap, vmin=vmin, vmax=vmax)
+    # Mark low S/N regions if threshold provided
+    if show_snr and snr_threshold is not None:
+        # Create mask for low S/N
+        low_snr_mask = value_map < snr_threshold
+        
+        # Create masked array for better visualization
+        masked_data = np.ma.array(value_map, mask=~np.isfinite(value_map))
+        
+        # Plot with special handling for low S/N
+        if vmin is None or vmax is None:
+            valid_data = masked_data.compressed()
+            if len(valid_data) > 0:
+                if vmin is None:
+                    vmin = max(0, np.nanpercentile(valid_data, 5))
+                if vmax is None:
+                    vmax = np.nanpercentile(valid_data, 95)
+        
+        im = ax.imshow(masked_data, origin='lower', cmap=cmap, vmin=vmin, vmax=vmax)
+        
+        # Overlay low S/N regions
+        low_snr_overlay = np.ma.array(np.ones_like(value_map), mask=~low_snr_mask)
+        ax.imshow(low_snr_overlay, origin='lower', cmap='gray', alpha=0.5, vmin=0, vmax=1)
+        
+        # Add text annotation
+        ax.text(0.02, 0.98, f'Gray: S/N < {snr_threshold}', 
+               transform=ax.transAxes, va='top', ha='left',
+               bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+    else:
+        # Create masked array for better visualization
+        masked_data = np.ma.array(value_map, mask=~np.isfinite(value_map))
+        
+        # Determine color limits
+        if vmin is None or vmax is None:
+            valid_data = masked_data.compressed()
+            if len(valid_data) > 0:
+                if vmin is None:
+                    vmin = np.nanpercentile(valid_data, 5)
+                if vmax is None:
+                    vmax = np.nanpercentile(valid_data, 95)
+        
+        # Plot the data
+        im = ax.imshow(masked_data, origin='lower', cmap=cmap, vmin=vmin, vmax=vmax)
     
     # Add colorbar
     cbar = plt.colorbar(im, ax=ax)
@@ -1700,7 +1776,7 @@ def plot_gas_kinematics(velocity_field, dispersion_field, equal_aspect=True,
 def plot_spectrum_fit(wavelength, observed_flux, model_flux, stellar_flux=None, gas_flux=None, 
                     error=None, title=None):
     """
-    Plot spectrum fit with components
+    Plot spectrum fit with components (backward compatibility wrapper)
     
     Parameters
     ----------
@@ -1724,25 +1800,86 @@ def plot_spectrum_fit(wavelength, observed_flux, model_flux, stellar_flux=None, 
     fig, ax : tuple
         Figure and axis objects
     """
-    fig, ax = plt.subplots(figsize=(10, 6))
+    # Call the enhanced version with default settings for backward compatibility
+    fig, axes = plot_spectrum_fit_with_errors(
+        wavelength, observed_flux, model_flux, stellar_flux, gas_flux,
+        error, title, figsize=(10, 6), show_residuals=False, show_snr=False
+    )
     
-    # Plot observed spectrum
-    ax.plot(wavelength, observed_flux, 'k-', alpha=0.7, label='Observed')
+    # Return just the main axis for compatibility
+    return fig, axes[0] if isinstance(axes, list) else axes
+
+
+def plot_spectrum_fit_with_errors(wavelength, observed_flux, model_flux, stellar_flux=None, 
+                                 gas_flux=None, error=None, title=None, figsize=(12, 8),
+                                 show_residuals=True, show_snr=False):
+    """
+    Enhanced spectrum fit plot with error bars and residuals
+    
+    Parameters
+    ----------
+    wavelength : numpy.ndarray
+        Wavelength array
+    observed_flux : numpy.ndarray
+        Observed flux array
+    model_flux : numpy.ndarray
+        Model flux array
+    stellar_flux : numpy.ndarray, optional
+        Stellar component flux
+    gas_flux : numpy.ndarray, optional
+        Gas emission component flux
+    error : numpy.ndarray, optional
+        Error array
+    title : str, optional
+        Plot title
+    figsize : tuple, default=(12, 8)
+        Figure size
+    show_residuals : bool, default=True
+        Show residuals panel
+    show_snr : bool, default=False
+        Show S/N ratio panel
+        
+    Returns
+    -------
+    fig, axes : tuple
+        Figure and axes objects
+    """
+    # Create figure with subplots
+    if show_residuals and show_snr and error is not None:
+        fig, axes = plt.subplots(3, 1, figsize=figsize, 
+                               gridspec_kw={'height_ratios': [3, 1, 1]},
+                               sharex=True)
+        ax_main, ax_res, ax_snr = axes
+    elif show_residuals:
+        fig, axes = plt.subplots(2, 1, figsize=figsize,
+                               gridspec_kw={'height_ratios': [3, 1]},
+                               sharex=True)
+        ax_main, ax_res = axes
+        ax_snr = None
+    else:
+        fig, ax_main = plt.subplots(figsize=figsize)
+        axes = [ax_main]
+        ax_res = None
+        ax_snr = None
+    
+    # Plot observed spectrum with error bars
+    if error is not None:
+        # Plot with error band
+        ax_main.fill_between(wavelength, observed_flux - error, observed_flux + error,
+                           color='gray', alpha=0.2, label='Error')
+        ax_main.plot(wavelength, observed_flux, 'k-', alpha=0.7, label='Observed', lw=1)
+    else:
+        ax_main.plot(wavelength, observed_flux, 'k-', alpha=0.7, label='Observed', lw=1.5)
     
     # Plot model
-    ax.plot(wavelength, model_flux, 'r-', lw=1.5, alpha=0.8, label='Best fit')
+    ax_main.plot(wavelength, model_flux, 'r-', lw=1.5, alpha=0.8, label='Best fit')
     
     # Plot components if available
     if stellar_flux is not None:
-        ax.plot(wavelength, stellar_flux, 'b-', lw=1.5, alpha=0.6, label='Stellar')
+        ax_main.plot(wavelength, stellar_flux, 'b-', lw=1.5, alpha=0.6, label='Stellar')
     
     if gas_flux is not None:
-        ax.plot(wavelength, gas_flux, 'g-', lw=1.5, alpha=0.6, label='Gas')
-    
-    # Plot error if available
-    if error is not None:
-        ax.fill_between(wavelength, observed_flux - error, observed_flux + error,
-                      color='gray', alpha=0.2, label='Error')
+        ax_main.plot(wavelength, gas_flux, 'g-', lw=1.5, alpha=0.6, label='Gas')
     
     # Calculate reasonable y-axis range with error handling
     valid_flux = observed_flux[np.isfinite(observed_flux)]
@@ -1755,24 +1892,62 @@ def plot_spectrum_fit(wavelength, observed_flux, model_flux, stellar_flux=None, 
         # Add a margin
         range_y = max_y - min_y
         y_margin = 0.1 * range_y
-        ax.set_ylim(min_y - y_margin, max_y + y_margin)
+        ax_main.set_ylim(min_y - y_margin, max_y + y_margin)
+    
+    # Plot residuals
+    if show_residuals and ax_res is not None:
+        residuals = observed_flux - model_flux
+        
+        if error is not None:
+            # Normalized residuals
+            normalized_residuals = residuals / error
+            ax_res.fill_between(wavelength, -1, 1, color='gray', alpha=0.2)
+            ax_res.plot(wavelength, normalized_residuals, 'ko', markersize=2, alpha=0.6)
+            ax_res.axhline(y=0, color='r', linestyle='--', alpha=0.7)
+            ax_res.set_ylabel('Normalized\nResiduals')
+            ax_res.set_ylim(-5, 5)
+            
+            # Add 3-sigma lines
+            ax_res.axhline(y=3, color='gray', linestyle=':', alpha=0.5)
+            ax_res.axhline(y=-3, color='gray', linestyle=':', alpha=0.5)
+        else:
+            # Regular residuals
+            ax_res.plot(wavelength, residuals, 'ko', markersize=2, alpha=0.6)
+            ax_res.axhline(y=0, color='r', linestyle='--', alpha=0.7)
+            ax_res.set_ylabel('Residuals')
+    
+    # Plot S/N ratio
+    if show_snr and ax_snr is not None and error is not None:
+        snr = np.abs(observed_flux) / error
+        ax_snr.plot(wavelength, snr, 'g-', alpha=0.7)
+        ax_snr.set_ylabel('S/N Ratio')
+        ax_snr.set_ylim(0, np.percentile(snr[np.isfinite(snr)], 95) * 1.1)
+        ax_snr.axhline(y=3, color='r', linestyle='--', alpha=0.5, label='S/N = 3')
+        ax_snr.grid(True, alpha=0.3)
     
     # Add grid, legend and labels
-    ax.grid(True, alpha=0.3)
-    ax.legend(loc='upper right')
-    ax.set_xlabel('Wavelength (Å)')
-    ax.set_ylabel('Flux')
+    ax_main.grid(True, alpha=0.3)
+    ax_main.legend(loc='upper right')
+    ax_main.set_ylabel('Flux')
+    
+    # Set x-label on bottom plot
+    if ax_snr is not None:
+        ax_snr.set_xlabel('Wavelength (Å)')
+    elif ax_res is not None:
+        ax_res.set_xlabel('Wavelength (Å)')
+    else:
+        ax_main.set_xlabel('Wavelength (Å)')
     
     # Set title
     if title:
-        ax.set_title(title)
+        ax_main.set_title(title)
     else:
-        ax.set_title('Spectrum Fit')
+        ax_main.set_title('Spectrum Fit')
     
     # Apply tight layout safely
     safe_tight_layout(fig)
     
-    return fig, ax
+    return fig, axes
 
 
 def plot_binned_spectra(cube, spectra, wavelength, indices=None, title=None, save_path=None):
@@ -2576,3 +2751,1423 @@ def plot_spatial_map(data, ax=None, title=None, cmap='viridis', physical_scale=T
     ax.grid(True, alpha=0.3)
     
     return fig, ax, im
+
+
+def plot_kinematic_maps_with_errors(velocity_field, dispersion_field, 
+                                   velocity_error=None, dispersion_error=None,
+                                   equal_aspect=True, physical_scale=True, 
+                                   pixel_size=None, wcs=None, cube=None,
+                                   figsize=None, title=None):
+    """
+    Plot kinematic maps with error visualization
+    
+    Parameters
+    ----------
+    velocity_field : numpy.ndarray
+        2D velocity field
+    dispersion_field : numpy.ndarray
+        2D dispersion field
+    velocity_error : numpy.ndarray, optional
+        2D velocity error field
+    dispersion_error : numpy.ndarray, optional
+        2D dispersion error field
+    equal_aspect : bool, default=True
+        Use equal aspect ratio
+    physical_scale : bool, default=True
+        Use physical coordinates
+    pixel_size : tuple, optional
+        (pixel_size_x, pixel_size_y) in arcsec
+    wcs : astropy.wcs.WCS, optional
+        WCS object
+    cube : MUSECube, optional
+        MUSE cube for determining figure size
+    figsize : tuple, optional
+        Figure size, auto-determined if None
+    title : str, optional
+        Figure title
+        
+    Returns
+    -------
+    fig, axes : tuple
+        Figure and axes array
+    """
+    # Determine figure layout based on available error data
+    has_errors = velocity_error is not None and dispersion_error is not None
+    
+    if has_errors:
+        n_cols = 3
+        n_rows = 2
+        if figsize is None:
+            if cube is not None:
+                map_size = get_figure_size_for_cube(cube)
+                figsize = (map_size[0] * 3, map_size[1] * 2)
+            else:
+                figsize = (15, 10)
+    else:
+        n_cols = 2
+        n_rows = 1
+        if figsize is None:
+            if cube is not None:
+                map_size = get_figure_size_for_cube(cube)
+                figsize = (map_size[0] * 2, map_size[1])
+            else:
+                figsize = (12, 5)
+    
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=figsize, squeeze=False)
+    
+    if title:
+        fig.suptitle(title, fontsize=16, y=0.95)
+    
+    # Get dimensions
+    ny, nx = velocity_field.shape
+    
+    # Get pixel size from cube if not provided
+    if pixel_size is None and cube is not None:
+        if hasattr(cube, "_pxl_size_x") and hasattr(cube, "_pxl_size_y"):
+            pixel_size = (cube._pxl_size_x, cube._pxl_size_y)
+    
+    # Calculate physical extent if needed
+    extent = None
+    if physical_scale and pixel_size is not None:
+        pixel_size_x, pixel_size_y = pixel_size if isinstance(pixel_size, tuple) else (pixel_size, pixel_size)
+        extent = [
+            -nx/2 * pixel_size_x, 
+            nx/2 * pixel_size_x, 
+            -ny/2 * pixel_size_y, 
+            ny/2 * pixel_size_y
+        ]
+    
+    # Velocity field
+    vel_valid = np.isfinite(velocity_field)
+    if np.any(vel_valid):
+        vmax = np.percentile(np.abs(velocity_field[vel_valid]), 95)
+        vmin = -vmax
+        
+        im1 = axes[0, 0].imshow(velocity_field, origin='lower', cmap='coolwarm',
+                               vmin=vmin, vmax=vmax, extent=extent if extent else None,
+                               aspect=1.0 if extent else 'equal')
+        plt.colorbar(im1, ax=axes[0, 0], label='Velocity (km/s)')
+        axes[0, 0].set_title('Velocity Field')
+        
+        if has_errors:
+            # Velocity error
+            vel_err_valid = np.isfinite(velocity_error)
+            if np.any(vel_err_valid):
+                err_range = np.percentile(velocity_error[vel_err_valid], [5, 95])
+                im2 = axes[0, 1].imshow(velocity_error, origin='lower', cmap='plasma',
+                                       vmin=err_range[0], vmax=err_range[1], 
+                                       extent=extent if extent else None,
+                                       aspect=1.0 if extent else 'equal')
+                plt.colorbar(im2, ax=axes[0, 1], label='Error (km/s)')
+                axes[0, 1].set_title('Velocity Error')
+                
+                # Velocity S/N
+                vel_snr = np.abs(velocity_field) / velocity_error
+                snr_valid = np.isfinite(vel_snr) & (velocity_error > 0)
+                if np.any(snr_valid):
+                    snr_range = np.percentile(vel_snr[snr_valid], [5, 95])
+                    im3 = axes[0, 2].imshow(vel_snr, origin='lower', cmap='viridis',
+                                           vmin=max(0.1, snr_range[0]), vmax=snr_range[1],
+                                           extent=extent if extent else None,
+                                           aspect=1.0 if extent else 'equal')
+                    plt.colorbar(im3, ax=axes[0, 2], label='S/N')
+                    axes[0, 2].set_title('Velocity S/N')
+    
+    # Dispersion field
+    disp_valid = np.isfinite(dispersion_field) & (dispersion_field > 0)
+    if np.any(disp_valid):
+        disp_range = np.percentile(dispersion_field[disp_valid], [5, 95])
+        
+        row_idx = 1 if has_errors else 0
+        col_idx = 0 if has_errors else 1
+        
+        im4 = axes[row_idx, col_idx].imshow(dispersion_field, origin='lower', cmap='inferno',
+                                           vmin=disp_range[0], vmax=disp_range[1],
+                                           extent=extent if extent else None,
+                                           aspect=1.0 if extent else 'equal')
+        plt.colorbar(im4, ax=axes[row_idx, col_idx], label='Dispersion (km/s)')
+        axes[row_idx, col_idx].set_title('Velocity Dispersion')
+        
+        if has_errors:
+            # Dispersion error
+            disp_err_valid = np.isfinite(dispersion_error)
+            if np.any(disp_err_valid):
+                err_range = np.percentile(dispersion_error[disp_err_valid], [5, 95])
+                im5 = axes[1, 1].imshow(dispersion_error, origin='lower', cmap='plasma',
+                                       vmin=err_range[0], vmax=err_range[1],
+                                       extent=extent if extent else None,
+                                       aspect=1.0 if extent else 'equal')
+                plt.colorbar(im5, ax=axes[1, 1], label='Error (km/s)')
+                axes[1, 1].set_title('Dispersion Error')
+                
+                # Dispersion S/N
+                disp_snr = dispersion_field / dispersion_error
+                snr_valid = np.isfinite(disp_snr) & (dispersion_error > 0)
+                if np.any(snr_valid):
+                    snr_range = np.percentile(disp_snr[snr_valid], [5, 95])
+                    im6 = axes[1, 2].imshow(disp_snr, origin='lower', cmap='viridis',
+                                           vmin=max(0.1, snr_range[0]), vmax=snr_range[1],
+                                           extent=extent if extent else None,
+                                           aspect=1.0 if extent else 'equal')
+                    plt.colorbar(im6, ax=axes[1, 2], label='S/N')
+                    axes[1, 2].set_title('Dispersion S/N')
+    
+    # Set axis labels
+    for ax in axes.flat:
+        if extent:
+            ax.set_xlabel('Δ RA (arcsec)')
+            ax.set_ylabel('Δ Dec (arcsec)')
+        else:
+            ax.set_xlabel('Pixels')
+            ax.set_ylabel('Pixels')
+        ax.grid(True, alpha=0.3)
+    
+    safe_tight_layout(fig)
+    
+    return fig, axes
+
+
+def plot_spectral_indices_with_errors(indices_dict, errors_dict=None, bin_map=None,
+                                     indices_2d=None, errors_2d=None,
+                                     figsize=(16, 12), title=None, save_path=None):
+    """
+    Plot spectral indices with error visualization
+    
+    Parameters
+    ----------
+    indices_dict : dict
+        Dictionary of index_name -> values (1D array for bins)
+    errors_dict : dict, optional
+        Dictionary of index_name -> errors (1D array for bins)
+    bin_map : numpy.ndarray, optional
+        2D bin map for converting 1D to 2D
+    indices_2d : dict, optional
+        Dictionary of index_name -> 2D arrays (alternative to indices_dict + bin_map)
+    errors_2d : dict, optional
+        Dictionary of index_name -> 2D error arrays
+    figsize : tuple
+        Figure size
+    title : str, optional
+        Figure title
+    save_path : str or Path, optional
+        Path to save figure
+        
+    Returns
+    -------
+    fig : Figure
+        Matplotlib figure
+    """
+    # Determine data source
+    if indices_2d is not None:
+        # Use 2D data directly
+        index_names = list(indices_2d.keys())
+        is_2d = True
+    elif indices_dict is not None and bin_map is not None:
+        # Convert 1D to 2D using bin map
+        index_names = list(indices_dict.keys())
+        is_2d = False
+    else:
+        logger.error("Must provide either indices_2d or (indices_dict + bin_map)")
+        return None
+    
+    n_indices = len(index_names)
+    if n_indices == 0:
+        logger.warning("No spectral indices to plot")
+        return None
+    
+    # Determine layout
+    has_errors = (errors_dict is not None) or (errors_2d is not None)
+    n_cols = 3 if has_errors else 1
+    n_rows = n_indices
+    
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=figsize, squeeze=False)
+    
+    if title:
+        fig.suptitle(title, fontsize=16, y=0.95)
+    
+    # Column titles
+    if has_errors:
+        axes[0, 0].set_title('Index Value', fontsize=14, pad=10)
+        axes[0, 1].set_title('Index Error', fontsize=14, pad=10)
+        axes[0, 2].set_title('Index S/N', fontsize=14, pad=10)
+    
+    for i, index_name in enumerate(index_names):
+        # Get values
+        if is_2d:
+            values_2d = indices_2d[index_name]
+            errors_2d_idx = errors_2d.get(index_name) if errors_2d else None
+        else:
+            # Convert 1D to 2D
+            values_2d = np.full_like(bin_map, np.nan, dtype=float)
+            values_1d = indices_dict[index_name]
+            
+            for bin_idx in range(len(values_1d)):
+                if np.isfinite(values_1d[bin_idx]):
+                    values_2d[bin_map == bin_idx] = values_1d[bin_idx]
+            
+            if has_errors and errors_dict and index_name in errors_dict:
+                errors_2d_idx = np.full_like(bin_map, np.nan, dtype=float)
+                errors_1d = errors_dict[index_name]
+                
+                for bin_idx in range(len(errors_1d)):
+                    if np.isfinite(errors_1d[bin_idx]):
+                        errors_2d_idx[bin_map == bin_idx] = errors_1d[bin_idx]
+            else:
+                errors_2d_idx = None
+        
+        # Plot value map
+        valid = np.isfinite(values_2d)
+        if np.any(valid):
+            val_range = np.percentile(values_2d[valid], [2, 98])
+            im1 = axes[i, 0].imshow(values_2d, origin='lower', cmap='plasma',
+                                   vmin=val_range[0], vmax=val_range[1])
+            plt.colorbar(im1, ax=axes[i, 0], label='Å')
+            
+            if has_errors and errors_2d_idx is not None:
+                # Plot error map
+                err_valid = np.isfinite(errors_2d_idx) & (errors_2d_idx > 0)
+                if np.any(err_valid):
+                    err_range = np.percentile(errors_2d_idx[err_valid], [5, 95])
+                    im2 = axes[i, 1].imshow(errors_2d_idx, origin='lower', cmap='viridis',
+                                           vmin=err_range[0], vmax=err_range[1])
+                    plt.colorbar(im2, ax=axes[i, 1], label='Å')
+                    
+                    # Plot S/N map
+                    snr = np.abs(values_2d) / errors_2d_idx
+                    snr_valid = np.isfinite(snr) & err_valid
+                    if np.any(snr_valid):
+                        snr_range = np.percentile(snr[snr_valid], [5, 95])
+                        im3 = axes[i, 2].imshow(snr, origin='lower', cmap='inferno',
+                                               vmin=max(0.1, snr_range[0]), vmax=snr_range[1])
+                        plt.colorbar(im3, ax=axes[i, 2], label='S/N')
+        
+        # Set row label
+        axes[i, 0].set_ylabel(index_name, fontsize=12)
+    
+    # Remove ticks for cleaner appearance
+    for ax in axes.flat:
+        ax.set_xticks([])
+        ax.set_yticks([])
+    
+    safe_tight_layout(fig)
+    
+    if save_path:
+        standardize_figure_saving(fig, save_path)
+    
+    return fig
+
+
+def plot_radial_profiles_with_errors(radii, profiles_dict, errors_dict=None,
+                                    figsize=(12, 8), title=None, save_path=None,
+                                    xlabel='Radius (arcsec)', log_x=False, log_y=False):
+    """
+    Plot radial profiles with error bars
+    
+    Parameters
+    ----------
+    radii : numpy.ndarray
+        Radial coordinates
+    profiles_dict : dict
+        Dictionary of profile_name -> values
+    errors_dict : dict, optional
+        Dictionary of profile_name -> errors
+    figsize : tuple
+        Figure size
+    title : str, optional
+        Figure title
+    save_path : str or Path, optional
+        Path to save figure
+    xlabel : str
+        X-axis label
+    log_x : bool
+        Use log scale for x-axis
+    log_y : bool or dict
+        Use log scale for y-axis (can be dict with profile names as keys)
+        
+    Returns
+    -------
+    fig, axes : tuple
+        Figure and axes array
+    """
+    profile_names = list(profiles_dict.keys())
+    n_profiles = len(profile_names)
+    
+    if n_profiles == 0:
+        logger.warning("No profiles to plot")
+        return None, None
+    
+    # Determine layout
+    if n_profiles <= 2:
+        nrows, ncols = 1, n_profiles
+    elif n_profiles <= 4:
+        nrows, ncols = 2, 2
+    else:
+        nrows = int(np.ceil(n_profiles / 3))
+        ncols = 3
+    
+    fig, axes = plt.subplots(nrows, ncols, figsize=figsize, squeeze=False)
+    
+    if title:
+        fig.suptitle(title, fontsize=16, y=0.95)
+    
+    for i, profile_name in enumerate(profile_names):
+        row = i // ncols
+        col = i % ncols
+        ax = axes[row, col]
+        
+        values = profiles_dict[profile_name]
+        valid = np.isfinite(values) & np.isfinite(radii)
+        
+        if np.any(valid):
+            # Sort by radius for cleaner lines
+            idx_sort = np.argsort(radii[valid])
+            r_sorted = radii[valid][idx_sort]
+            v_sorted = values[valid][idx_sort]
+            
+            if errors_dict is not None and profile_name in errors_dict:
+                # Plot with error bars
+                errors = errors_dict[profile_name]
+                e_sorted = errors[valid][idx_sort]
+                
+                # Filter out zero or negative errors
+                valid_err = np.isfinite(e_sorted) & (e_sorted > 0)
+                
+                if np.any(valid_err):
+                    ax.errorbar(r_sorted[valid_err], v_sorted[valid_err], 
+                               yerr=e_sorted[valid_err],
+                               fmt='o-', capsize=3, capthick=1, markersize=4,
+                               label=profile_name, alpha=0.8)
+                    
+                    # Add shaded error region
+                    ax.fill_between(r_sorted[valid_err], 
+                                   v_sorted[valid_err] - e_sorted[valid_err],
+                                   v_sorted[valid_err] + e_sorted[valid_err],
+                                   alpha=0.2)
+                else:
+                    ax.plot(r_sorted, v_sorted, 'o-', markersize=4, label=profile_name)
+            else:
+                # Plot without error bars
+                ax.plot(r_sorted, v_sorted, 'o-', markersize=4, label=profile_name)
+        
+        # Set scales
+        if log_x:
+            ax.set_xscale('log')
+            
+        if isinstance(log_y, dict):
+            if profile_name in log_y and log_y[profile_name]:
+                ax.set_yscale('log')
+        elif log_y:
+            ax.set_yscale('log')
+        
+        ax.set_xlabel(xlabel)
+        ax.set_ylabel(profile_name)
+        ax.grid(True, alpha=0.3)
+        
+        # Add zero line if appropriate
+        if ax.get_ylim()[0] < 0 < ax.get_ylim()[1]:
+            ax.axhline(y=0, color='k', linestyle='--', alpha=0.3)
+    
+    # Hide unused subplots
+    for i in range(n_profiles, nrows * ncols):
+        row = i // ncols
+        col = i % ncols
+        axes[row, col].axis('off')
+    
+    safe_tight_layout(fig)
+    
+    if save_path:
+        standardize_figure_saving(fig, save_path)
+    
+    return fig, axes
+
+
+def plot_error_diagnostic(velocity_error, dispersion_error, velocity=None, dispersion=None,
+                         figsize=(12, 8), title="Kinematic Error Analysis"):
+    """
+    Create diagnostic plots for error analysis
+    
+    Parameters
+    ----------
+    velocity_error : numpy.ndarray
+        2D velocity error array
+    dispersion_error : numpy.ndarray
+        2D dispersion error array
+    velocity : numpy.ndarray, optional
+        2D velocity array for comparison
+    dispersion : numpy.ndarray, optional
+        2D dispersion array for comparison
+    figsize : tuple
+        Figure size
+    title : str
+        Figure title
+        
+    Returns
+    -------
+    fig : Figure
+        Matplotlib figure
+    """
+    fig = plt.figure(figsize=figsize)
+    gs = fig.add_gridspec(2, 3, hspace=0.3, wspace=0.3)
+    
+    # Error distributions
+    ax1 = fig.add_subplot(gs[0, 0])
+    vel_err_valid = velocity_error[np.isfinite(velocity_error)]
+    if len(vel_err_valid) > 0:
+        ax1.hist(vel_err_valid, bins=50, alpha=0.7, color='blue', edgecolor='black')
+        ax1.axvline(np.median(vel_err_valid), color='red', linestyle='--', 
+                   label=f'Median: {np.median(vel_err_valid):.1f}')
+        ax1.set_xlabel('Velocity Error (km/s)')
+        ax1.set_ylabel('Count')
+        ax1.set_title('Velocity Error Distribution')
+        ax1.legend()
+    
+    ax2 = fig.add_subplot(gs[0, 1])
+    disp_err_valid = dispersion_error[np.isfinite(dispersion_error)]
+    if len(disp_err_valid) > 0:
+        ax2.hist(disp_err_valid, bins=50, alpha=0.7, color='orange', edgecolor='black')
+        ax2.axvline(np.median(disp_err_valid), color='red', linestyle='--',
+                   label=f'Median: {np.median(disp_err_valid):.1f}')
+        ax2.set_xlabel('Dispersion Error (km/s)')
+        ax2.set_ylabel('Count')
+        ax2.set_title('Dispersion Error Distribution')
+        ax2.legend()
+    
+    # Error vs value scatter plots
+    if velocity is not None:
+        ax3 = fig.add_subplot(gs[0, 2])
+        valid = np.isfinite(velocity) & np.isfinite(velocity_error)
+        if np.any(valid):
+            ax3.scatter(np.abs(velocity[valid]), velocity_error[valid], 
+                       alpha=0.5, s=1, c='blue')
+            ax3.set_xlabel('|Velocity| (km/s)')
+            ax3.set_ylabel('Velocity Error (km/s)')
+            ax3.set_title('Velocity Error vs |Velocity|')
+            ax3.grid(True, alpha=0.3)
+    
+    if dispersion is not None:
+        ax4 = fig.add_subplot(gs[1, 0])
+        valid = np.isfinite(dispersion) & np.isfinite(dispersion_error)
+        if np.any(valid):
+            ax4.scatter(dispersion[valid], dispersion_error[valid],
+                       alpha=0.5, s=1, c='orange')
+            ax4.set_xlabel('Dispersion (km/s)')
+            ax4.set_ylabel('Dispersion Error (km/s)')
+            ax4.set_title('Dispersion Error vs Dispersion')
+            ax4.grid(True, alpha=0.3)
+    
+    # S/N distributions
+    if velocity is not None and dispersion is not None:
+        ax5 = fig.add_subplot(gs[1, 1])
+        vel_snr = np.abs(velocity) / velocity_error
+        disp_snr = dispersion / dispersion_error
+        
+        vel_snr_valid = vel_snr[np.isfinite(vel_snr)]
+        disp_snr_valid = disp_snr[np.isfinite(disp_snr)]
+        
+        if len(vel_snr_valid) > 0:
+            ax5.hist(vel_snr_valid, bins=50, alpha=0.5, color='blue', 
+                    label='Velocity S/N', density=True)
+        if len(disp_snr_valid) > 0:
+            ax5.hist(disp_snr_valid, bins=50, alpha=0.5, color='orange',
+                    label='Dispersion S/N', density=True)
+        
+        ax5.set_xlabel('S/N Ratio')
+        ax5.set_ylabel('Normalized Count')
+        ax5.set_title('S/N Distributions')
+        ax5.legend()
+        ax5.set_xlim(0, np.percentile(np.concatenate([vel_snr_valid, disp_snr_valid]), 95))
+    
+    # Summary statistics
+    ax6 = fig.add_subplot(gs[1, 2])
+    ax6.axis('off')
+    
+    stats_text = []
+    stats_text.append("Error Statistics:")
+    stats_text.append("")
+    stats_text.append(f"Velocity Error:")
+    stats_text.append(f"  Median: {np.nanmedian(velocity_error):.1f} km/s")
+    stats_text.append(f"  Mean: {np.nanmean(velocity_error):.1f} km/s")
+    stats_text.append(f"  90th percentile: {np.nanpercentile(velocity_error, 90):.1f} km/s")
+    stats_text.append("")
+    stats_text.append(f"Dispersion Error:")
+    stats_text.append(f"  Median: {np.nanmedian(dispersion_error):.1f} km/s")
+    stats_text.append(f"  Mean: {np.nanmean(dispersion_error):.1f} km/s")
+    stats_text.append(f"  90th percentile: {np.nanpercentile(dispersion_error, 90):.1f} km/s")
+    
+    if velocity is not None and dispersion is not None:
+        vel_snr_median = np.nanmedian(np.abs(velocity) / velocity_error)
+        disp_snr_median = np.nanmedian(dispersion / dispersion_error)
+        stats_text.append("")
+        stats_text.append(f"Median S/N:")
+        stats_text.append(f"  Velocity: {vel_snr_median:.1f}")
+        stats_text.append(f"  Dispersion: {disp_snr_median:.1f}")
+    
+    ax6.text(0.1, 0.9, '\n'.join(stats_text), transform=ax6.transAxes,
+            verticalalignment='top', fontsize=10, family='monospace')
+    
+    fig.suptitle(title, fontsize=14)
+    safe_tight_layout(fig)
+    
+    return fig
+
+
+def plot_monte_carlo_corner(samples, parameter_names, truths=None, 
+                           figsize=(12, 12), title=None, save_path=None):
+    """
+    Create corner plot for Monte Carlo samples
+    
+    Parameters
+    ----------
+    samples : numpy.ndarray
+        Array of samples (n_samples, n_parameters)
+    parameter_names : list
+        List of parameter names
+    truths : array-like, optional
+        True values to mark on plots
+    figsize : tuple
+        Figure size
+    title : str, optional
+        Figure title
+    save_path : str or Path, optional
+        Path to save figure
+        
+    Returns
+    -------
+    fig : Figure
+        Corner plot figure
+    """
+    try:
+        import corner
+    except ImportError:
+        logger.error("corner package required for corner plots. Install with: pip install corner")
+        return None
+    
+    fig = corner.corner(samples, labels=parameter_names, truths=truths,
+                       quantiles=[0.16, 0.5, 0.84], show_titles=True,
+                       title_kwargs={"fontsize": 12}, figsize=figsize)
+    
+    if title:
+        fig.suptitle(title, fontsize=16, y=0.98)
+    
+    if save_path:
+        standardize_figure_saving(fig, save_path)
+    
+    return fig
+
+def plot_error_ellipse(ax, center, cov_matrix, n_std=1.0, **kwargs):
+    """
+    Plot error ellipse for 2D Gaussian distribution
+    
+    Parameters
+    ----------
+    ax : matplotlib.axes.Axes
+        Axis to plot on
+    center : array-like
+        (x, y) center of ellipse
+    cov_matrix : numpy.ndarray
+        2x2 covariance matrix
+    n_std : float, default=1.0
+        Number of standard deviations (1, 2, or 3 for 68%, 95%, 99.7%)
+    **kwargs : dict
+        Additional arguments for Ellipse patch
+        
+    Returns
+    -------
+    ellipse : matplotlib.patches.Ellipse
+        Ellipse patch object
+    """
+    from matplotlib.patches import Ellipse
+    
+    # Calculate eigenvalues and eigenvectors
+    eigenvalues, eigenvectors = np.linalg.eigh(cov_matrix)
+    
+    # Calculate angle
+    angle = np.degrees(np.arctan2(eigenvectors[1, 0], eigenvectors[0, 0]))
+    
+    # Width and height are 2 * sqrt(eigenvalue) * n_std
+    width = 2 * np.sqrt(eigenvalues[0]) * n_std
+    height = 2 * np.sqrt(eigenvalues[1]) * n_std
+    
+    # Default ellipse properties
+    default_kwargs = {
+        'fill': False,
+        'edgecolor': 'red',
+        'linewidth': 2,
+        'linestyle': '-',
+        'alpha': 0.8
+    }
+    default_kwargs.update(kwargs)
+    
+    # Create and add ellipse
+    ellipse = Ellipse(center, width, height, angle, **default_kwargs)
+    ax.add_patch(ellipse)
+    
+    return ellipse
+
+
+def plot_confidence_bands(ax, x, y, y_lower, y_upper, label=None, color='blue', alpha=0.3):
+    """
+    Plot line with confidence bands
+    
+    Parameters
+    ----------
+    ax : matplotlib.axes.Axes
+        Axis to plot on
+    x : numpy.ndarray
+        X coordinates
+    y : numpy.ndarray
+        Y values (central estimate)
+    y_lower : numpy.ndarray
+        Lower confidence bound
+    y_upper : numpy.ndarray
+        Upper confidence bound
+    label : str, optional
+        Label for legend
+    color : str, default='blue'
+        Color for line and band
+    alpha : float, default=0.3
+        Transparency for confidence band
+        
+    Returns
+    -------
+    line : matplotlib.lines.Line2D
+        Line object
+    band : matplotlib.collections.PolyCollection
+        Confidence band object
+    """
+    # Plot central line
+    line = ax.plot(x, y, color=color, label=label, linewidth=2)[0]
+    
+    # Plot confidence band
+    band = ax.fill_between(x, y_lower, y_upper, color=color, alpha=alpha)
+    
+    return line, band
+
+
+def plot_correlation_matrix(correlation_matrix, labels=None, ax=None, cmap='RdBu_r',
+                          vmin=-1, vmax=1, annotate=True, fmt='.2f'):
+    """
+    Plot correlation matrix as heatmap
+    
+    Parameters
+    ----------
+    correlation_matrix : numpy.ndarray
+        Correlation matrix to plot
+    labels : list, optional
+        Labels for axes
+    ax : matplotlib.axes.Axes, optional
+        Axis to plot on
+    cmap : str, default='RdBu_r'
+        Colormap
+    vmin, vmax : float
+        Color scale limits
+    annotate : bool, default=True
+        Add correlation values as text
+    fmt : str, default='.2f'
+        Format string for annotations
+        
+    Returns
+    -------
+    im : matplotlib.image.AxesImage
+        Image object
+    """
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(10, 8))
+    
+    # Plot correlation matrix
+    im = ax.imshow(correlation_matrix, cmap=cmap, vmin=vmin, vmax=vmax, aspect='auto')
+    
+    # Add colorbar
+    plt.colorbar(im, ax=ax, label='Correlation')
+    
+    # Set ticks and labels
+    n = correlation_matrix.shape[0]
+    ax.set_xticks(np.arange(n))
+    ax.set_yticks(np.arange(n))
+    
+    if labels is not None:
+        ax.set_xticklabels(labels, rotation=45, ha='right')
+        ax.set_yticklabels(labels)
+    
+    # Add correlation values
+    if annotate:
+        for i in range(n):
+            for j in range(n):
+                text = ax.text(j, i, f'{correlation_matrix[i, j]:{fmt}}',
+                             ha='center', va='center',
+                             color='white' if abs(correlation_matrix[i, j]) > 0.5 else 'black')
+    
+    ax.set_title('Correlation Matrix')
+    
+    return im
+
+
+def plot_parameter_distributions(params_dict, errors_dict=None, figsize=(12, 8),
+                               title=None, save_path=None):
+    """
+    Plot parameter distributions with error estimates
+    
+    Parameters
+    ----------
+    params_dict : dict
+        Dictionary of parameter_name -> values
+    errors_dict : dict, optional
+        Dictionary of parameter_name -> errors
+    figsize : tuple
+        Figure size
+    title : str, optional
+        Figure title
+    save_path : str or Path, optional
+        Path to save figure
+        
+    Returns
+    -------
+    fig, axes : tuple
+        Figure and axes array
+    """
+    param_names = list(params_dict.keys())
+    n_params = len(param_names)
+    
+    if n_params == 0:
+        logger.warning("No parameters to plot")
+        return None, None
+    
+    # Determine layout
+    ncols = min(3, n_params)
+    nrows = int(np.ceil(n_params / ncols))
+    
+    fig, axes = plt.subplots(nrows, ncols, figsize=figsize, squeeze=False)
+    
+    if title:
+        fig.suptitle(title, fontsize=16)
+    
+    for i, param_name in enumerate(param_names):
+        row = i // ncols
+        col = i % ncols
+        ax = axes[row, col]
+        
+        values = params_dict[param_name]
+        valid = np.isfinite(values)
+        
+        if np.any(valid):
+            # Plot histogram
+            n, bins, patches = ax.hist(values[valid], bins=30, alpha=0.7, 
+                                     edgecolor='black', density=True)
+            
+            # Add statistics
+            mean_val = np.mean(values[valid])
+            median_val = np.median(values[valid])
+            std_val = np.std(values[valid])
+            
+            # Plot mean and median
+            ax.axvline(mean_val, color='red', linestyle='--', 
+                      label=f'Mean: {mean_val:.2f}')
+            ax.axvline(median_val, color='green', linestyle='--',
+                      label=f'Median: {median_val:.2f}')
+            
+            # Add error band if available
+            if errors_dict and param_name in errors_dict:
+                errors = errors_dict[param_name]
+                if np.any(np.isfinite(errors)):
+                    mean_error = np.mean(errors[np.isfinite(errors)])
+                    ax.axvspan(mean_val - mean_error, mean_val + mean_error,
+                             alpha=0.2, color='red', label=f'±Error: {mean_error:.2f}')
+            
+            # Add normal distribution overlay
+            x = np.linspace(bins[0], bins[-1], 100)
+            ax.plot(x, stats.norm.pdf(x, mean_val, std_val), 'k-', 
+                   linewidth=2, label=f'σ: {std_val:.2f}')
+            
+            ax.set_xlabel(param_name)
+            ax.set_ylabel('Density')
+            ax.legend(fontsize='small')
+            ax.grid(True, alpha=0.3)
+    
+    # Hide unused subplots
+    for i in range(n_params, nrows * ncols):
+        row = i // ncols
+        col = i % ncols
+        axes[row, col].axis('off')
+    
+    safe_tight_layout(fig)
+    
+    if save_path:
+        standardize_figure_saving(fig, save_path)
+    
+    return fig, axes
+
+
+def plot_bootstrap_results(bootstrap_samples, parameter_names, true_values=None,
+                         figsize=(12, 10), title=None, save_path=None):
+    """
+    Plot bootstrap analysis results
+    
+    Parameters
+    ----------
+    bootstrap_samples : numpy.ndarray
+        Array of bootstrap samples (n_samples, n_parameters)
+    parameter_names : list
+        List of parameter names
+    true_values : array-like, optional
+        True parameter values to mark
+    figsize : tuple
+        Figure size
+    title : str, optional
+        Figure title
+    save_path : str or Path, optional
+        Path to save figure
+        
+    Returns
+    -------
+    fig : Figure
+        Matplotlib figure
+    """
+    n_params = len(parameter_names)
+    
+    fig, axes = plt.subplots(n_params, 2, figsize=figsize)
+    if n_params == 1:
+        axes = axes.reshape(1, -1)
+    
+    if title:
+        fig.suptitle(title, fontsize=16, y=0.98)
+    
+    for i, param_name in enumerate(parameter_names):
+        # Distribution plot
+        ax_dist = axes[i, 0]
+        data = bootstrap_samples[:, i]
+        
+        # Histogram
+        n, bins, _ = ax_dist.hist(data, bins=50, alpha=0.7, density=True, 
+                                edgecolor='black')
+        
+        # Calculate statistics
+        mean_val = np.mean(data)
+        median_val = np.median(data)
+        percentiles = np.percentile(data, [16, 84])  # 68% CI
+        
+        # Plot statistics
+        ax_dist.axvline(mean_val, color='red', linestyle='--', 
+                       label=f'Mean: {mean_val:.3f}')
+        ax_dist.axvline(median_val, color='green', linestyle='--',
+                       label=f'Median: {median_val:.3f}')
+        ax_dist.axvspan(percentiles[0], percentiles[1], alpha=0.2, 
+                       color='gray', label='68% CI')
+        
+        # True value if provided
+        if true_values is not None:
+            ax_dist.axvline(true_values[i], color='black', linestyle='-',
+                          linewidth=2, label=f'True: {true_values[i]:.3f}')
+        
+        ax_dist.set_xlabel(param_name)
+        ax_dist.set_ylabel('Density')
+        ax_dist.legend(fontsize='small')
+        ax_dist.grid(True, alpha=0.3)
+        
+        # Convergence plot
+        ax_conv = axes[i, 1]
+        n_samples = len(data)
+        sample_sizes = np.logspace(1, np.log10(n_samples), 50).astype(int)
+        
+        means = []
+        stds = []
+        for n in sample_sizes:
+            subsample = data[:n]
+            means.append(np.mean(subsample))
+            stds.append(np.std(subsample))
+        
+        # Plot convergence
+        ax_conv.plot(sample_sizes, means, 'b-', label='Mean', linewidth=2)
+        ax_conv.fill_between(sample_sizes, 
+                           np.array(means) - np.array(stds),
+                           np.array(means) + np.array(stds),
+                           alpha=0.3, color='blue')
+        
+        if true_values is not None:
+            ax_conv.axhline(true_values[i], color='black', linestyle='--',
+                          label='True value')
+        
+        ax_conv.set_xscale('log')
+        ax_conv.set_xlabel('Number of samples')
+        ax_conv.set_ylabel(param_name)
+        ax_conv.set_title('Bootstrap Convergence')
+        ax_conv.legend()
+        ax_conv.grid(True, alpha=0.3)
+    
+    safe_tight_layout(fig)
+    
+    if save_path:
+        standardize_figure_saving(fig, save_path)
+    
+    return fig
+
+
+def plot_mcmc_chains(chains, parameter_names, burn_in=None, figsize=(12, 10),
+                    title=None, save_path=None):
+    """
+    Plot MCMC chains for diagnostics
+    
+    Parameters
+    ----------
+    chains : numpy.ndarray
+        MCMC chains (n_steps, n_walkers, n_parameters)
+    parameter_names : list
+        List of parameter names
+    burn_in : int, optional
+        Number of burn-in steps to mark
+    figsize : tuple
+        Figure size
+    title : str, optional
+        Figure title
+    save_path : str or Path, optional
+        Path to save figure
+        
+    Returns
+    -------
+    fig : Figure
+        Matplotlib figure
+    """
+    n_steps, n_walkers, n_params = chains.shape
+    
+    fig, axes = plt.subplots(n_params, 2, figsize=figsize, 
+                           gridspec_kw={'width_ratios': [3, 1]})
+    if n_params == 1:
+        axes = axes.reshape(1, -1)
+    
+    if title:
+        fig.suptitle(title, fontsize=16, y=0.98)
+    
+    for i, param_name in enumerate(parameter_names):
+        # Chain plot
+        ax_chain = axes[i, 0]
+        
+        # Plot each walker
+        for j in range(n_walkers):
+            ax_chain.plot(chains[:, j, i], alpha=0.5, linewidth=0.5)
+        
+        # Mark burn-in
+        if burn_in is not None:
+            ax_chain.axvline(burn_in, color='red', linestyle='--', 
+                           label='Burn-in')
+        
+        ax_chain.set_ylabel(param_name)
+        if i == n_params - 1:
+            ax_chain.set_xlabel('Step')
+        ax_chain.grid(True, alpha=0.3)
+        
+        if i == 0 and burn_in is not None:
+            ax_chain.legend()
+        
+        # Posterior distribution
+        ax_post = axes[i, 1]
+        
+        # Use samples after burn-in
+        start_idx = burn_in if burn_in is not None else 0
+        samples = chains[start_idx:, :, i].flatten()
+        
+        ax_post.hist(samples, bins=50, orientation='horizontal', 
+                    alpha=0.7, density=True)
+        
+        # Add statistics
+        mean_val = np.mean(samples)
+        percentiles = np.percentile(samples, [16, 50, 84])
+        
+        ax_post.axhline(mean_val, color='red', linestyle='--')
+        ax_post.axhline(percentiles[1], color='green', linestyle='--')
+        ax_post.axhspan(percentiles[0], percentiles[2], alpha=0.2, color='gray')
+        
+        ax_post.set_ylim(ax_chain.get_ylim())
+        ax_post.set_xlabel('Density')
+        ax_post.grid(True, alpha=0.3)
+    
+    safe_tight_layout(fig)
+    
+    if save_path:
+        standardize_figure_saving(fig, save_path)
+    
+    return fig
+
+
+# Enhance existing safe_plot_array function to include S/N option
+# This replaces the existing safe_plot_array function
+
+def safe_plot_array(values, bin_map, ax=None, title=None, cmap='viridis', label=None, 
+                   vmin=None, vmax=None, errors=None, show_snr=False, snr_threshold=None):
+    """
+    Safely plot values mapped onto bins, handling non-numeric data types with error support
+    
+    Parameters
+    ----------
+    values : array-like
+        Values for each bin
+    bin_map : numpy.ndarray
+        2D array of bin numbers
+    ax : matplotlib.axes.Axes, optional
+        Axis to plot on
+    title : str, optional
+        Plot title
+    cmap : str, default='viridis'
+        Colormap name
+    label : str, optional
+        Colorbar label
+    vmin, vmax : float, optional
+        Value range limits
+    errors : array-like, optional
+        Error values for each bin
+    show_snr : bool, default=False
+        Show S/N ratio instead of values
+    snr_threshold : float, optional
+        Mark regions below this S/N threshold
+        
+    Returns
+    -------
+    matplotlib.axes.Axes
+        Plot axis
+    """
+    # Create axis if needed
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(8, 7))
+    
+    # Convert bin_map to integer type for mapping
+    bin_map_int = np.asarray(bin_map, dtype=np.int32)
+    
+    # Convert values to numeric safely
+    try:
+        # If values is already numeric numpy array, this won't change it
+        if isinstance(values, np.ndarray) and np.issubdtype(values.dtype, np.number):
+            numeric_values = values
+        else:
+            # For non-numeric arrays, try to convert element by element
+            numeric_values = np.zeros(len(values), dtype=float)
+            for i, val in enumerate(values):
+                try:
+                    numeric_values[i] = float(val)
+                except (ValueError, TypeError):
+                    numeric_values[i] = np.nan
+    except Exception as e:
+        logger.warning(f"Error converting values to numeric: {e}")
+        # Create NaN array as fallback
+        numeric_values = np.full(np.max(bin_map_int) + 1, np.nan)
+    
+    # Convert errors to numeric if provided
+    numeric_errors = None
+    if errors is not None:
+        try:
+            if isinstance(errors, np.ndarray) and np.issubdtype(errors.dtype, np.number):
+                numeric_errors = errors
+            else:
+                numeric_errors = np.zeros(len(errors), dtype=float)
+                for i, err in enumerate(errors):
+                    try:
+                        numeric_errors[i] = float(err)
+                    except (ValueError, TypeError):
+                        numeric_errors[i] = np.nan
+        except Exception as e:
+            logger.warning(f"Error converting errors to numeric: {e}")
+            numeric_errors = None
+    
+    # Create value map using bin numbers
+    value_map = np.full_like(bin_map, np.nan, dtype=float)
+    
+    # Valid bins are non-negative and within range of values
+    max_bin = min(np.max(bin_map_int), len(numeric_values) - 1)
+    
+    # Calculate S/N if requested and errors available
+    if show_snr and numeric_errors is not None:
+        # Calculate S/N ratio
+        snr_values = np.zeros_like(numeric_values)
+        for i in range(len(numeric_values)):
+            if np.isfinite(numeric_values[i]) and np.isfinite(numeric_errors[i]) and numeric_errors[i] > 0:
+                snr_values[i] = np.abs(numeric_values[i]) / numeric_errors[i]
+            else:
+                snr_values[i] = np.nan
+        
+        # Use S/N values for plotting
+        plot_values = snr_values
+        if label and not label.endswith('S/N'):
+            label = f"{label} S/N"
+    else:
+        plot_values = numeric_values
+    
+    # Populate value map
+    for bin_idx in range(max_bin + 1):
+        # Safety check to avoid index errors
+        if bin_idx < len(plot_values):
+            value = plot_values[bin_idx]
+            # Check if value is valid
+            if np.isfinite(value):
+                value_map[bin_map_int == bin_idx] = value
+    
+    # Mark low S/N regions if threshold provided
+    if show_snr and snr_threshold is not None:
+        # Create mask for low S/N
+        low_snr_mask = value_map < snr_threshold
+        
+        # Create masked array for better visualization
+        masked_data = np.ma.array(value_map, mask=~np.isfinite(value_map))
+        
+        # Plot with special handling for low S/N
+        if vmin is None or vmax is None:
+            valid_data = masked_data.compressed()
+            if len(valid_data) > 0:
+                if vmin is None:
+                    vmin = max(0, np.nanpercentile(valid_data, 5))
+                if vmax is None:
+                    vmax = np.nanpercentile(valid_data, 95)
+        
+        im = ax.imshow(masked_data, origin='lower', cmap=cmap, vmin=vmin, vmax=vmax)
+        
+        # Overlay low S/N regions
+        low_snr_overlay = np.ma.array(np.ones_like(value_map), mask=~low_snr_mask)
+        ax.imshow(low_snr_overlay, origin='lower', cmap='gray', alpha=0.5, vmin=0, vmax=1)
+        
+        # Add text annotation
+        ax.text(0.02, 0.98, f'Gray: S/N < {snr_threshold}', 
+               transform=ax.transAxes, va='top', ha='left',
+               bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+    else:
+        # Create masked array for better visualization
+        masked_data = np.ma.array(value_map, mask=~np.isfinite(value_map))
+        
+        # Determine color limits
+        if vmin is None or vmax is None:
+            valid_data = masked_data.compressed()
+            if len(valid_data) > 0:
+                if vmin is None:
+                    vmin = np.nanpercentile(valid_data, 5)
+                if vmax is None:
+                    vmax = np.nanpercentile(valid_data, 95)
+        
+        # Plot the data
+        im = ax.imshow(masked_data, origin='lower', cmap=cmap, vmin=vmin, vmax=vmax)
+    
+    # Add colorbar
+    cbar = plt.colorbar(im, ax=ax)
+    if label:
+        cbar.set_label(label)
+    
+    # Set title
+    if title:
+        ax.set_title(title)
+    
+    # Set aspect ratio for better visualization
+    ax.set_aspect('equal')
+    
+    return ax
+
+
+def create_error_summary_plot(results_dict, figsize=(16, 12), title=None, save_path=None):
+    """
+    Create comprehensive error summary plot for analysis results
+    
+    Parameters
+    ----------
+    results_dict : dict
+        Dictionary containing analysis results with errors
+    figsize : tuple
+        Figure size
+    title : str, optional
+        Figure title
+    save_path : str or Path, optional
+        Path to save figure
+        
+    Returns
+    -------
+    fig : Figure
+        Matplotlib figure
+    """
+    fig = plt.figure(figsize=figsize)
+    gs = fig.add_gridspec(3, 3, hspace=0.3, wspace=0.3)
+    
+    if title:
+        fig.suptitle(title, fontsize=16, y=0.98)
+    
+    # Extract available data
+    has_kinematics = 'stellar_kinematics' in results_dict
+    has_errors = False
+    
+    if has_kinematics:
+        vel = results_dict['stellar_kinematics'].get('velocity')
+        disp = results_dict['stellar_kinematics'].get('dispersion')
+        vel_err = results_dict['stellar_kinematics'].get('velocity_error')
+        disp_err = results_dict['stellar_kinematics'].get('dispersion_error')
+        has_errors = vel_err is not None and disp_err is not None
+    
+    # 1. Error distributions
+    if has_errors:
+        ax1 = fig.add_subplot(gs[0, 0])
+        if isinstance(vel_err, np.ndarray):
+            vel_err_flat = vel_err[np.isfinite(vel_err)]
+            if len(vel_err_flat) > 0:
+                ax1.hist(vel_err_flat, bins=50, alpha=0.7, color='blue', 
+                        label=f'Velocity (median: {np.median(vel_err_flat):.1f})')
+        
+        if isinstance(disp_err, np.ndarray):
+            disp_err_flat = disp_err[np.isfinite(disp_err)]
+            if len(disp_err_flat) > 0:
+                ax1.hist(disp_err_flat, bins=50, alpha=0.7, color='orange',
+                        label=f'Dispersion (median: {np.median(disp_err_flat):.1f})')
+        
+        ax1.set_xlabel('Error (km/s)')
+        ax1.set_ylabel('Count')
+        ax1.set_title('Kinematic Error Distributions')
+        ax1.legend()
+        ax1.grid(True, alpha=0.3)
+    
+    # 2. S/N distributions
+    if has_errors and has_kinematics:
+        ax2 = fig.add_subplot(gs[0, 1])
+        
+        vel_snr = np.abs(vel) / vel_err
+        disp_snr = disp / disp_err
+        
+        vel_snr_valid = vel_snr[np.isfinite(vel_snr)]
+        disp_snr_valid = disp_snr[np.isfinite(disp_snr)]
+        
+        if len(vel_snr_valid) > 0:
+            ax2.hist(vel_snr_valid, bins=50, alpha=0.5, color='blue',
+                    label=f'Velocity (median: {np.median(vel_snr_valid):.1f})',
+                    density=True)
+        
+        if len(disp_snr_valid) > 0:
+            ax2.hist(disp_snr_valid, bins=50, alpha=0.5, color='orange',
+                    label=f'Dispersion (median: {np.median(disp_snr_valid):.1f})',
+                    density=True)
+        
+        ax2.set_xlabel('S/N Ratio')
+        ax2.set_ylabel('Normalized Count')
+        ax2.set_title('S/N Distributions')
+        ax2.legend()
+        ax2.set_xlim(0, np.percentile(np.concatenate([vel_snr_valid, disp_snr_valid]), 95))
+        ax2.grid(True, alpha=0.3)
+    
+    # 3. Spatial error pattern
+    if has_errors and 'binning' in results_dict:
+        ax3 = fig.add_subplot(gs[0, 2])
+        bin_map = results_dict['binning'].get('bin_num')
+        
+        if bin_map is not None:
+            # Calculate mean error per bin
+            if isinstance(bin_map, np.ndarray) and bin_map.ndim == 2:
+                # Already 2D
+                safe_plot_array(vel_err, bin_map, ax=ax3, 
+                              title='Velocity Error Map',
+                              cmap='plasma', label='Error (km/s)')
+    
+    # 4-6. Parameter errors if available
+    if 'stellar_population' in results_dict:
+        pop_data = results_dict['stellar_population']
+        
+        # Age errors
+        if 'age_error' in pop_data:
+            ax4 = fig.add_subplot(gs[1, 0])
+            age_err = pop_data['age_error']
+            if isinstance(age_err, np.ndarray):
+                age_err_valid = age_err[np.isfinite(age_err)]
+                if len(age_err_valid) > 0:
+                    ax4.hist(age_err_valid / 1e9, bins=30, alpha=0.7)
+                    ax4.set_xlabel('Age Error (Gyr)')
+                    ax4.set_ylabel('Count')
+                    ax4.set_title('Age Error Distribution')
+                    ax4.grid(True, alpha=0.3)
+        
+        # Metallicity errors
+        if 'metallicity_error' in pop_data:
+            ax5 = fig.add_subplot(gs[1, 1])
+            met_err = pop_data['metallicity_error']
+            if isinstance(met_err, np.ndarray):
+                met_err_valid = met_err[np.isfinite(met_err)]
+                if len(met_err_valid) > 0:
+                    ax5.hist(met_err_valid, bins=30, alpha=0.7)
+                    ax5.set_xlabel('Metallicity Error')
+                    ax5.set_ylabel('Count')
+                    ax5.set_title('Metallicity Error Distribution')
+                    ax5.grid(True, alpha=0.3)
+    
+    # 7. Spectral indices errors
+    if 'indices' in results_dict or 'bin_indices' in results_dict:
+        ax6 = fig.add_subplot(gs[1, 2])
+        
+        indices_data = results_dict.get('indices', results_dict.get('bin_indices', {}))
+        
+        # Look for error data
+        error_fractions = []
+        index_names = []
+        
+        for idx_name in indices_data:
+            if f'{idx_name}_error' in indices_data:
+                values = indices_data[idx_name]
+                errors = indices_data[f'{idx_name}_error']
+                
+                if isinstance(values, np.ndarray) and isinstance(errors, np.ndarray):
+                    valid = np.isfinite(values) & np.isfinite(errors) & (values != 0)
+                    if np.any(valid):
+                        rel_err = errors[valid] / np.abs(values[valid])
+                        error_fractions.append(np.median(rel_err))
+                        index_names.append(idx_name)
+        
+        if error_fractions:
+            y_pos = np.arange(len(index_names))
+            ax6.barh(y_pos, error_fractions)
+            ax6.set_yticks(y_pos)
+            ax6.set_yticklabels(index_names)
+            ax6.set_xlabel('Median Relative Error')
+            ax6.set_title('Spectral Index Errors')
+            ax6.grid(True, alpha=0.3)
+    
+    # 8. Error correlation matrix
+    if has_errors:
+        ax7 = fig.add_subplot(gs[2, :2])
+        
+        # Create correlation matrix for errors
+        error_data = []
+        error_labels = []
+        
+        if isinstance(vel_err, np.ndarray):
+            error_data.append(vel_err.flatten())
+            error_labels.append('Vel Error')
+        
+        if isinstance(disp_err, np.ndarray):
+            error_data.append(disp_err.flatten())
+            error_labels.append('Disp Error')
+        
+        if len(error_data) >= 2:
+            # Calculate correlation
+            valid_mask = np.all([np.isfinite(d) for d in error_data], axis=0)
+            if np.sum(valid_mask) > 10:
+                error_array = np.array([d[valid_mask] for d in error_data])
+                corr_matrix = np.corrcoef(error_array)
+                
+                plot_correlation_matrix(corr_matrix, error_labels, ax=ax7)
+    
+    # 9. Summary statistics
+    ax8 = fig.add_subplot(gs[2, 2])
+    ax8.axis('off')
+    
+    stats_text = ['Error Analysis Summary:\n']
+    
+    if has_errors:
+        if isinstance(vel_err, np.ndarray):
+            stats_text.append(f'Velocity Error:')
+            stats_text.append(f'  Median: {np.nanmedian(vel_err):.1f} km/s')
+            stats_text.append(f'  90th %ile: {np.nanpercentile(vel_err, 90):.1f} km/s')
+        
+        if isinstance(disp_err, np.ndarray):
+            stats_text.append(f'\nDispersion Error:')
+            stats_text.append(f'  Median: {np.nanmedian(disp_err):.1f} km/s')
+            stats_text.append(f'  90th %ile: {np.nanpercentile(disp_err, 90):.1f} km/s')
+        
+        # Quality metrics
+        stats_text.append(f'\nQuality Metrics:')
+        if len(vel_snr_valid) > 0:
+            stats_text.append(f'  Median Vel S/N: {np.median(vel_snr_valid):.1f}')
+            stats_text.append(f'  Fraction S/N > 3: {np.sum(vel_snr_valid > 3) / len(vel_snr_valid):.2f}')
+    
+    ax8.text(0.1, 0.9, '\n'.join(stats_text), transform=ax8.transAxes,
+            verticalalignment='top', fontsize=10, family='monospace')
+    
+    safe_tight_layout(fig)
+    
+    if save_path:
+        standardize_figure_saving(fig, save_path)
+    
+    return fig

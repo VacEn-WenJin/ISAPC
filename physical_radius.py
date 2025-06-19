@@ -1,6 +1,7 @@
 """
-Physical Radius Calculation Module for ISAPC
+Enhanced Physical Radius Calculation Module for ISAPC with Error Propagation
 Calculates physically-motivated elliptical radii based on flux distribution
+with full uncertainty quantification
 """
 
 import logging
@@ -8,8 +9,22 @@ import numpy as np
 from pathlib import Path
 import matplotlib.pyplot as plt
 from matplotlib.patches import Ellipse
+from typing import Tuple, Dict, Optional, Union
 
 logger = logging.getLogger(__name__)
+
+# Import error propagation utilities if available
+try:
+    from utils.error_propagation import (
+        bootstrap_error_estimate,
+        monte_carlo_error_propagation,
+        calculate_covariance_matrix
+    )
+    HAS_ERROR_UTILS = True
+except ImportError:
+    HAS_ERROR_UTILS = False
+    logger.warning("Error propagation utilities not available. Error estimation will be limited.")
+
 
 def detect_sources(flux_map, min_size=10, threshold=0.2):
     """
@@ -90,10 +105,11 @@ def detect_sources(flux_map, min_size=10, threshold=0.2):
     return centers
 
 
-def calculate_galaxy_radius(flux_2d, pixel_size_x=0.2, pixel_size_y=None, focus_central=True):
+def calculate_galaxy_radius(flux_2d, pixel_size_x=0.2, pixel_size_y=None, focus_central=True,
+                          flux_error=None, n_monte_carlo=0):
     """
     Calculate elliptical galaxy radius (R_galaxy) based on flux distribution
-    with multiple source detection and handling
+    with optional error propagation
     
     Parameters
     ----------
@@ -105,13 +121,18 @@ def calculate_galaxy_radius(flux_2d, pixel_size_x=0.2, pixel_size_y=None, focus_
         Pixel size in y-direction (arcsec), defaults to pixel_size_x
     focus_central : bool, default=True
         Whether to focus on the central galaxy
+    flux_error : numpy.ndarray, optional
+        2D array of flux errors (for error propagation)
+    n_monte_carlo : int, default=0
+        Number of Monte Carlo iterations for error estimation
     
     Returns
     -------
     tuple
-        (R_galaxy, ellipse_params)
-        - R_galaxy: 2D array of elliptical radius values
-        - ellipse_params: dict with ellipse parameters (center_x, center_y, PA_degrees, ellipticity)
+        If flux_error is None or n_monte_carlo == 0:
+            (R_galaxy, ellipse_params)
+        Otherwise:
+            (R_galaxy, ellipse_params) with error information in ellipse_params
     """
     if pixel_size_y is None:
         pixel_size_y = pixel_size_x
@@ -367,6 +388,66 @@ def calculate_galaxy_radius(flux_2d, pixel_size_x=0.2, pixel_size_y=None, focus_
             'final_mask': final_mask   # Store the final mask used
         }
         
+        # Add error estimation if requested
+        if flux_error is not None and n_monte_carlo > 0 and HAS_ERROR_UTILS:
+            logger.info(f"Running Monte Carlo error propagation with {n_monte_carlo} iterations")
+            
+            # Storage for Monte Carlo samples
+            mc_results = {
+                'center_x': [],
+                'center_y': [],
+                'PA': [],
+                'ellipticity': [],
+                'a': [],
+                'b': []
+            }
+            
+            for i in range(n_monte_carlo):
+                # Perturb flux with errors
+                flux_perturbed = flux_2d + flux_error * np.random.randn(*flux_2d.shape)
+                
+                try:
+                    # Recalculate with perturbed flux
+                    _, ellipse_params_mc = calculate_galaxy_radius(
+                        flux_perturbed, pixel_size_x, pixel_size_y, focus_central, 
+                        flux_error=None, n_monte_carlo=0  # Don't recurse
+                    )
+                    
+                    # Store ellipse parameters
+                    mc_results['center_x'].append(ellipse_params_mc['center_x'])
+                    mc_results['center_y'].append(ellipse_params_mc['center_y'])
+                    mc_results['PA'].append(ellipse_params_mc['PA_degrees'])
+                    mc_results['ellipticity'].append(ellipse_params_mc['ellipticity'])
+                    mc_results['a'].append(ellipse_params_mc['a'])
+                    mc_results['b'].append(ellipse_params_mc['b'])
+                    
+                except Exception as e:
+                    logger.debug(f"Monte Carlo iteration {i} failed: {e}")
+                    continue
+            
+            # Calculate statistics from Monte Carlo samples
+            n_valid = len(mc_results['center_x'])
+            
+            if n_valid > 10:
+                # Calculate ellipse parameter errors
+                ellipse_params['center_x_error'] = np.std(mc_results['center_x'])
+                ellipse_params['center_y_error'] = np.std(mc_results['center_y'])
+                ellipse_params['PA_error'] = np.std(mc_results['PA'])
+                ellipse_params['ellipticity_error'] = np.std(mc_results['ellipticity'])
+                ellipse_params['a_error'] = np.std(mc_results['a'])
+                ellipse_params['b_error'] = np.std(mc_results['b'])
+                
+                logger.info(f"Monte Carlo error propagation completed with {n_valid} valid samples")
+            else:
+                logger.warning("Too few valid Monte Carlo samples, using default errors")
+                # Fallback error estimates
+                ellipse_params['center_x_error'] = 2.0
+                ellipse_params['center_y_error'] = 2.0
+                ellipse_params['PA_error'] = 10.0
+                ellipse_params['ellipticity_error'] = 0.1
+                ellipse_params['a_error'] = 0.1 * a
+                ellipse_params['b_error'] = 0.1 * b
+        
         return R_galaxy_arcsec, ellipse_params
         
     except Exception as e:
@@ -388,9 +469,11 @@ def calculate_galaxy_radius(flux_2d, pixel_size_x=0.2, pixel_size_y=None, focus_
         return R_galaxy, ellipse_params
 
 
-def calculate_effective_radius(flux_2d, R_galaxy, ellipse_params, pixel_size_x=0.2, pixel_size_y=None):
+def calculate_effective_radius(flux_2d, R_galaxy, ellipse_params, pixel_size_x=0.2, 
+                             pixel_size_y=None, flux_error=None, n_bootstrap=0):
     """
     Calculate the effective radius (Re) containing 50% of the galaxy light
+    with optional error estimation
     
     Parameters
     ----------
@@ -404,11 +487,16 @@ def calculate_effective_radius(flux_2d, R_galaxy, ellipse_params, pixel_size_x=0
         Pixel size in x-direction (arcsec)
     pixel_size_y : float, optional
         Pixel size in y-direction (arcsec), defaults to pixel_size_x
+    flux_error : numpy.ndarray, optional
+        2D array of flux errors for error estimation
+    n_bootstrap : int, default=0
+        Number of bootstrap iterations for error estimation
         
     Returns
     -------
-    float
-        Effective radius in arcseconds
+    float or tuple
+        If flux_error is None or n_bootstrap == 0: Re
+        Otherwise: (Re, Re_error)
     """
     if pixel_size_y is None:
         pixel_size_y = pixel_size_x
@@ -419,7 +507,10 @@ def calculate_effective_radius(flux_2d, R_galaxy, ellipse_params, pixel_size_x=0
         
         if np.sum(valid_mask) == 0:
             logger.warning("No valid flux values found, using default effective radius")
-            return 5.0  # Default value in arcseconds
+            if flux_error is None or n_bootstrap == 0:
+                return 5.0  # Default value in arcseconds
+            else:
+                return 5.0, 1.0  # Default with error
         
         # Get total flux and sort pixels by radius
         total_flux = np.sum(flux_2d[valid_mask])
@@ -448,12 +539,48 @@ def calculate_effective_radius(flux_2d, R_galaxy, ellipse_params, pixel_size_x=0
             logger.warning("Half-light index out of range, using maximum radius")
             Re = np.max(R_valid)
         
-        return Re
+        # Error estimation if requested
+        if flux_error is not None and n_bootstrap > 0 and HAS_ERROR_UTILS:
+            Re_samples = []
+            
+            for i in range(n_bootstrap):
+                # Perturb flux values
+                flux_perturbed = flux_2d + flux_error * np.random.randn(*flux_2d.shape)
+                
+                # Ensure positive values
+                flux_perturbed = np.maximum(flux_perturbed, 0)
+                
+                try:
+                    # Calculate Re for this realization
+                    Re_boot = calculate_effective_radius(
+                        flux_perturbed, R_galaxy, ellipse_params, 
+                        pixel_size_x, pixel_size_y, 
+                        flux_error=None, n_bootstrap=0  # Don't recurse
+                    )
+                    
+                    if np.isfinite(Re_boot) and Re_boot > 0:
+                        Re_samples.append(Re_boot)
+                except:
+                    continue
+            
+            # Calculate error from bootstrap samples
+            if len(Re_samples) > 100:
+                Re_error = np.std(Re_samples)
+            else:
+                logger.warning("Too few bootstrap samples for Re error estimation")
+                Re_error = Re * 0.15  # 15% error as fallback
+            
+            return Re, Re_error
+        else:
+            return Re
         
     except Exception as e:
         logger.error(f"Error calculating effective radius: {str(e)}")
         # Return a reasonable default value
-        return 5.0  # Default value in arcseconds
+        if flux_error is None or n_bootstrap == 0:
+            return 5.0  # Default value in arcseconds
+        else:
+            return 5.0, 1.0
 
 
 def visualize_galaxy_radius(flux_2d, R_galaxy, ellipse_params, output_path=None):

@@ -51,6 +51,23 @@ def load_config(config_path=None):
     config["SpectralIndices"] = {"default_indices": "Hbeta, Fe5015, Mgb"}
     config["EmissionLines"] = {"default_lines": "Hbeta, OIII_4959, OIII_5007"}
     config["SNR"] = {"min_wavelength": "5075", "max_wavelength": "5125"}
+    
+    # Add new error propagation defaults
+    config["ErrorPropagation"] = {
+        "enable_errors": "True",
+        "monte_carlo_iterations": "1000",
+        "bootstrap_iterations": "100",
+        "mcmc_walkers": "32",
+        "mcmc_steps": "1000",
+        "mcmc_burn": "200",
+        "velocity_error_default": "5.0",  # km/s
+        "min_snr_for_analysis": "3.0",
+        "error_estimation_method": "residual",  # residual, percentage, or mad
+        "flux_error_percentage": "0.01",  # 1% default
+        "systematic_error_factor": "0.005",  # 0.5% systematic
+        "use_covariance": "True",
+        "correlation_length": "2.0",  # pixels
+    }
 
     # Load configuration from file
     config_loaded = False
@@ -180,6 +197,55 @@ def get_spectral_fitting_parameters():
     return params
 
 
+def get_error_propagation_parameters():
+    """Get default parameters for error propagation"""
+    config = get_config()
+
+    params = {
+        "enable_errors": config.getboolean(
+            "ErrorPropagation", "enable_errors", fallback=True
+        ),
+        "monte_carlo_iterations": config.getint(
+            "ErrorPropagation", "monte_carlo_iterations", fallback=1000
+        ),
+        "bootstrap_iterations": config.getint(
+            "ErrorPropagation", "bootstrap_iterations", fallback=100
+        ),
+        "mcmc_walkers": config.getint(
+            "ErrorPropagation", "mcmc_walkers", fallback=32
+        ),
+        "mcmc_steps": config.getint(
+            "ErrorPropagation", "mcmc_steps", fallback=1000
+        ),
+        "mcmc_burn": config.getint(
+            "ErrorPropagation", "mcmc_burn", fallback=200
+        ),
+        "velocity_error_default": config.getfloat(
+            "ErrorPropagation", "velocity_error_default", fallback=5.0
+        ),
+        "min_snr_for_analysis": config.getfloat(
+            "ErrorPropagation", "min_snr_for_analysis", fallback=3.0
+        ),
+        "error_estimation_method": config.get(
+            "ErrorPropagation", "error_estimation_method", fallback="residual"
+        ),
+        "flux_error_percentage": config.getfloat(
+            "ErrorPropagation", "flux_error_percentage", fallback=0.01
+        ),
+        "systematic_error_factor": config.getfloat(
+            "ErrorPropagation", "systematic_error_factor", fallback=0.005
+        ),
+        "use_covariance": config.getboolean(
+            "ErrorPropagation", "use_covariance", fallback=True
+        ),
+        "correlation_length": config.getfloat(
+            "ErrorPropagation", "correlation_length", fallback=2.0
+        ),
+    }
+
+    return params
+
+
 def get_spectral_line_definition(line_name):
     """
     Get the definition for a specific spectral line
@@ -226,3 +292,42 @@ def get_spectral_line_definition(line_name):
             f"Error parsing spectral line definition for {line_name}: {str(e)}"
         )
         return None
+
+
+def save_error_statistics(stats_dict, output_path):
+    """
+    Save error propagation statistics to a file
+    
+    Parameters
+    ----------
+    stats_dict : dict
+        Dictionary of error statistics
+    output_path : str or Path
+        Path to save statistics
+    """
+    config = configparser.ConfigParser()
+    
+    # Create sections for different types of errors
+    sections = {
+        'Kinematic': ['velocity', 'dispersion', 'pa', 'vsys', 'vmax'],
+        'SpectralIndices': ['Hbeta', 'Mgb', 'Fe5015', 'Fe5270', 'Fe5335', 'D4000'],
+        'PhysicalParameters': ['v_over_sigma', 'lambda_r', 'sigma_mean'],
+        'Statistics': ['median_snr', 'mean_error_fraction', 'systematic_contribution']
+    }
+    
+    for section, keys in sections.items():
+        config[section] = {}
+        for key in keys:
+            if key in stats_dict:
+                if isinstance(stats_dict[key], dict):
+                    # Handle nested dictionaries
+                    for subkey, value in stats_dict[key].items():
+                        config[section][f'{key}_{subkey}'] = str(value)
+                else:
+                    config[section][key] = str(stats_dict[key])
+    
+    # Write to file
+    with open(output_path, 'w') as f:
+        config.write(f)
+    
+    logger.info(f"Saved error statistics to {output_path}")

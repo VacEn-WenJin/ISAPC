@@ -1,6 +1,6 @@
 """
-Spectral indices calculation module
-Includes Lick indices, D4000, etc.
+Enhanced spectral indices calculation module with error propagation
+Includes Lick indices, D4000, etc. with full uncertainty estimation
 """
 
 import logging
@@ -11,9 +11,19 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.ticker import AutoMinorLocator
 from scipy import interpolate
+from typing import Dict, Tuple, Optional, Union
 
 # Import spectres from utils
 from utils.calc import spectres
+
+# Import error propagation utilities
+from utils.error_propagation import (
+    propagate_errors_spectral_index, 
+    MCMCErrorEstimator,
+    validate_errors_rms,
+    bootstrap_error_estimate,
+    error_weighted_mean
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -22,208 +32,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# 添加警告消息控制
+# Warning message control
 SHOW_WARNINGS = False
-
-
-# Add to imports at the top of spectral_indices.py
-from utils.error_propagation import (
-    propagate_errors_spectral_index, 
-    MCMCErrorEstimator,
-    validate_errors_rms
-)
-
-# Modified LineIndexCalculator class - add these methods:
-
-def calculate_index_with_error(self, line_name, n_monte_carlo=1000, 
-                              use_mcmc=False, mcmc_params=None):
-    """
-    Calculate absorption line index with full error propagation
-    
-    Parameters
-    ----------
-    line_name : str
-        Absorption line name
-    n_monte_carlo : int
-        Number of Monte Carlo iterations
-    use_mcmc : bool
-        Whether to use MCMC for error estimation
-    mcmc_params : dict, optional
-        MCMC parameters
-        
-    Returns
-    -------
-    index_value : float
-        Index value in Angstroms
-    index_error : float
-        Index error in Angstroms
-    index_error_details : dict
-        Detailed error breakdown
-    """
-    # Get window definition
-    windows = self.define_line_windows(line_name)
-    if windows is None:
-        self._warn(f"Unknown absorption line: {line_name}")
-        return np.nan, np.nan, {}
-    
-    # Get velocity error if available
-    velocity_error = getattr(self, 'velocity_error', 5.0)  # Default 5 km/s
-    
-    # Check if we have proper error array
-    if self.error is None or np.all(self.error == 1):
-        # Estimate errors from residuals if available
-        if hasattr(self, 'residuals') and self.residuals is not None:
-            self.error = np.abs(self.residuals)
-        else:
-            # Use 1% of flux as error estimate
-            self.error = 0.01 * np.abs(self.flux)
-    
-    if use_mcmc and mcmc_params is not None:
-        # MCMC-based error estimation
-        mcmc_estimator = MCMCErrorEstimator(**mcmc_params)
-        
-        # Define model function for index calculation
-        def index_model(params):
-            vel, cont_blue, cont_red = params
-            # Apply velocity correction
-            wave_corr = self.wave / (1 + vel / self.c)
-            # Calculate index with given continuum levels
-            # ... (index calculation logic)
-            return index_value
-        
-        # Run MCMC
-        initial_params = [self.velocity, 
-                         self.calculate_pseudo_continuum(windows["blue"], None, "blue"),
-                         self.calculate_pseudo_continuum(windows["red"], None, "red")]
-        bounds = [(self.velocity - 3*velocity_error, self.velocity + 3*velocity_error),
-                 (0, np.inf), (0, np.inf)]
-        
-        mcmc_results = mcmc_estimator.run_mcmc(
-            initial_params, self.flux, index_model, self.error, bounds
-        )
-        
-        index_value = mcmc_results['median'][0]
-        index_error = mcmc_results['std'][0]
-        
-        error_details = {
-            'method': 'MCMC',
-            'acceptance_fraction': mcmc_results['acceptance_fraction'],
-            'percentiles': mcmc_results['percentiles']
-        }
-    else:
-        # Monte Carlo error propagation
-        index_value, index_error = propagate_errors_spectral_index(
-            self.wave, self.flux, self.error, windows,
-            self.velocity, velocity_error, n_monte_carlo
-        )
-        
-        error_details = {
-            'method': 'Monte Carlo',
-            'n_iterations': n_monte_carlo
-        }
-    
-    # Add error components breakdown
-    error_details.update({
-        'velocity_error_contribution': self._calculate_velocity_error_contribution(line_name),
-        'continuum_error_contribution': self._calculate_continuum_error_contribution(line_name),
-        'measurement_error_contribution': index_error,
-        'total_error': index_error
-    })
-    
-    return index_value, index_error, error_details
-
-def _calculate_velocity_error_contribution(self, line_name):
-    """Calculate the contribution of velocity error to index uncertainty"""
-    # Calculate index at +/- velocity error
-    vel_error = getattr(self, 'velocity_error', 5.0)
-    
-    # Store original velocity
-    orig_vel = self.velocity
-    
-    # Calculate at +vel_error
-    self.velocity = orig_vel + vel_error
-    index_plus = self.calculate_index(line_name)
-    
-    # Calculate at -vel_error
-    self.velocity = orig_vel - vel_error
-    index_minus = self.calculate_index(line_name)
-    
-    # Restore original velocity
-    self.velocity = orig_vel
-    
-    # Error contribution (assuming Gaussian)
-    if np.isfinite(index_plus) and np.isfinite(index_minus):
-        return (index_plus - index_minus) / (2 * np.sqrt(2))
-    else:
-        return 0.0
-
-def _calculate_continuum_error_contribution(self, line_name):
-    """Calculate the contribution of continuum placement error to index uncertainty"""
-    windows = self.define_line_windows(line_name)
-    
-    # Get continuum regions
-    blue_mask = (self.wave >= windows["blue"][0]) & (self.wave <= windows["blue"][1])
-    red_mask = (self.wave >= windows["red"][0]) & (self.wave <= windows["red"][1])
-    
-    # Calculate continuum uncertainty
-    blue_std = np.std(self.flux[blue_mask]) if np.any(blue_mask) else 0
-    red_std = np.std(self.flux[red_mask]) if np.any(red_mask) else 0
-    
-    # Approximate error contribution
-    line_width = windows["line"][1] - windows["line"][0] if "line" in windows else 0
-    continuum_error = np.sqrt(blue_std**2 + red_std**2) * line_width / 2
-    
-    return continuum_error
-
-def calculate_all_indices_with_errors(self, n_monte_carlo=1000, parallel=True):
-    """
-    Calculate all defined spectral indices with errors
-    
-    Parameters
-    ----------
-    n_monte_carlo : int
-        Number of Monte Carlo iterations
-    parallel : bool
-        Whether to use parallel processing
-        
-    Returns
-    -------
-    dict
-        Dictionary with index values, errors, and error details
-    """
-    results = {}
-    
-    line_names = ["Hbeta", "Mgb", "Fe5015", "Fe5270", "Fe5335"]
-    
-    if parallel:
-        from multiprocessing import Pool
-        with Pool() as pool:
-            index_results = pool.starmap(
-                self.calculate_index_with_error,
-                [(line_name, n_monte_carlo) for line_name in line_names]
-            )
-        
-        for line_name, (value, error, details) in zip(line_names, index_results):
-            if not np.isnan(value):
-                results[line_name] = {
-                    'value': value,
-                    'error': error,
-                    'error_details': details
-                }
-    else:
-        for line_name in line_names:
-            try:
-                value, error, details = self.calculate_index_with_error(line_name, n_monte_carlo)
-                if not np.isnan(value):
-                    results[line_name] = {
-                        'value': value,
-                        'error': error,
-                        'error_details': details
-                    }
-            except Exception as e:
-                logger.debug(f"Error calculating {line_name} with errors: {str(e)}")
-    
-    return results
 
 
 def safe_tight_layout(fig=None):
@@ -252,12 +62,12 @@ def safe_tight_layout(fig=None):
 
 def set_warnings(show=True):
     """
-    控制是否显示警告消息
+    Control whether to show warning messages
 
     Parameters:
     -----------
     show : bool
-        如果为True，显示警告；如果为False，抑制警告
+        If True, show warnings; if False, suppress warnings
     """
     global SHOW_WARNINGS
     SHOW_WARNINGS = show
@@ -265,14 +75,14 @@ def set_warnings(show=True):
 
 def warn(message, category=UserWarning):
     """
-    根据全局设置发出警告
+    Issue warning based on global settings
 
     Parameters:
     -----------
     message : str
-        警告消息
+        Warning message
     category : Warning, optional
-        警告类别，默认为UserWarning
+        Warning category, defaults to UserWarning
     """
     if SHOW_WARNINGS:
         warnings.warn(message, category)
@@ -328,11 +138,12 @@ class LineIndexCalculator:
         velocity_correction=0,
         gas_velocity_correction=None,
         error=None,
+        velocity_error=5.0,
         continuum_mode="auto",
         show_warnings=True,
     ):
         """
-        Initialize the absorption line index calculator with separate gas velocity
+        Initialize the absorption line index calculator with enhanced error support
 
         Parameters:
         -----------
@@ -353,7 +164,9 @@ class LineIndexCalculator:
         gas_velocity_correction : float, optional
             Gas velocity correction value in km/s. If None, uses velocity_correction
         error : array-like, optional
-            Error array
+            Error array for flux
+        velocity_error : float, optional
+            Error in velocity correction in km/s, default is 5
         continuum_mode : str, optional
             Continuum calculation mode
             'auto': Use fitted spectrum only when original data is insufficient
@@ -368,6 +181,7 @@ class LineIndexCalculator:
 
         self.c = 299792.458  # Speed of light in km/s
         self.velocity = velocity_correction
+        self.velocity_error = velocity_error
         # Use stellar velocity for gas if gas velocity not provided
         self.gas_velocity = (
             gas_velocity_correction
@@ -394,7 +208,21 @@ class LineIndexCalculator:
             self.fit_flux[~np.isfinite(self.fit_flux)] = 0
             self._warn("Non-finite values in fitted flux array replaced with zeros")
 
-        self.error = error if error is not None else np.ones_like(flux)
+        # Handle error array
+        if error is not None:
+            self.error = np.array(error, copy=True)
+            # Validate errors
+            if np.any(self.error <= 0) or np.any(~np.isfinite(self.error)):
+                self._warn("Invalid error values detected, replacing with estimated errors")
+                self.error = self._estimate_errors()
+        else:
+            # Estimate errors if not provided
+            self.error = self._estimate_errors()
+
+        # Store residuals if we can calculate them
+        self.residuals = None
+        if len(self.wave) == len(self.fit_wave) and np.allclose(self.wave, self.fit_wave):
+            self.residuals = self.flux - self.fit_flux
 
         # Process emission lines - now with separate gas velocity
         if em_wave is not None and em_flux_list is not None:
@@ -413,7 +241,7 @@ class LineIndexCalculator:
             self._subtract_emission_lines()
 
     def _warn(self, message, category=UserWarning):
-        """根据实例设置发出警告"""
+        """Issue warning based on instance settings"""
         if self.show_warnings and SHOW_WARNINGS:
             warnings.warn(message, category)
 
@@ -434,6 +262,54 @@ class LineIndexCalculator:
         """
         return wave / (1 + (velocity / self.c))
 
+    def _estimate_errors(self):
+        """
+        Estimate errors from the spectrum
+        
+        Returns:
+        --------
+        array-like : Estimated error array
+        """
+        # Method 1: Use residuals if available
+        if self.residuals is not None:
+            residual_rms = np.sqrt(np.nanmean(self.residuals**2))
+            if residual_rms > 0 and np.isfinite(residual_rms):
+                return np.full_like(self.flux, residual_rms)
+        
+        # Method 2: Use local RMS in continuum regions
+        try:
+            # Find continuum regions (avoiding strong lines)
+            continuum_mask = np.ones_like(self.flux, dtype=bool)
+            
+            # Mask out common line regions
+            line_regions = [
+                (4850, 4880),  # Hβ
+                (4950, 5020),  # [OIII]
+                (5160, 5195),  # Mg b
+                (5260, 5290),  # Fe
+            ]
+            
+            for start, end in line_regions:
+                continuum_mask &= ~((self.wave >= start) & (self.wave <= end))
+            
+            if np.sum(continuum_mask) > 10:
+                continuum_flux = self.flux[continuum_mask]
+                # Use median absolute deviation
+                mad = np.median(np.abs(continuum_flux - np.median(continuum_flux)))
+                rms = 1.4826 * mad  # Convert MAD to RMS
+                if rms > 0 and np.isfinite(rms):
+                    return np.full_like(self.flux, rms)
+        except:
+            pass
+        
+        # Method 3: Use 1% of flux as error estimate
+        median_flux = np.nanmedian(np.abs(self.flux))
+        if median_flux > 0 and np.isfinite(median_flux):
+            return np.full_like(self.flux, 0.01 * median_flux)
+        
+        # Fallback: constant error
+        return np.ones_like(self.flux)
+
     def _subtract_emission_lines(self):
         """
         Subtract emission lines from the original spectrum
@@ -452,6 +328,13 @@ class LineIndexCalculator:
 
             # Subtract emission lines from the original spectrum
             self.flux -= em_flux_resampled
+            
+            # Also resample emission error if available
+            if hasattr(self, 'em_error') and self.em_error is not None:
+                em_error_resampled = spectres(self.wave, self.em_wave, self.em_error)
+                # Add emission error in quadrature
+                self.error = np.sqrt(self.error**2 + em_error_resampled**2)
+                
         except Exception as e:
             self._warn(
                 f"Error subtracting emission lines: {str(e)}. Continuing without emission line subtraction."
@@ -544,13 +427,17 @@ class LineIndexCalculator:
                 "line": (5312.1, 5352.1),
                 "red": (5353.4, 5363.4),
             },
+            "D4000": {
+                "blue": (3750.0, 3950.0),
+                "red": (4050.0, 4250.0),
+            },
         }
 
         return windows.get(line_name)
 
     def calculate_pseudo_continuum(self, wave_range, flux_range, region_type):
         """
-        Calculate pseudo-continuum with improved type handling
+        Calculate pseudo-continuum with error propagation
 
         Parameters:
         -----------
@@ -563,21 +450,21 @@ class LineIndexCalculator:
 
         Returns:
         --------
-        float : Pseudo-continuum value
+        tuple : (continuum_value, continuum_error)
         """
         # Safety check for wave_range
         if wave_range is None:
             self._warn(f"No wavelength range provided for {region_type} continuum")
-            return 0
+            return 0, 0
         
         # Ensure wave_range is a tuple of two values
         if not isinstance(wave_range, tuple) and not isinstance(wave_range, list):
             self._warn(f"Invalid wave_range format for {region_type} continuum")
-            return 0
+            return 0, 0
         
         if len(wave_range) != 2:
             self._warn(f"Wave range must have exactly 2 values for {region_type} continuum")
-            return 0
+            return 0, 0
 
         if self.continuum_mode == "fit":
             # Use fitted spectrum
@@ -588,17 +475,20 @@ class LineIndexCalculator:
                 
                 mask = (safe_fit_wave >= wave_range[0]) & (safe_fit_wave <= wave_range[1])
                 if np.any(mask):
-                    return np.nanmedian(safe_fit_flux[mask])
+                    cont_value = np.nanmedian(safe_fit_flux[mask])
+                    # Estimate error from scatter
+                    cont_error = np.nanstd(safe_fit_flux[mask]) / np.sqrt(np.sum(mask))
+                    return cont_value, cont_error
                 else:
                     self._warn(
                         f"No fitted data points in {region_type} continuum range"
                     )
-                    return 0
+                    return 0, 0
             except Exception as e:
                 self._warn(
                     f"Error calculating continuum from fitted spectrum: {str(e)}"
                 )
-                return 0
+                return 0, 0
 
         elif self.continuum_mode == "auto":
             # Check original data coverage
@@ -608,10 +498,16 @@ class LineIndexCalculator:
             if self._check_data_coverage(wave_range):
                 mask = (safe_wave >= wave_range[0]) & (safe_wave <= wave_range[1])
                 if np.any(mask):
-                    return np.nanmedian(safe_flux[mask])
+                    cont_value = np.nanmedian(safe_flux[mask])
+                    # Use error array if available
+                    if hasattr(self, 'error') and self.error is not None:
+                        cont_error = np.sqrt(np.nanmean(self.error[mask]**2) / np.sum(mask))
+                    else:
+                        cont_error = np.nanstd(safe_flux[mask]) / np.sqrt(np.sum(mask))
+                    return cont_value, cont_error
                 else:
                     self._warn(f"No data points in {region_type} continuum range")
-                    return 0
+                    return 0, 0
             else:
                 # Use fitted spectrum when data is insufficient
                 safe_fit_wave = convert_to_numeric_safely(self.fit_wave)
@@ -619,12 +515,14 @@ class LineIndexCalculator:
                 
                 mask = (safe_fit_wave >= wave_range[0]) & (safe_fit_wave <= wave_range[1])
                 if np.any(mask):
-                    return np.nanmedian(safe_fit_flux[mask])
+                    cont_value = np.nanmedian(safe_fit_flux[mask])
+                    cont_error = np.nanstd(safe_fit_flux[mask]) / np.sqrt(np.sum(mask))
+                    return cont_value, cont_error
                 else:
                     self._warn(
                         f"No fitted data points in {region_type} continuum range"
                     )
-                    return 0
+                    return 0, 0
 
         else:  # 'original'
             safe_wave = convert_to_numeric_safely(self.wave)
@@ -634,17 +532,22 @@ class LineIndexCalculator:
                 self._warn(
                     f"Original data insufficient to cover {region_type} continuum region, returning 0"
                 )
-                return 0
+                return 0, 0
             mask = (safe_wave >= wave_range[0]) & (safe_wave <= wave_range[1])
             if np.any(mask):
-                return np.nanmedian(safe_flux[mask])
+                cont_value = np.nanmedian(safe_flux[mask])
+                if hasattr(self, 'error') and self.error is not None:
+                    cont_error = np.sqrt(np.nanmean(self.error[mask]**2) / np.sum(mask))
+                else:
+                    cont_error = np.nanstd(safe_flux[mask]) / np.sqrt(np.sum(mask))
+                return cont_value, cont_error
             else:
                 self._warn(f"No data points in {region_type} continuum range")
-                return 0
+                return 0, 0
 
     def calculate_index(self, line_name, return_error=False):
         """
-        Calculate absorption line index with improved type handling
+        Calculate absorption line index with error support
         
         Parameters:
         -----------
@@ -658,6 +561,10 @@ class LineIndexCalculator:
         float : Absorption line index value
         float : Error value (if return_error=True)
         """
+        # Special handling for D4000
+        if line_name == "D4000":
+            return self.calculate_D4000(return_error=return_error)
+        
         # Get window definition
         windows = self.define_line_windows(line_name)
         if windows is None:
@@ -698,9 +605,9 @@ class LineIndexCalculator:
                 self._warn(f"Insufficient data points for {line_name} line region")
                 return np.nan if not return_error else (np.nan, np.nan)
 
-            # Calculate continuum
-            blue_cont = self.calculate_pseudo_continuum(windows["blue"], None, "blue")
-            red_cont = self.calculate_pseudo_continuum(windows["red"], None, "red")
+            # Calculate continuum with errors
+            blue_cont, blue_err = self.calculate_pseudo_continuum(windows["blue"], None, "blue")
+            red_cont, red_err = self.calculate_pseudo_continuum(windows["red"], None, "red")
 
             # Check for valid continuum values
             if (
@@ -732,42 +639,359 @@ class LineIndexCalculator:
             index = np.trapz((1.0 - line_flux / cont_at_line), line_wave)
 
             if return_error:
-                # Calculate error
-                error = np.sqrt(np.trapz((line_err / cont_at_line) ** 2, line_wave))
-                return index, error
+                # Error propagation for index calculation
+                # Error in (1 - F/C) = (F/C) * sqrt((dF/F)^2 + (dC/C)^2)
+                
+                # Interpolate continuum errors
+                f_err_interp = interpolate.interp1d(
+                    wave_cont, 
+                    [blue_err, red_err],
+                    fill_value='extrapolate'
+                )
+                cont_err_at_line = f_err_interp(line_wave)
+                
+                # Relative errors
+                flux_rel_err = line_err / np.abs(line_flux)
+                cont_rel_err = cont_err_at_line / cont_at_line
+                
+                # Combined relative error
+                combined_rel_err = np.sqrt(flux_rel_err**2 + cont_rel_err**2)
+                
+                # Error in (1 - F/C)
+                err_integrand = (line_flux / cont_at_line) * combined_rel_err
+                
+                # Error in integral (simple approximation)
+                index_error = np.sqrt(np.trapz(err_integrand**2, line_wave))
+                
+                # Add velocity error contribution
+                if self.velocity_error > 0:
+                    vel_contribution = self._calculate_velocity_error_contribution(line_name)
+                    index_error = np.sqrt(index_error**2 + vel_contribution**2)
+                
+                return index, index_error
 
             return index
         except Exception as e:
             self._warn(f"Error calculating {line_name} index: {str(e)}")
             return np.nan if not return_error else (np.nan, np.nan)
 
-    def calculate_all_indices(self):
+    def calculate_D4000(self, return_error=False):
         """
-        Calculate all defined spectral indices
+        Calculate 4000 Å break strength with error propagation
+
+        Parameters:
+        -----------
+        return_error : bool
+            Whether to return error
 
         Returns:
         --------
-        dict : Dictionary of index values
+        float : D4000 value
+        float : Error value (if return_error=True)
+        """
+        # Get window definition
+        windows = self.define_line_windows("D4000")
+        if windows is None:
+            # Use default if not defined
+            windows = {
+                "blue": (3750.0, 3950.0),
+                "red": (4050.0, 4250.0)
+            }
+
+        # Find wavelength indices
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", category=RuntimeWarning)
+
+            blue_idx = np.where((self.wave >= windows["blue"][0]) & 
+                               (self.wave <= windows["blue"][1]))[0]
+            red_idx = np.where((self.wave >= windows["red"][0]) & 
+                              (self.wave <= windows["red"][1]))[0]
+
+            if len(blue_idx) == 0 or len(red_idx) == 0:
+                return np.nan if not return_error else (np.nan, np.nan)
+
+            # Calculate mean flux in blue and red regions
+            blue_flux = np.nanmean(self.flux[blue_idx])
+            red_flux = np.nanmean(self.flux[red_idx])
+
+            # Calculate D4000 as ratio of red to blue flux
+            if blue_flux <= 0 or not np.isfinite(blue_flux) or not np.isfinite(red_flux):
+                return np.nan if not return_error else (np.nan, np.nan)
+
+            d4000 = red_flux / blue_flux
+
+            if return_error:
+                # Error propagation for ratio
+                blue_error = np.sqrt(np.nanmean(self.error[blue_idx]**2) / len(blue_idx))
+                red_error = np.sqrt(np.nanmean(self.error[red_idx]**2) / len(red_idx))
+                
+                # Relative errors
+                blue_rel_err = blue_error / blue_flux
+                red_rel_err = red_error / red_flux
+                
+                # D4000 error
+                d4000_error = d4000 * np.sqrt(blue_rel_err**2 + red_rel_err**2)
+                
+                return d4000, d4000_error
+
+            return d4000
+
+    def calculate_index_with_error(self, line_name, n_monte_carlo=1000, 
+                                  use_mcmc=False, mcmc_params=None):
+        """
+        Calculate absorption line index with full error propagation
+        
+        Parameters
+        ----------
+        line_name : str
+            Absorption line name
+        n_monte_carlo : int
+            Number of Monte Carlo iterations
+        use_mcmc : bool
+            Whether to use MCMC for error estimation
+        mcmc_params : dict, optional
+            MCMC parameters
+            
+        Returns
+        -------
+        index_value : float
+            Index value in Angstroms
+        index_error : float
+            Index error in Angstroms
+        index_error_details : dict
+            Detailed error breakdown
+        """
+        # Get window definition
+        windows = self.define_line_windows(line_name)
+        if windows is None:
+            self._warn(f"Unknown absorption line: {line_name}")
+            return np.nan, np.nan, {}
+        
+        # Check if we have proper error array
+        if self.error is None or np.all(self.error == 1):
+            # Use estimated errors
+            self.error = self._estimate_errors()
+        
+        if use_mcmc and mcmc_params is not None:
+            # MCMC-based error estimation
+            mcmc_estimator = MCMCErrorEstimator(**mcmc_params)
+            
+            # Define model function for index calculation
+            def index_model(params):
+                vel, cont_factor = params
+                # Apply velocity correction
+                temp_calc = LineIndexCalculator(
+                    self.wave * (1 + vel / self.c),  # Undo original correction, apply new
+                    self.flux,
+                    self.fit_wave,
+                    self.fit_flux,
+                    velocity_correction=0,  # Already applied above
+                    error=self.error,
+                    continuum_mode=self.continuum_mode,
+                    show_warnings=False
+                )
+                # Scale continuum by factor
+                temp_calc.fit_flux = self.fit_flux * cont_factor
+                return temp_calc.calculate_index(line_name)
+            
+            # Run MCMC
+            initial_params = [self.velocity, 1.0]
+            bounds = [(self.velocity - 3*self.velocity_error, self.velocity + 3*self.velocity_error),
+                     (0.9, 1.1)]  # Allow 10% continuum variation
+            
+            # For MCMC, we need to define a proper likelihood
+            def log_likelihood(params, data, model_func, error):
+                model_val = model_func(params)
+                if not np.isfinite(model_val):
+                    return -np.inf
+                # Simple Gaussian likelihood
+                return -0.5 * ((data - model_val) / error)**2
+            
+            # Get nominal index value
+            nominal_index = self.calculate_index(line_name)
+            
+            mcmc_results = mcmc_estimator.run_mcmc(
+                initial_params, nominal_index, index_model, 
+                0.1,  # Assumed index error for likelihood
+                bounds
+            )
+            
+            index_value = mcmc_results['median'][0]
+            index_error = mcmc_results['std'][0]
+            
+            error_details = {
+                'method': 'MCMC',
+                'acceptance_fraction': mcmc_results['acceptance_fraction'],
+                'percentiles': mcmc_results['percentiles']
+            }
+        else:
+            # Monte Carlo error propagation
+            index_value, index_error = propagate_errors_spectral_index(
+                self.wave, self.flux, self.error, windows,
+                self.velocity, self.velocity_error, n_monte_carlo
+            )
+            
+            error_details = {
+                'method': 'Monte Carlo',
+                'n_iterations': n_monte_carlo
+            }
+        
+        # Add error components breakdown
+        error_details.update({
+            'velocity_error_contribution': self._calculate_velocity_error_contribution(line_name),
+            'continuum_error_contribution': self._calculate_continuum_error_contribution(line_name),
+            'measurement_error_contribution': index_error,
+            'total_error': index_error
+        })
+        
+        return index_value, index_error, error_details
+
+    def _calculate_velocity_error_contribution(self, line_name):
+        """Calculate the contribution of velocity error to index uncertainty"""
+        # Calculate index at +/- velocity error
+        vel_error = self.velocity_error
+        
+        # Store original velocity
+        orig_vel = self.velocity
+        
+        # Calculate at +vel_error
+        self.velocity = orig_vel + vel_error
+        self.wave = self._apply_velocity_correction(self.wave * (1 + orig_vel/self.c), self.velocity)
+        index_plus = self.calculate_index(line_name)
+        
+        # Calculate at -vel_error
+        self.velocity = orig_vel - vel_error
+        self.wave = self._apply_velocity_correction(self.wave * (1 + self.velocity/self.c), orig_vel - vel_error)
+        index_minus = self.calculate_index(line_name)
+        
+        # Restore original
+        self.velocity = orig_vel
+        self.wave = self._apply_velocity_correction(self.wave * (1 + self.velocity/self.c), orig_vel)
+        
+        # Error contribution (assuming Gaussian)
+        if np.isfinite(index_plus) and np.isfinite(index_minus):
+            return (index_plus - index_minus) / (2 * np.sqrt(2))
+        else:
+            return 0.0
+
+    def _calculate_continuum_error_contribution(self, line_name):
+        """Calculate the contribution of continuum placement error to index uncertainty"""
+        windows = self.define_line_windows(line_name)
+        
+        # Get continuum regions
+        blue_mask = (self.wave >= windows["blue"][0]) & (self.wave <= windows["blue"][1])
+        red_mask = (self.wave >= windows["red"][0]) & (self.wave <= windows["red"][1])
+        
+        # Calculate continuum uncertainty
+        blue_std = np.std(self.flux[blue_mask]) if np.any(blue_mask) else 0
+        red_std = np.std(self.flux[red_mask]) if np.any(red_mask) else 0
+        
+        # Get line window
+        line_window = windows.get("line", windows.get("band"))
+        if line_window is None:
+            return 0.0
+            
+        # Approximate error contribution
+        line_width = line_window[1] - line_window[0]
+        continuum_error = np.sqrt(blue_std**2 + red_std**2) * line_width / 2
+        
+        return continuum_error
+
+    def calculate_all_indices(self, return_errors=False):
+        """
+        Calculate all defined spectral indices with optional error estimation
+
+        Parameters:
+        -----------
+        return_errors : bool
+            Whether to return errors for each index
+
+        Returns:
+        --------
+        dict : Dictionary of index values (and errors if requested)
         """
         result = {}
         for line_name in [
             "Hbeta",
             "Mgb",
             "Fe5015",
-            # , 'Fe5270', 'Fe5335'
+            "Fe5270", 
+            "Fe5335",
+            "D4000"
         ]:
             try:
-                index = self.calculate_index(line_name)
-                if not np.isnan(index):
-                    result[line_name] = index
+                if return_errors:
+                    index, error = self.calculate_index(line_name, return_error=True)
+                    if not np.isnan(index):
+                        result[line_name] = {'value': index, 'error': error}
+                else:
+                    index = self.calculate_index(line_name)
+                    if not np.isnan(index):
+                        result[line_name] = index
             except Exception as e:
                 logger.debug(f"Error calculating {line_name}: {str(e)}")
 
         return result
 
-    def plot_all_lines(self, mode=None, number=None, save_path=None, show_index=False):
+    def calculate_all_indices_with_errors(self, n_monte_carlo=1000, parallel=True):
         """
-        Plot all spectral lines in a complete figure with proper velocity information
+        Calculate all defined spectral indices with errors
+        
+        Parameters
+        ----------
+        n_monte_carlo : int
+            Number of Monte Carlo iterations
+        parallel : bool
+            Whether to use parallel processing
+            
+        Returns
+        -------
+        dict
+            Dictionary with index values, errors, and error details
+        """
+        results = {}
+        
+        line_names = ["Hbeta", "Mgb", "Fe5015", "Fe5270", "Fe5335", "D4000"]
+        
+        if parallel:
+            try:
+                from multiprocessing import Pool
+                with Pool() as pool:
+                    index_results = pool.starmap(
+                        self.calculate_index_with_error,
+                        [(line_name, n_monte_carlo) for line_name in line_names]
+                    )
+                
+                for line_name, (value, error, details) in zip(line_names, index_results):
+                    if not np.isnan(value):
+                        results[line_name] = {
+                            'value': value,
+                            'error': error,
+                            'error_details': details
+                        }
+            except Exception as e:
+                logger.warning(f"Parallel processing failed: {e}. Falling back to serial processing.")
+                parallel = False
+        
+        if not parallel:
+            for line_name in line_names:
+                try:
+                    value, error, details = self.calculate_index_with_error(line_name, n_monte_carlo)
+                    if not np.isnan(value):
+                        results[line_name] = {
+                            'value': value,
+                            'error': error,
+                            'error_details': details
+                        }
+                except Exception as e:
+                    logger.debug(f"Error calculating {line_name} with errors: {str(e)}")
+        
+        return results
+
+    def plot_all_lines(self, mode=None, number=None, save_path=None, show_index=False,
+                      show_errors=False):
+        """
+        Plot all spectral lines in a complete figure with error visualization
 
         Parameters:
         -----------
@@ -779,21 +1003,15 @@ class LineIndexCalculator:
             Path to save the figure. If provided, the figure will be saved there
         show_index : bool, optional
             Whether to show index parameters, default is False
+        show_errors : bool, optional
+            Whether to show error bars and error estimates, default is False
 
         Returns:
         --------
         fig, axes : Figure and Axes objects for further customization
         """
         # Validate mode and number parameters
-        # print(mode,number)
         if mode is not None and number is not None:
-            # valid_modes = ["P2P", "VNB", "RDB", "MUSE"]
-            # if mode not in valid_modes:
-            #     self._warn(f"Mode must be one of {valid_modes}, got {mode}")
-            #     mode = None
-            # if not isinstance(number, int):
-            #     self._warn(f"Number must be an integer, got {type(number)}")
-            #     number = 0
             mode_title = f"{mode}{number}" if mode is not None else None
         else:
             mode_title = None
@@ -867,6 +1085,16 @@ class LineIndexCalculator:
             y_max = 1
             self._warn("Invalid y-axis limits detected. Using default range.")
 
+        # Plot spectra with error bars if requested
+        if show_errors and hasattr(self, 'error') and self.error is not None:
+            error_mask = wave_mask
+            ax1.fill_between(
+                self.wave[error_mask],
+                self.flux[error_mask] - self.error[error_mask],
+                self.flux[error_mask] + self.error[error_mask],
+                alpha=0.2, color="tab:blue", label="Error band"
+            )
+            
         # Plot spectra
         if hasattr(self, "em_flux_list"):
             try:
@@ -942,7 +1170,15 @@ class LineIndexCalculator:
                 "Invalid y-axis limits for processed panel. Using default range."
             )
 
-        # Second panel: Processed spectrum
+        # Second panel: Processed spectrum with errors
+        if show_errors and hasattr(self, 'error') and self.error is not None:
+            ax2.fill_between(
+                self.wave[wave_mask],
+                self.flux[wave_mask] - self.error[wave_mask],
+                self.flux[wave_mask] + self.error[wave_mask],
+                alpha=0.2, color="tab:blue"
+            )
+            
         ax2.plot(
             self.wave,
             self.flux,
@@ -1047,11 +1283,11 @@ class LineIndexCalculator:
 
                 # Add continuum points in second panel
                 if panel == ax2:
-                    # Calculate continuum points
-                    blue_cont_orig = None
-                    red_cont_orig = None
-                    blue_cont_fit = None
-                    red_cont_fit = None
+                    # Calculate continuum points with errors
+                    blue_cont_orig, blue_err_orig = None, None
+                    red_cont_orig, red_err_orig = None, None
+                    blue_cont_fit, blue_err_fit = None, None
+                    red_cont_fit, red_err_fit = None, None
 
                     # Check if original spectrum can be used
                     try:
@@ -1061,12 +1297,16 @@ class LineIndexCalculator:
                             )
                             if np.any(mask):
                                 blue_cont_orig = np.nanmedian(self.flux[mask])
+                                if show_errors:
+                                    blue_err_orig = np.nanstd(self.flux[mask]) / np.sqrt(np.sum(mask))
                         if self._check_data_coverage(windows["red"]):
                             mask = (self.wave >= windows["red"][0]) & (
                                 self.wave <= windows["red"][1]
                             )
                             if np.any(mask):
                                 red_cont_orig = np.nanmedian(self.flux[mask])
+                                if show_errors:
+                                    red_err_orig = np.nanstd(self.flux[mask]) / np.sqrt(np.sum(mask))
                     except Exception as e:
                         self._warn(f"Error calculating original continuum: {str(e)}")
 
@@ -1080,8 +1320,12 @@ class LineIndexCalculator:
                         )
                         if np.any(mask_blue):
                             blue_cont_fit = np.nanmedian(self.fit_flux[mask_blue])
+                            if show_errors:
+                                blue_err_fit = np.nanstd(self.fit_flux[mask_blue]) / np.sqrt(np.sum(mask_blue))
                         if np.any(mask_red):
                             red_cont_fit = np.nanmedian(self.fit_flux[mask_red])
+                            if show_errors:
+                                red_err_fit = np.nanstd(self.fit_flux[mask_red]) / np.sqrt(np.sum(mask_red))
                     except Exception as e:
                         self._warn(f"Error calculating fitted continuum: {str(e)}")
 
@@ -1115,46 +1359,38 @@ class LineIndexCalculator:
                         and np.isfinite(red_cont_orig)
                     ):
                         flux_cont_orig = np.array([blue_cont_orig, red_cont_orig])
-                        if not is_orig_active:
-                            # Inactive state
-                            panel.plot(
-                                wave_cont,
-                                flux_cont_orig,
-                                "*",
-                                color=colors["inactive_cont"],
-                                markersize=10,
-                                alpha=0.5,
-                                label="Original spectrum continuum (inactive)"
-                                if line_name == list(all_windows.keys())[0]
-                                else "",
-                            )
-                            panel.plot(
-                                wave_cont,
-                                flux_cont_orig,
-                                "--",
-                                color=colors["inactive_cont"],
-                                alpha=0.5,
+                        marker_size = 10
+                        
+                        # Add error bars if available
+                        if show_errors and blue_err_orig is not None and red_err_orig is not None:
+                            err_cont_orig = np.array([blue_err_orig, red_err_orig])
+                            panel.errorbar(
+                                wave_cont, flux_cont_orig, yerr=err_cont_orig,
+                                fmt='*', markersize=marker_size,
+                                color=colors["orig_cont"] if is_orig_active else colors["inactive_cont"],
+                                alpha=0.8 if is_orig_active else 0.5,
+                                capsize=3
                             )
                         else:
-                            # Active state
                             panel.plot(
                                 wave_cont,
                                 flux_cont_orig,
                                 "*",
-                                color=colors["orig_cont"],
-                                markersize=10,
-                                alpha=0.8,
-                                label="Original spectrum continuum (orange)"
+                                color=colors["orig_cont"] if is_orig_active else colors["inactive_cont"],
+                                markersize=marker_size,
+                                alpha=0.8 if is_orig_active else 0.5,
+                                label=f"Original spectrum continuum {'(active)' if is_orig_active else '(inactive)'}"
                                 if line_name == list(all_windows.keys())[0]
                                 else "",
                             )
-                            panel.plot(
-                                wave_cont,
-                                flux_cont_orig,
-                                "--",
-                                color=colors["orig_cont"],
-                                alpha=0.8,
-                            )
+                        
+                        panel.plot(
+                            wave_cont,
+                            flux_cont_orig,
+                            "--",
+                            color=colors["orig_cont"] if is_orig_active else colors["inactive_cont"],
+                            alpha=0.8 if is_orig_active else 0.5,
+                        )
 
                     # Plot fitted spectrum continuum points and line
                     if (
@@ -1164,46 +1400,37 @@ class LineIndexCalculator:
                         and np.isfinite(red_cont_fit)
                     ):
                         flux_cont_fit = np.array([blue_cont_fit, red_cont_fit])
-                        if is_orig_active:
-                            # Inactive state
-                            panel.plot(
-                                wave_cont,
-                                flux_cont_fit,
-                                "*",
-                                color=colors["inactive_cont"],
-                                markersize=10,
-                                alpha=0.5,
-                                label="Template continuum (inactive)"
-                                if line_name == list(all_windows.keys())[0]
-                                else "",
-                            )
-                            panel.plot(
-                                wave_cont,
-                                flux_cont_fit,
-                                "--",
-                                color=colors["inactive_cont"],
-                                alpha=0.5,
+                        
+                        # Add error bars if available
+                        if show_errors and blue_err_fit is not None and red_err_fit is not None:
+                            err_cont_fit = np.array([blue_err_fit, red_err_fit])
+                            panel.errorbar(
+                                wave_cont, flux_cont_fit, yerr=err_cont_fit,
+                                fmt='*', markersize=10,
+                                color=colors["fit_cont"] if not is_orig_active else colors["inactive_cont"],
+                                alpha=0.8 if not is_orig_active else 0.5,
+                                capsize=3
                             )
                         else:
-                            # Active state
                             panel.plot(
                                 wave_cont,
                                 flux_cont_fit,
                                 "*",
-                                color=colors["fit_cont"],
+                                color=colors["fit_cont"] if not is_orig_active else colors["inactive_cont"],
                                 markersize=10,
-                                alpha=0.8,
-                                label="Template continuum (green)"
+                                alpha=0.8 if not is_orig_active else 0.5,
+                                label=f"Template continuum {'(active)' if not is_orig_active else '(inactive)'}"
                                 if line_name == list(all_windows.keys())[0]
                                 else "",
                             )
-                            panel.plot(
-                                wave_cont,
-                                flux_cont_fit,
-                                "--",
-                                color=colors["fit_cont"],
-                                alpha=0.8,
-                            )
+                        
+                        panel.plot(
+                            wave_cont,
+                            flux_cont_fit,
+                            "--",
+                            color=colors["fit_cont"] if not is_orig_active else colors["inactive_cont"],
+                            alpha=0.8 if not is_orig_active else 0.5,
+                        )
 
                     # Show index parameters if requested
                     if show_index:
@@ -1214,20 +1441,30 @@ class LineIndexCalculator:
                             # Calculate index using original spectrum
                             self.continuum_mode = "original"
                             try:
-                                orig_index = self.calculate_index(line_name)
+                                if show_errors:
+                                    orig_index, orig_error = self.calculate_index(line_name, return_error=True)
+                                else:
+                                    orig_index = self.calculate_index(line_name)
+                                    orig_error = None
                                 if np.isnan(orig_index):
                                     orig_index = None
                             except Exception:
                                 orig_index = None
+                                orig_error = None
 
                             # Calculate index using fitted spectrum
                             self.continuum_mode = "fit"
                             try:
-                                fit_index = self.calculate_index(line_name)
+                                if show_errors:
+                                    fit_index, fit_error = self.calculate_index(line_name, return_error=True)
+                                else:
+                                    fit_index = self.calculate_index(line_name)
+                                    fit_error = None
                                 if np.isnan(fit_index):
                                     fit_index = None
                             except Exception:
                                 fit_index = None
+                                fit_error = None
 
                             # Restore original continuum_mode
                             self.continuum_mode = original_mode
@@ -1243,10 +1480,14 @@ class LineIndexCalculator:
                                 y_offset = 0.1 * (y_max_processed - y_min_processed)
 
                                 # Show original spectrum value (top)
+                                orig_text = f"{orig_index:.3f}"
+                                if show_errors and orig_error is not None:
+                                    orig_text += f"±{orig_error:.3f}"
+                                    
                                 panel.text(
                                     np.mean(band_range),
                                     base_y_text + y_offset,
-                                    f"{orig_index:.3f}",
+                                    orig_text,
                                     color=colors["orig_cont"],
                                     horizontalalignment="center",
                                     verticalalignment="bottom",
@@ -1257,10 +1498,14 @@ class LineIndexCalculator:
                                 )
 
                                 # Show fitted spectrum value (bottom)
+                                fit_text = f"{fit_index:.3f}"
+                                if show_errors and fit_error is not None:
+                                    fit_text += f"±{fit_error:.3f}"
+                                    
                                 panel.text(
                                     np.mean(band_range),
                                     base_y_text + y_offset / 2,
-                                    f"{fit_index:.3f}",
+                                    fit_text,
                                     color=colors["fit_cont"],
                                     horizontalalignment="center",
                                     verticalalignment="bottom",
@@ -1273,6 +1518,9 @@ class LineIndexCalculator:
                             elif fit_index is not None:
                                 # Only show fitted spectrum value
                                 fit_text = f"{fit_index:.3f}"
+                                if show_errors and fit_error is not None:
+                                    fit_text += f"±{fit_error:.3f}"
+                                    
                                 panel.text(
                                     np.mean(band_range),
                                     base_y_text
@@ -1314,13 +1562,15 @@ class LineIndexCalculator:
             ax.legend(loc="upper right")
 
         # Add separate velocity information to title
+        velocity_text = f"v_star={self.velocity:.1f}"
+        if show_errors and self.velocity_error > 0:
+            velocity_text += f"±{self.velocity_error:.1f}"
+        velocity_text += " km/s"
+        
         if self.gas_velocity != self.velocity:
-            ax1.set_title(
-                f"Original Data Comparison (v_star={self.velocity:.1f}, v_gas={self.gas_velocity:.1f} km/s)"
-            )
-        else:
-            ax1.set_title(f"Original Data Comparison (v={self.velocity:.1f} km/s)")
-
+            velocity_text += f", v_gas={self.gas_velocity:.1f} km/s"
+            
+        ax1.set_title(f"Original Data Comparison ({velocity_text})")
         ax2.set_title("Processed Spectrum with Continuum Fits")
 
         # Apply a safer approach to tight_layout
@@ -1335,9 +1585,7 @@ class LineIndexCalculator:
             plt.subplots_adjust(hspace=0.3, wspace=0.3)
 
         # Save figure if path provided
-        # print(save_path, mode_title)
         if save_path and mode_title:
-            # print('!')
             # Ensure save_path exists
             if not os.path.exists(save_path):
                 os.makedirs(save_path)
@@ -1349,7 +1597,7 @@ class LineIndexCalculator:
                 # Save figure
                 fig.savefig(filepath, format="pdf", bbox_inches="tight")
                 print(f"Figure saved as: {filepath}")
-                fig.close()
+                plt.close(fig)
             except Exception as e:
                 self._warn(f"Error saving figure: {str(e)}")
 
@@ -1357,10 +1605,11 @@ class LineIndexCalculator:
 
 
 def calculate_lick_indices(
-    wave, flux, index_definitions=None, indices_list=None, show_warnings=True
+    wave, flux, index_definitions=None, indices_list=None, show_warnings=True,
+    error=None, return_errors=False
 ):
     """
-    Calculate Lick indices for a single spectrum
+    Calculate Lick indices for a single spectrum with error support
 
     Parameters:
     -----------
@@ -1374,10 +1623,14 @@ def calculate_lick_indices(
         List of indices to calculate
     show_warnings : bool, optional
         Whether to show warnings
+    error : ndarray, optional
+        Error array
+    return_errors : bool, optional
+        Whether to return errors
 
     Returns:
     --------
-    dict : Dictionary of index values
+    dict : Dictionary of index values (and errors if requested)
     """
     # Create LineIndexCalculator
     calculator = LineIndexCalculator(
@@ -1385,17 +1638,18 @@ def calculate_lick_indices(
         flux=flux,
         fit_wave=wave,
         fit_flux=flux,
+        error=error,
         continuum_mode="original",
         show_warnings=show_warnings,
     )
 
     # Calculate all indices
-    return calculator.calculate_all_indices()
+    return calculator.calculate_all_indices(return_errors=return_errors)
 
 
-def calculate_D4000(wave, flux):
+def calculate_D4000(wave, flux, error=None, return_error=False):
     """
-    Calculate 4000 Å break strength
+    Calculate 4000 Å break strength with error support
 
     Parameters:
     -----------
@@ -1403,34 +1657,25 @@ def calculate_D4000(wave, flux):
         Wavelength array
     flux : ndarray
         Flux array
+    error : ndarray, optional
+        Error array
+    return_error : bool, optional
+        Whether to return error
 
     Returns:
     --------
     float : D4000 value
+    float : D4000 error (if return_error=True)
     """
-    # Define blue and red regions
-    blue_band = (3750.0, 3950.0)
-    red_band = (4050.0, 4250.0)
-
-    # Find wavelength indices
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", category=RuntimeWarning)
-
-        blue_idx = np.where((wave >= blue_band[0]) & (wave <= blue_band[1]))[0]
-        red_idx = np.where((wave >= red_band[0]) & (wave <= red_band[1]))[0]
-
-        if len(blue_idx) == 0 or len(red_idx) == 0:
-            return np.nan
-
-        # Calculate mean flux in blue and red regions
-        blue_flux = np.nanmean(flux[blue_idx])
-        red_flux = np.nanmean(flux[red_idx])
-
-        # Calculate D4000 as ratio of red to blue flux
-        if blue_flux <= 0 or not np.isfinite(blue_flux) or not np.isfinite(red_flux):
-            return np.nan
-
-        return red_flux / blue_flux
-
-
-
+    # Create temporary calculator
+    calculator = LineIndexCalculator(
+        wave=wave,
+        flux=flux,
+        fit_wave=wave,
+        fit_flux=flux,
+        error=error,
+        continuum_mode="original",
+        show_warnings=False,
+    )
+    
+    return calculator.calculate_D4000(return_error=return_error)

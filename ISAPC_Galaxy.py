@@ -2,6 +2,7 @@
 """
 ISAPC Galaxy Analysis Module
 Automates galaxy analysis with three modes: P2P, VNB, and RDB using main.py
+Enhanced to support error propagation arguments
 """
 
 import argparse
@@ -47,9 +48,10 @@ GALAXIES = [
 
 
 def parse_args():
-    """Parse command line arguments"""
+    """Parse command line arguments including pass-through for error options"""
     parser = argparse.ArgumentParser(
-        description="ISAPC Galaxy Analysis v2.0 - Analyze galaxies using P2P, VNB, and RDB"
+        description="ISAPC Galaxy Analysis v2.0 - Analyze galaxies using P2P, VNB, and RDB",
+        epilog="Any additional arguments will be passed through to main.py (e.g., error propagation options)"
     )
 
     # Input/output arguments
@@ -157,13 +159,23 @@ def parse_args():
     parser.add_argument(
         "-j", "--n-jobs", type=int, default=-1, help="Number of parallel jobs (-1 for all cores)"
     )
-
-    return parser.parse_args()
+    
+    # Parse known args and collect unknown ones for pass-through
+    args, unknown = parser.parse_known_args()
+    
+    # Store unknown arguments to pass to main.py
+    args.pass_through_args = unknown
+    
+    # Log if we have pass-through arguments
+    if unknown:
+        logger.info(f"Additional arguments to pass to main.py: {' '.join(unknown)}")
+    
+    return args
 
 
 def run_main_py(args, galaxy_file, redshift, output_dir=None, has_emission=True):
     """
-    Run main.py with the given arguments
+    Run main.py with the given arguments including pass-through error options
     
     Parameters
     ----------
@@ -247,6 +259,11 @@ def run_main_py(args, galaxy_file, redshift, output_dir=None, has_emission=True)
     
     if args.equal_aspect:
         cmd.append("--equal-aspect")
+    
+    # Add pass-through arguments (error options, etc.)
+    if hasattr(args, 'pass_through_args') and args.pass_through_args:
+        cmd.extend(args.pass_through_args)
+        logger.info(f"Passing through additional arguments: {' '.join(args.pass_through_args)}")
     
     # Run the command
     logger.info(f"Running: {' '.join(cmd)}")
@@ -494,6 +511,8 @@ def process_predefined_galaxies(args):
         base_dir = Path(args.base_dir)
     
     logger.info(f"Processing {len(galaxies)} galaxies from predefined list")
+    if args.pass_through_args:
+        logger.info(f"With error propagation options: {' '.join(args.pass_through_args)}")
     
     # Create output directory
     output_dir = Path(args.output_dir)
@@ -663,6 +682,17 @@ def main():
         if not args.template:
             logger.error("No template file specified and no default found")
             sys.exit(1)
+    
+    # Log if we're using error propagation
+    if args.pass_through_args:
+        error_args = [arg for arg in args.pass_through_args if 'error' in arg]
+        if error_args:
+            logger.info("Error propagation enabled with options:")
+            for i in range(0, len(args.pass_through_args), 2):
+                if i+1 < len(args.pass_through_args):
+                    logger.info(f"  {args.pass_through_args[i]} {args.pass_through_args[i+1]}")
+                else:
+                    logger.info(f"  {args.pass_through_args[i]}")
     
     # Check which mode to use
     if args.use_predefined:
