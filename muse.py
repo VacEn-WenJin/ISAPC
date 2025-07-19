@@ -793,12 +793,20 @@ class MUSECube:
 
             n_wvl, n_spaxel = self._spectra.shape
 
+            # Extract data to avoid pickling issues
+            vel_scale = self._vel_scale
+            lambda_gal = self._lambda_gal.copy()
+            sps_templates = sps.templates.copy()
+            sps_lam_temp = sps.lam_temp.copy()
+            spectra = self._spectra.copy()
+            log_variance = self._log_variance.copy()
+
             def fit_spaxel(idx):
                 """Fit a single spaxel spectrum"""
                 i, j = np.unravel_index(idx, (self._n_y, self._n_x))
-                galaxy_data = self._spectra[:, idx]
+                galaxy_data = spectra[:, idx]
                 # Use the square root of the variance as the noise estimate
-                galaxy_noise = np.sqrt(self._log_variance[:, idx])
+                galaxy_noise = np.sqrt(log_variance[:, idx])
 
                 # Skip low SNR or invalid pixels
                 if (
@@ -825,15 +833,15 @@ class MUSECube:
                     )
                     try:
                         pp = ppxf(
-                            sps.templates,
+                            sps_templates,
                             galaxy_data,
                             galaxy_noise,
-                            self._vel_scale,
+                            vel_scale,
                             mask=tmpl_mask,
                             start=[ppxf_vel_init, ppxf_vel_disp_init],
                             degree=ppxf_deg,
-                            lam=self._lambda_gal,
-                            lam_temp=sps.lam_temp,
+                            lam=lambda_gal,
+                            lam_temp=sps_lam_temp,
                             quiet=True,
                         )
 
@@ -842,10 +850,10 @@ class MUSECube:
                             pp.sol[1] = 10.0  # Set to a reasonable minimum value
 
                         # Calculate polynomial coefficients for later use
-                        poly_coeff = np.polyfit(self._lambda_gal, pp.apoly, ppxf_deg)
+                        poly_coeff = np.polyfit(lambda_gal, pp.apoly, ppxf_deg)
 
                         # Calculate optimal template directly from weights on TEMPLATE wavelength grid
-                        optimal_template = sps.templates @ pp.weights
+                        optimal_template = sps_templates @ pp.weights
 
                         # Calculate best-fit on GALAXY wavelength grid
                         bestfit = pp.bestfit
@@ -877,15 +885,15 @@ class MUSECube:
                         # If fitting fails, try again with a simpler configuration
                         try:
                             pp = ppxf(
-                                sps.templates,
+                                sps_templates,
                                 galaxy_data,
                                 galaxy_noise,
-                                self._vel_scale,
+                                vel_scale,
                                 mask=tmpl_mask,
                                 start=[ppxf_vel_init, ppxf_vel_disp_init],
                                 degree=0,  # Simplify to constant polynomial
-                                lam=self._lambda_gal,
-                                lam_temp=sps.lam_temp,
+                                lam=lambda_gal,
+                                lam_temp=sps_lam_temp,
                                 quiet=True,
                             )
 
@@ -897,7 +905,7 @@ class MUSECube:
                             poly_coeff = np.array([pp.apoly[0]])
 
                             # Calculate optimal template directly from weights on TEMPLATE wavelength grid
-                            optimal_template = sps.templates @ pp.weights
+                            optimal_template = sps_templates @ pp.weights
 
                             # Calculate best-fit on GALAXY wavelength grid
                             bestfit = pp.bestfit
@@ -929,7 +937,7 @@ class MUSECube:
                             return i, j, None
 
             fit_results = ParallelTqdm(
-                n_jobs=n_jobs, desc="Fitting spectra", total_tasks=n_spaxel
+                n_jobs=n_jobs, desc="Fitting spectra", total_tasks=n_spaxel, backend='threading'
             )(delayed(fit_spaxel)(idx) for idx in range(n_spaxel))
 
             for fit_result in fit_results:
@@ -1048,10 +1056,17 @@ class MUSECube:
             bin_velocity_error = np.full(n_bins, np.nan)
             bin_dispersion_error = np.full(n_bins, np.nan)
 
+            # Extract necessary data from SPS object to avoid pickling issues
+            sps_templates = sps.templates.copy()
+            sps_lam_temp = sps.lam_temp.copy()
+            vel_scale = self._vel_scale
+            binned_wavelength = self._binned_wavelength.copy()
+            binned_spectra = self._binned_spectra.copy()
+
             # Define function to process a single bin
             def fit_bin(bin_idx):
                 """Fit a single bin's spectrum"""
-                bin_spectrum = self._binned_spectra[:, bin_idx]
+                bin_spectrum = binned_spectra[:, bin_idx]
 
                 # Create dummy noise (use constant or estimate from spectrum)
                 bin_noise = np.ones_like(bin_spectrum) * np.std(bin_spectrum) * 0.1
@@ -1078,15 +1093,15 @@ class MUSECube:
                     warnings.filterwarnings("ignore", category=RuntimeWarning)
                     try:
                         pp = ppxf(
-                            sps.templates,
+                            sps_templates,
                             bin_spectrum,
                             bin_noise,
-                            self._vel_scale,
+                            vel_scale,
                             mask=tmpl_mask,
                             start=[ppxf_vel_init, ppxf_vel_disp_init],
                             degree=ppxf_deg,
-                            lam=self._binned_wavelength,
-                            lam_temp=sps.lam_temp,
+                            lam=binned_wavelength,
+                            lam_temp=sps_lam_temp,
                             quiet=True,
                         )
 
@@ -1096,11 +1111,11 @@ class MUSECube:
 
                         # Calculate polynomial coefficients for later use
                         poly_coeff = np.polyfit(
-                            self._binned_wavelength, pp.apoly, ppxf_deg
+                            binned_wavelength, pp.apoly, ppxf_deg
                         )
 
                         # Calculate optimal template directly from weights on TEMPLATE wavelength grid
-                        optimal_template = sps.templates @ pp.weights
+                        optimal_template = sps_templates @ pp.weights
 
                         # Calculate best-fit on GALAXY wavelength grid
                         bestfit = pp.bestfit
@@ -1128,15 +1143,15 @@ class MUSECube:
                         # Fall back to simpler fit if first attempt fails
                         try:
                             pp = ppxf(
-                                sps.templates,
+                                sps_templates,
                                 bin_spectrum,
                                 bin_noise,
-                                self._vel_scale,
+                                vel_scale,
                                 mask=tmpl_mask,
                                 start=[ppxf_vel_init, ppxf_vel_disp_init],
                                 degree=0,
-                                lam=self._binned_wavelength,
-                                lam_temp=sps.lam_temp,
+                                lam=binned_wavelength,
+                                lam_temp=sps_lam_temp,
                                 quiet=True,
                             )
 
@@ -1148,7 +1163,7 @@ class MUSECube:
                             poly_coeff = np.array([pp.apoly[0]])
 
                             # Calculate optimal template directly from weights
-                            optimal_template = sps.templates @ pp.weights
+                            optimal_template = sps_templates @ pp.weights
 
                             # Calculate best-fit
                             bestfit = pp.bestfit
@@ -1177,7 +1192,7 @@ class MUSECube:
             from utils.parallel import ParallelTqdm
 
             fit_results = ParallelTqdm(
-                n_jobs=n_jobs, desc="Fitting binned spectra", total_tasks=n_bins
+                n_jobs=n_jobs, desc="Fitting binned spectra", total_tasks=n_bins, backend='threading'
             )(delayed(fit_bin)(bin_idx) for bin_idx in range(n_bins))
 
             # Process results
@@ -1467,17 +1482,27 @@ class MUSECube:
 
             n_wvl, n_spaxel = self._spectra.shape
 
+            # Extract data to avoid pickling issues
+            vel_scale = self._vel_scale
+            lambda_gal = self._lambda_gal.copy()
+            velocity_field = self._velocity_field.copy()
+            optimal_tmpls = self._optimal_tmpls.copy()
+            dispersion_field = self._dispersion_field.copy()
+            wvl_air_angstrom_range = self._wvl_air_angstrom_range
+            spectra = self._spectra.copy()
+            log_variance = self._log_variance.copy()
+
             def fit_spaxel_emission(idx):
                 """Fit emission lines for a single spaxel"""
                 i, j = np.unravel_index(idx, (self._n_y, self._n_x))
-                galaxy_data = self._spectra[:, idx]
-                galaxy_noise = np.sqrt(self._log_variance[:, idx])
+                galaxy_data = spectra[:, idx]
+                galaxy_noise = np.sqrt(log_variance[:, idx])
 
                 # Skip if insufficient data or first-time fitting failed
                 if (
                     np.count_nonzero(galaxy_data) < 50
                     or np.count_nonzero(np.isfinite(galaxy_data)) < 50
-                    or np.isnan(self._velocity_field[i, j])
+                    or np.isnan(velocity_field[i, j])
                 ):
                     return i, j, None
 
@@ -1492,12 +1517,12 @@ class MUSECube:
                     )
 
                 # Get optimal stellar template for this spaxel
-                optimal_template = self._optimal_tmpls[:, i, j]
+                optimal_template = optimal_tmpls[:, i, j]
 
                 # Get initial velocity value
                 vel_init = (
-                    self._velocity_field[i, j]
-                    if not np.isnan(self._velocity_field[i, j])
+                    velocity_field[i, j]
+                    if not np.isnan(velocity_field[i, j])
                     else 0
                 )
 
@@ -1505,9 +1530,9 @@ class MUSECube:
                     # Load SPS for this spaxel
                     sps = sps_lib(
                         filename=template_filename,
-                        velscale=self._vel_scale,
+                        velscale=vel_scale,
                         fwhm_gal=None,
-                        norm_range=self._wvl_air_angstrom_range,
+                        norm_range=wvl_air_angstrom_range,
                     )
 
                     # Combine stellar and gas templates
@@ -1533,7 +1558,7 @@ class MUSECube:
                     start = [
                         [
                             vel_init,
-                            self._dispersion_field[i, j],
+                            dispersion_field[i, j],
                         ],  # Stellar initial kinematics
                         [vel_init, ppxf_sig_init],  # Gas initial kinematics
                     ]
@@ -1567,7 +1592,7 @@ class MUSECube:
                                 stars_gas_templates,
                                 galaxy_data,
                                 galaxy_noise,
-                                self._vel_scale,
+                                vel_scale,
                                 start,
                                 moments=moments,
                                 degree=ppxf_deg,
@@ -1575,7 +1600,7 @@ class MUSECube:
                                 component=component,
                                 gas_component=gas_component,
                                 gas_names=gas_names,
-                                lam=self._lambda_gal,
+                                lam=lambda_gal,
                                 lam_temp=sps.lam_temp,
                                 tied=tied,
                                 bounds=bounds,
@@ -1668,9 +1693,9 @@ class MUSECube:
                         )
                     return i, j, None
 
-            # Run fits in parallel
+            # Run fits in parallel - using threading for CPU-intensive fitting
             fit_results = ParallelTqdm(
-                n_jobs=n_jobs, desc="Fitting emission lines", total_tasks=n_spaxel
+                n_jobs=n_jobs, desc="Fitting emission lines", total_tasks=n_spaxel, backend='threading'
             )(delayed(fit_spaxel_emission)(idx) for idx in range(n_spaxel))
 
             # Process results
@@ -1894,9 +1919,12 @@ class MUSECube:
             FWHM_gal = getattr(self, "_FWHM_gal", 1.0)
             redshift = getattr(self, "_redshift", 0.0)
 
+            # Extract SPS data to avoid pickling issues
+            sps_ln_lam_temp = self._sps.ln_lam_temp.copy()
+
             # Generate gas templates
             gas_templates, gas_names, line_wave = emission_lines(
-                self._sps.ln_lam_temp, lam_range_gal, FWHM_gal / (1 + redshift)
+                sps_ln_lam_temp, lam_range_gal, FWHM_gal / (1 + redshift)
             )
 
             # Set up gas components
@@ -1938,17 +1966,23 @@ class MUSECube:
                 self._emission_vel[base_name] = np.full((self._n_y, self._n_x), np.nan)
                 self._emission_sig[base_name] = np.full((self._n_y, self._n_x), np.nan)
 
+            # Extract data to avoid pickling issues
+            bin_optimal_tmpls = self._bin_optimal_tmpls.copy()
+            bin_velocity = self._bin_velocity.copy()
+            binned_wavelength = self._binned_wavelength.copy()
+            binned_spectra = self._binned_spectra.copy()
+            vel_scale = self._vel_scale
+            sps_lam_temp = self._sps.lam_temp.copy()
+
             # Define function to process a single bin
             def fit_bin_emission(bin_idx):
                 """Fit emission lines for a single bin"""
                 # Skip bins with no valid velocity measurement
-                if not hasattr(self, "_bin_velocity") or np.isnan(
-                    self._bin_velocity[bin_idx]
-                ):
+                if np.isnan(bin_velocity[bin_idx]):
                     return bin_idx, None
 
                 # Get bin data
-                bin_spectrum = self._binned_spectra[:, bin_idx]
+                bin_spectrum = binned_spectra[:, bin_idx]
 
                 # Create noise estimate from the spectrum
                 # Using variance = median(abs(spectrum - median(spectrum)))^2
@@ -1987,14 +2021,10 @@ class MUSECube:
                 bin_noise = np.nan_to_num(bin_noise, nan=1.0, posinf=1.0, neginf=1.0)
 
                 # Get optimal stellar template for this bin
-                optimal_template = self._bin_optimal_tmpls[:, bin_idx]
+                optimal_template = bin_optimal_tmpls[:, bin_idx]
 
                 # Get initial velocity
-                vel_init = (
-                    self._bin_velocity[bin_idx]
-                    if hasattr(self, "_bin_velocity")
-                    else ppxf_vel_init
-                )
+                vel_init = bin_velocity[bin_idx]
 
                 try:
                     # Combine stellar and gas templates
@@ -2037,7 +2067,7 @@ class MUSECube:
                             stars_gas_templates,
                             bin_spectrum,
                             bin_noise,
-                            self._vel_scale,
+                            vel_scale,
                             start,
                             moments=moments,
                             degree=ppxf_deg,
@@ -2045,8 +2075,8 @@ class MUSECube:
                             component=component,
                             gas_component=gas_component,
                             gas_names=gas_names,
-                            lam=self._binned_wavelength,
-                            lam_temp=self._sps.lam_temp,
+                            lam=binned_wavelength,
+                            lam_temp=sps_lam_temp,
                             bounds=bounds,
                             quiet=True,
                         )
@@ -2090,7 +2120,7 @@ class MUSECube:
                         ):
                             # Fit polynomial coefficients (use same degree as in ppxf)
                             poly_coeff = np.polyfit(
-                                self._binned_wavelength, pp.apoly, ppxf_deg
+                                binned_wavelength, pp.apoly, ppxf_deg
                             )
 
                             # Get the base stellar template with new weights
@@ -2100,7 +2130,7 @@ class MUSECube:
                             )
 
                             # Add the polynomial evaluated on the template wavelength grid
-                            template_poly = np.poly1d(poly_coeff)(self._sps.lam_temp)
+                            template_poly = np.poly1d(poly_coeff)(sps_lam_temp)
                             updated_optimal_template += template_poly
                     except Exception as e:
                         logger.debug(
@@ -2140,11 +2170,11 @@ class MUSECube:
                     logger.debug(f"Error fitting emission lines for bin {bin_idx}: {e}")
                     return bin_idx, None
 
-            # Process bins in parallel
+            # Process bins in parallel - using threading for CPU-intensive fitting
             from utils.parallel import ParallelTqdm
 
             fit_results = ParallelTqdm(
-                n_jobs=n_jobs, desc="Fitting emission lines", total_tasks=n_bins
+                n_jobs=n_jobs, desc="Fitting emission lines", total_tasks=n_bins, backend='threading'
             )(delayed(fit_bin_emission)(bin_idx) for bin_idx in range(n_bins))
 
             # Process results
@@ -2393,31 +2423,40 @@ class MUSECube:
             
             n_wvl, n_spaxel = self._spectra.shape
             
+            # Extract data to avoid pickling issues
+            spectra = self._spectra.copy()
+            velocity_field = self._velocity_field.copy()
+            optimal_tmpls = self._optimal_tmpls.copy()
+            gas_bestfit_field = self._gas_bestfit_field.copy() if has_emission_lines else None
+            emission_vel = {k: v.copy() for k, v in self._emission_vel.items()} if hasattr(self, '_emission_vel') else {}
+            lambda_gal = self._lambda_gal.copy()
+            sps_lam_temp = self._sps.lam_temp.copy() if hasattr(self, '_sps') else None
+            
             def calculate_index(idx):
                 """Calculate spectral indices for a single spaxel with multiple methods"""
                 i, j = np.unravel_index(idx, (self._n_y, self._n_x))
                 
                 # Skip if first-time fitting failed
-                if np.isnan(self._velocity_field[i, j]):
+                if np.isnan(velocity_field[i, j]):
                     return i, j, {method: {index_name: np.nan for index_name in indices_list} for method in methods}
                     
                 # Get all data at once
-                observed_spectrum = self._spectra[:, idx]
-                optimal_template = self._optimal_tmpls[:, i, j]
-                stellar_velocity = self._velocity_field[i, j]
+                observed_spectrum = spectra[:, idx]
+                optimal_template = optimal_tmpls[:, i, j]
+                stellar_velocity = velocity_field[i, j]
                 
                 # Get gas velocity if available
                 gas_velocity = None
-                if has_emission_lines and hasattr(self, "_emission_vel"):
-                    for line_name, vel_map in self._emission_vel.items():
+                if has_emission_lines and emission_vel:
+                    for line_name, vel_map in emission_vel.items():
                         if np.isfinite(vel_map[i, j]):
                             gas_velocity = vel_map[i, j]
                             break
                             
                 # Get gas model if available
                 gas_model = None
-                if has_emission_lines:
-                    gas_model = self._gas_bestfit_field[:, i, j]
+                if has_emission_lines and gas_bestfit_field is not None:
+                    gas_model = gas_bestfit_field[:, i, j]
                     if not np.any(np.isfinite(gas_model)) or np.all(gas_model == 0):
                         gas_model = None
                         
@@ -2428,11 +2467,11 @@ class MUSECube:
                 for method in methods:
                     try:
                         calculator = LineIndexCalculator(
-                            wave=self._lambda_gal,
+                            wave=lambda_gal,
                             flux=observed_spectrum,
-                            fit_wave=self._sps.lam_temp,
+                            fit_wave=sps_lam_temp if sps_lam_temp is not None else lambda_gal,
                             fit_flux=optimal_template,
-                            em_wave=self._lambda_gal if gas_model is not None else None,
+                            em_wave=lambda_gal if gas_model is not None else None,
                             em_flux_list=gas_model,
                             velocity_correction=stellar_velocity,
                             gas_velocity_correction=gas_velocity,
@@ -2561,72 +2600,70 @@ class MUSECube:
                 and np.any(np.isfinite(self._bin_gas_bestfit))
             )
 
+            # Extract data to avoid pickling issues
+            binned_spectra = self._binned_spectra.copy()
+            bin_velocity = self._bin_velocity.copy()
+            bin_optimal_tmpls = self._bin_optimal_tmpls.copy() if hasattr(self, '_bin_optimal_tmpls') and self._bin_optimal_tmpls is not None else None
+            bin_weights = self._bin_weights.copy() if hasattr(self, '_bin_weights') else None
+            sps_templates = self._sps.templates.copy() if hasattr(self, '_sps') and hasattr(self._sps, 'templates') else None
+            sps_lam_temp = self._sps.lam_temp.copy() if hasattr(self, '_sps') and hasattr(self._sps, 'lam_temp') else None
+            bin_poly_coeffs = self._bin_poly_coeffs.copy() if hasattr(self, '_bin_poly_coeffs') else None
+            bin_emission_vel = self._bin_emission_vel.copy() if hasattr(self, '_bin_emission_vel') else {}
+            bin_gas_bestfit = self._bin_gas_bestfit.copy() if has_emission_lines else None
+            binned_wavelength = self._binned_wavelength.copy()
+            continuum_mode = getattr(self, '_continuum_mode', 'auto')
+            continuum_mode = getattr(self, '_continuum_mode', 'auto')
+
             # Define function to calculate indices for a bin
             def process_bin(bin_idx):
                 """Calculate spectral indices for a single bin, using the same logic as p2p"""
                 # Skip bins without fits
-                if not hasattr(self, "_bin_velocity") or np.isnan(
-                    self._bin_velocity[bin_idx]
-                ):
+                if np.isnan(bin_velocity[bin_idx]):
                     return bin_idx, {name: np.nan for name in indices_list}
 
                 try:
                     # Get all data at once to minimize Python-level operations
-                    observed_spectrum = self._binned_spectra[:, bin_idx]
+                    observed_spectrum = binned_spectra[:, bin_idx]
 
                     # Get optimal template - this should now include polynomial components
                     # if emission line fitting has been done
-                    if (
-                        hasattr(self, "_bin_optimal_tmpls")
-                        and self._bin_optimal_tmpls is not None
-                    ):
-                        optimal_template = self._bin_optimal_tmpls[:, bin_idx]
+                    if bin_optimal_tmpls is not None:
+                        optimal_template = bin_optimal_tmpls[:, bin_idx]
                     else:
                         # Fallback if no optimal template available
                         optimal_template = None
 
                         # Try to compute it from weights if available (initial fitting)
-                        if (
-                            hasattr(self, "_bin_weights")
-                            and len(self._bin_weights) > bin_idx
-                        ):
-                            weights = self._bin_weights[bin_idx]
-                            if hasattr(self, "_sps") and hasattr(
-                                self._sps, "templates"
-                            ):
+                        if bin_weights is not None and len(bin_weights) > bin_idx:
+                            weights = bin_weights[bin_idx]
+                            if sps_templates is not None:
                                 # Basic optimal template from weights
-                                optimal_template = np.dot(
-                                    weights, self._sps.templates.T
-                                )
+                                optimal_template = np.dot(weights, sps_templates.T)
 
                                 # Add polynomial if available
-                                if hasattr(self, "_bin_poly_coeffs"):
-                                    for b_idx, poly_coeff in self._bin_poly_coeffs:
+                                if bin_poly_coeffs is not None:
+                                    for b_idx, poly_coeff in bin_poly_coeffs:
                                         if b_idx == bin_idx:
                                             # Add polynomial evaluated on template wavelength grid
-                                            template_poly = np.poly1d(poly_coeff)(
-                                                self._sps.lam_temp
-                                            )
+                                            template_poly = np.poly1d(poly_coeff)(sps_lam_temp)
                                             optimal_template += template_poly
                                             break
 
-                    stellar_velocity = self._bin_velocity[bin_idx]
+                    stellar_velocity = bin_velocity[bin_idx]
 
                     # Get gas velocity if available - this is the key change
                     gas_velocity = None
-                    if hasattr(self, "_bin_emission_vel"):
+                    if bin_emission_vel:
                         # Try to find gas velocity from available emission lines
-                        for line_name, vel_array in self._bin_emission_vel.items():
-                            if bin_idx < len(vel_array) and np.isfinite(
-                                vel_array[bin_idx]
-                            ):
+                        for line_name, vel_array in bin_emission_vel.items():
+                            if bin_idx < len(vel_array) and np.isfinite(vel_array[bin_idx]):
                                 gas_velocity = vel_array[bin_idx]
                                 break
 
                     # Get gas model if available - only once
                     gas_model = None
-                    if has_emission_lines:
-                        gas_model = self._bin_gas_bestfit[:, bin_idx]
+                    if bin_gas_bestfit is not None:
+                        gas_model = bin_gas_bestfit[:, bin_idx]
                         # Verify gas model has valid values
                         if not np.any(np.isfinite(gas_model)) or np.all(gas_model == 0):
                             gas_model = None
@@ -2643,20 +2680,13 @@ class MUSECube:
                         )
 
                         try:
-                            # Set continuum mode - default to 'auto'
-                            continuum_mode = getattr(self, '_continuum_mode', 'auto')
-                            
                             # Use exactly the same parameters as in p2p method
                             calculator = LineIndexCalculator(
-                                wave=self._binned_wavelength,  # Observation wavelength grid
+                                wave=binned_wavelength,  # Observation wavelength grid
                                 flux=observed_spectrum,  # Observed spectrum
-                                fit_wave=self._sps.lam_temp
-                                if hasattr(self, "_sps")
-                                else self._binned_wavelength,  # Template wavelength grid
+                                fit_wave=sps_lam_temp if sps_lam_temp is not None else binned_wavelength,  # Template wavelength grid
                                 fit_flux=optimal_template,  # Template spectrum (now with polynomial)
-                                em_wave=self._binned_wavelength
-                                if gas_model is not None
-                                else None,  # Emission line wavelength grid
+                                em_wave=binned_wavelength if gas_model is not None else None,  # Emission line wavelength grid
                                 em_flux_list=gas_model,  # Emission line spectrum
                                 velocity_correction=stellar_velocity,  # Stellar velocity correction
                                 gas_velocity_correction=gas_velocity,  # Gas velocity correction - key change
@@ -2711,11 +2741,11 @@ class MUSECube:
                         )
                     return bin_idx, {name: np.nan for name in indices_list}
 
-            # Process bins in parallel
+            # Process bins in parallel - using threading for I/O-bound spectral indices
             from utils.parallel import ParallelTqdm
 
             results = ParallelTqdm(
-                n_jobs=n_jobs, desc="Calculating spectral indices", total_tasks=n_bins
+                n_jobs=n_jobs, desc="Calculating spectral indices", total_tasks=n_bins, backend='threading'
             )(delayed(process_bin)(bin_idx) for bin_idx in range(n_bins))
 
             # Process results
@@ -2857,90 +2887,125 @@ class MUSECube:
                 
             n_wvl, n_spaxel = self._spectra.shape
             
+            # Extract data to avoid pickling issues
+            spectra = self._spectra.copy()
+            velocity_field = self._velocity_field.copy()
+            optimal_tmpls = self._optimal_tmpls.copy()
+            error = self._error.copy() if self._error is not None else None
+            bestfit_field = self._bestfit_field.copy() if hasattr(self, '_bestfit_field') and self._bestfit_field is not None else None
+            lambda_gal = self._lambda_gal.copy()
+            sps_lam_temp = self._sps.lam_temp.copy() if hasattr(self, '_sps') and hasattr(self._sps, 'lam_temp') else None
+            
             def calculate_index_with_errors(idx):
                 """Calculate spectral indices with error propagation for a single spaxel"""
                 i, j = np.unravel_index(idx, (self._n_y, self._n_x))
                 
                 # Skip if first-time fitting failed
-                if np.isnan(self._velocity_field[i, j]):
+                if np.isnan(velocity_field[i, j]):
                     return i, j, {index_name: {'value': np.nan, 'error': np.nan} for index_name in indices_list}
                     
                 # Get spectrum and template
-                observed_spectrum = self._spectra[:, idx]
-                optimal_template = self._optimal_tmpls[:, i, j]
-                stellar_velocity = self._velocity_field[i, j]
+                observed_spectrum = spectra[:, idx]
+                optimal_template = optimal_tmpls[:, i, j]
+                stellar_velocity = velocity_field[i, j]
                 vel_error = velocity_errors[idx]
                 
                 # Get spectral errors if available
-                if self._error is not None:
-                    spectrum_error = self._error[:, idx]
+                if error is not None:
+                    spectrum_error = error[:, idx]
                 else:
                     # Estimate from residuals if available
-                    if hasattr(self, '_bestfit_field') and self._bestfit_field is not None:
-                        residuals = observed_spectrum - self._bestfit_field[:, i, j]
+                    if bestfit_field is not None:
+                        residuals = observed_spectrum - bestfit_field[:, i, j]
                         spectrum_error = np.full_like(observed_spectrum, np.std(residuals))
                     else:
                         spectrum_error = np.full_like(observed_spectrum, np.nanstd(observed_spectrum) * 0.1)
                 
-                # Monte Carlo error propagation
-                mc_results = {index_name: [] for index_name in indices_list}
-                
-                for _ in range(n_monte_carlo):
-                    # Perturb spectrum and velocity
-                    mc_spectrum = observed_spectrum + spectrum_error * np.random.randn(len(observed_spectrum))
-                    mc_velocity = stellar_velocity + vel_error * np.random.randn()
-                    
-                    try:
-                        # Create calculator with perturbed values
-                        calculator = LineIndexCalculator(
-                            wave=self._lambda_gal,
-                            flux=mc_spectrum,
-                            fit_wave=self._sps.lam_temp,
-                            fit_flux=optimal_template,
-                            velocity_correction=mc_velocity,
-                            continuum_mode='auto',
-                            show_warnings=False
-                        )
-                        
-                        # Calculate indices
-                        for index_name in indices_list:
-                            try:
-                                value = calculator.calculate_index(index_name)
-                                if np.isfinite(value):
-                                    mc_results[index_name].append(value)
-                            except:
-                                pass
-                                
-                    except:
-                        pass
-                
-                # Calculate statistics
+                # Mathematical error propagation (faster than Monte Carlo)
                 results_dict = {}
-                for index_name in indices_list:
-                    if len(mc_results[index_name]) > 10:
-                        # Use original calculator for central value
+                
+                try:
+                    # Calculate with nominal data
+                    calculator = LineIndexCalculator(
+                        wave=lambda_gal,
+                        flux=observed_spectrum,
+                        fit_wave=sps_lam_temp if sps_lam_temp is not None else lambda_gal,
+                        fit_flux=optimal_template,
+                        velocity_correction=stellar_velocity,
+                        continuum_mode='auto',
+                        show_warnings=False
+                    )
+                    
+                    for index_name in indices_list:
                         try:
-                            calculator = LineIndexCalculator(
-                                wave=self._lambda_gal,
-                                flux=observed_spectrum,
-                                fit_wave=self._sps.lam_temp,
-                                fit_flux=optimal_template,
-                                velocity_correction=stellar_velocity,
-                                continuum_mode='auto',
-                                show_warnings=False
-                            )
+                            # Calculate central value
                             central_value = calculator.calculate_index(index_name)
-                        except:
-                            central_value = np.nanmedian(mc_results[index_name])
                             
-                        error_value = np.std(mc_results[index_name])
-                        results_dict[index_name] = {'value': central_value, 'error': error_value}
-                    else:
-                        results_dict[index_name] = {'value': np.nan, 'error': np.nan}
+                            if np.isfinite(central_value):
+                                # Calculate error using finite differences (more stable than MC)
+                                error_estimate = 0.0
+                                
+                                # Error from spectrum uncertainty
+                                if np.any(np.isfinite(spectrum_error)) and np.any(spectrum_error > 0):
+                                    try:
+                                        # Use perturbation method for flux errors
+                                        flux_plus = observed_spectrum + spectrum_error
+                                        calc_plus = LineIndexCalculator(
+                                            wave=lambda_gal,
+                                            flux=flux_plus,
+                                            fit_wave=sps_lam_temp if sps_lam_temp is not None else lambda_gal,
+                                            fit_flux=optimal_template,
+                                            velocity_correction=stellar_velocity,
+                                            continuum_mode='auto',
+                                            show_warnings=False
+                                        )
+                                        idx_plus = calc_plus.calculate_index(index_name)
+                                        
+                                        flux_minus = observed_spectrum - spectrum_error
+                                        calc_minus = LineIndexCalculator(
+                                            wave=lambda_gal,
+                                            flux=flux_minus,
+                                            fit_wave=sps_lam_temp if sps_lam_temp is not None else lambda_gal,
+                                            fit_flux=optimal_template,
+                                            velocity_correction=stellar_velocity,
+                                            continuum_mode='auto',
+                                            show_warnings=False
+                                        )
+                                        idx_minus = calc_minus.calculate_index(index_name)
+                                        
+                                        if np.isfinite(idx_plus) and np.isfinite(idx_minus):
+                                            flux_error = abs(idx_plus - idx_minus) / 2.0
+                                            error_estimate += flux_error**2
+                                    except:
+                                        # Fallback: estimate from S/N
+                                        mean_snr = np.nanmean(observed_spectrum / spectrum_error)
+                                        flux_error = abs(central_value) / mean_snr if mean_snr > 0 else abs(central_value) * 0.1
+                                        error_estimate += flux_error**2
+                                
+                                # Error from velocity uncertainty (analytical approximation)
+                                if vel_error > 0:
+                                    # Approximate velocity sensitivity: dIndex/dVel ~ Index * (dLambda/Lambda) / c
+                                    vel_error_contribution = abs(central_value) * (vel_error / 3e5)  # vel_error in km/s
+                                    error_estimate += vel_error_contribution**2
+                                
+                                # Total error
+                                total_error = np.sqrt(error_estimate) if error_estimate > 0 else abs(central_value) * 0.05
+                                
+                                results_dict[index_name] = {'value': central_value, 'error': total_error}
+                            else:
+                                results_dict[index_name] = {'value': np.nan, 'error': np.nan}
+                                
+                        except Exception as e:
+                            logger.debug(f"Error calculating index {index_name} at ({i},{j}): {e}")
+                            results_dict[index_name] = {'value': np.nan, 'error': np.nan}
+                            
+                except Exception as e:
+                    logger.debug(f"Error creating calculator at ({i},{j}): {e}")
+                    results_dict = {index_name: {'value': np.nan, 'error': np.nan} for index_name in indices_list}
                         
                 return i, j, results_dict
                 
-            # Calculate indices in parallel
+            # Calculate indices in parallel - using threading for I/O-bound spectral indices
             index_results = ParallelTqdm(
                 n_jobs=n_jobs,
                 desc="Calculating spectral indices with errors",

@@ -111,7 +111,7 @@ class RadialBinnedData(BinnedData):
         """Save binned data to file with error support"""
         save_dict = {
             'bin_num': self.bin_num,
-            'bin_indices': self.bin_indices,
+            'bin_indices': np.array(self.bin_indices, dtype=object),  # Force object dtype for inhomogeneous arrays
             'spectra': self.spectra,
             'wavelength': self.wavelength,
             'metadata': self.metadata,
@@ -182,7 +182,7 @@ class VoronoiBinnedData(BinnedData):
         """Save binned data to file with error support"""
         save_dict = {
             'bin_num': self.bin_num,
-            'bin_indices': self.bin_indices,
+            'bin_indices': np.array(self.bin_indices, dtype=object),  # Force object dtype for inhomogeneous arrays
             'spectra': self.spectra,
             'wavelength': self.wavelength,
             'metadata': self.metadata

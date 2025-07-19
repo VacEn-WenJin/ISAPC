@@ -112,20 +112,20 @@ def combine_spectra_with_errors(spectra, wavelength, bin_indices, velocity_field
                     
                     # Handle edge treatment
                     if edge_treatment == "extend":
-                        # Extend edge values
+                        # Extend edge values for both flux and wavelength
                         flux_extended = np.concatenate([
                             [bin_spectra[0, j]] * 10,
                             bin_spectra[:, j],
                             [bin_spectra[-1, j]] * 10
                         ])
                         wave_extended = np.concatenate([
-                            wavelength[0] - np.arange(10, 0, -1) * (wavelength[1] - wavelength[0]),
-                            wavelength,
-                            wavelength[-1] + np.arange(1, 11) * (wavelength[-1] - wavelength[-2])
+                            wave_shifted[0] - np.arange(10, 0, -1) * (wave_shifted[1] - wave_shifted[0]),
+                            wave_shifted,
+                            wave_shifted[-1] + np.arange(1, 11) * (wave_shifted[-1] - wave_shifted[-2])
                         ])
                         
                         # Interpolate back to original grid
-                        bin_spectra[:, j] = np.interp(wavelength, wave_shifted, flux_extended)
+                        bin_spectra[:, j] = np.interp(wavelength, wave_extended, flux_extended)
                         
                         # Also interpolate errors if available
                         if bin_errors_subset is not None:
@@ -134,7 +134,7 @@ def combine_spectra_with_errors(spectra, wavelength, bin_indices, velocity_field
                                 bin_errors_subset[:, j],
                                 [bin_errors_subset[-1, j]] * 10
                             ])
-                            bin_errors_subset[:, j] = np.interp(wavelength, wave_shifted, error_extended)
+                            bin_errors_subset[:, j] = np.interp(wavelength, wave_extended, error_extended)
                     
                     elif edge_treatment == "truncate":
                         # Simple interpolation with NaN for out-of-bounds
@@ -1600,8 +1600,22 @@ def create_vnb_plots(cube, vnb_results, galaxy_name, plots_dir, args):
                 # Process each spectral index
                 for idx_name, idx_values in bin_indices.items():
                     try:
-                        # Make sure we have a proper numpy array
-                        idx_array = np.asarray(idx_values, dtype=float)
+                        # Handle different data formats
+                        if isinstance(idx_values, dict):
+                            # Skip nested dictionaries like bin_indices and pixel_indices
+                            if idx_name in ['bin_indices', 'pixel_indices']:
+                                logger.warning(f"Skipping nested dictionary for index {idx_name}")
+                                continue
+                            # Extract value if it's a dict with 'value' key
+                            if 'value' in idx_values:
+                                idx_array = np.asarray(idx_values['value'], dtype=float)
+                            else:
+                                # Skip if dictionary doesn't have expected structure
+                                logger.warning(f"Skipping index {idx_name} - unexpected dictionary structure")
+                                continue
+                        else:
+                            # Make sure we have a proper numpy array
+                            idx_array = np.asarray(idx_values, dtype=float)
                         
                         if np.any(np.isfinite(idx_array)):
                             # Create map with physical scaling

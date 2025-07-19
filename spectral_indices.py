@@ -21,8 +21,7 @@ from utils.error_propagation import (
     propagate_errors_spectral_index, 
     MCMCErrorEstimator,
     validate_errors_rms,
-    bootstrap_error_estimate,
-    error_weighted_mean
+    bootstrap_error_estimation
 )
 
 logging.basicConfig(
@@ -208,7 +207,34 @@ class LineIndexCalculator:
             self.fit_flux[~np.isfinite(self.fit_flux)] = 0
             self._warn("Non-finite values in fitted flux array replaced with zeros")
 
-        # Handle error array
+        # Store residuals if we can calculate them (BEFORE error estimation)
+        self.residuals = None
+        try:
+            if len(self.wave) == len(self.fit_wave):
+                # Check if wavelength grids are similar (allowing small differences)
+                if np.allclose(self.wave, self.fit_wave, rtol=1e-6):
+                    self.residuals = self.flux - self.fit_flux
+                else:
+                    # Interpolate fit_flux to original wavelength grid
+                    from scipy.interpolate import interp1d
+                    interp_func = interp1d(self.fit_wave, self.fit_flux, 
+                                         kind='linear', bounds_error=False, 
+                                         fill_value='extrapolate')
+                    fit_flux_interp = interp_func(self.wave)
+                    self.residuals = self.flux - fit_flux_interp
+            elif hasattr(self, 'fit_flux') and self.fit_flux is not None:
+                # Try to interpolate even if arrays have different lengths
+                from scipy.interpolate import interp1d
+                interp_func = interp1d(self.fit_wave, self.fit_flux, 
+                                     kind='linear', bounds_error=False, 
+                                     fill_value='extrapolate')
+                fit_flux_interp = interp_func(self.wave)
+                self.residuals = self.flux - fit_flux_interp
+        except Exception as e:
+            self._warn(f"Could not calculate residuals: {e}")
+            self.residuals = None
+
+        # Handle error array (AFTER residuals calculation)
         if error is not None:
             self.error = np.array(error, copy=True)
             # Validate errors
@@ -218,11 +244,6 @@ class LineIndexCalculator:
         else:
             # Estimate errors if not provided
             self.error = self._estimate_errors()
-
-        # Store residuals if we can calculate them
-        self.residuals = None
-        if len(self.wave) == len(self.fit_wave) and np.allclose(self.wave, self.fit_wave):
-            self.residuals = self.flux - self.fit_flux
 
         # Process emission lines - now with separate gas velocity
         if em_wave is not None and em_flux_list is not None:
@@ -271,7 +292,7 @@ class LineIndexCalculator:
         array-like : Estimated error array
         """
         # Method 1: Use residuals if available
-        if self.residuals is not None:
+        if hasattr(self, 'residuals') and self.residuals is not None:
             residual_rms = np.sqrt(np.nanmean(self.residuals**2))
             if residual_rms > 0 and np.isfinite(residual_rms):
                 return np.full_like(self.flux, residual_rms)

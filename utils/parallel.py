@@ -47,6 +47,7 @@ class ParallelTqdm(Parallel):
         desc: str | None = None,
         disable_progressbar: bool = False,
         show_joblib_header: bool = False,
+        backend: str | None = None,  # Add backend parameter
         **kwargs,
     ):
         if "verbose" in kwargs:
@@ -54,6 +55,9 @@ class ParallelTqdm(Parallel):
                 "verbose is not supported. "
                 "Use show_progressbar and show_joblib_header instead."
             )
+        # Set backend if specified
+        if backend is not None:
+            kwargs['backend'] = backend
         super().__init__(verbose=(1 if show_joblib_header else 0), **kwargs)
         self.total_tasks = total_tasks
         self.desc = desc
@@ -93,6 +97,10 @@ class ParallelTqdm(Parallel):
 
     def print_progress(self):
         """Display the process of the parallel execution using tqdm"""
+        # Check if progress bar exists before updating
+        if self.progress_bar is None:
+            return
+            
         # if we finish dispatching, find total_tasks from the number of remaining items
         if self.total_tasks is None and self._original_iterator is None:
             self.total_tasks = self.n_dispatched_tasks

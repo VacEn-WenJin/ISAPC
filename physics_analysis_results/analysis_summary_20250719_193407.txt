@@ -1,0 +1,26 @@
+Complete Physics Analysis Summary
+Generated: 2025-07-19 19:34:07.579637
+============================================================
+
+Total galaxies analyzed: 2
+Successful analyses: 1
+Success rate: 50.0%
+
+Overall Statistics:
+  Total pixels: 2,001
+  Quality pixels: 900 (45.0%)
+  Alpha/Fe calculated: 369 (41.0% of quality)
+
+Alpha/Fe Abundance Statistics:
+  Mean [α/Fe]: 0.220 ± 0.000
+  Range: 0.220 to 0.220
+
+Gradient Analysis:
+  Galaxies with gradients: 1
+  Significant gradients: 0
+  Mean slope: 0.0025 ± 0.0000 dex/(R/Re)
+
+Individual Galaxy Results:
+------------------------------------------------------------
+VCC0308     : FAILED - No pixels pass quality filters
+VCC1588     : [α/Fe]=0.220 (369 pix), V/σ=0.90, grad=0.0025 (not_significant)

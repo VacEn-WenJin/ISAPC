@@ -1,0 +1,30 @@
+ISAPC Pipeline Summary Report
+==================================================
+
+Total galaxies processed: 1
+Successful analyses: 1
+Failed analyses: 0
+Success rate: 100.0%
+
+Successful Galaxies:
+--------------------
+  VCC0308: 825.3 seconds
+
+Configuration Used:
+------------------
+  template_file: data/templates/spectra_emiles_9.0.npz
+  output_dir: output
+  data_dir: data/MUSE
+  n_workers: 4
+  modes: ['P2P', 'VNB', 'RDB']
+  target_snr: 20.0
+  min_snr: 1.0
+  n_rings: 6
+  n_jobs: 4
+  vel_init: 0.0
+  sigma_init: 50.0
+  poly_degree: 3
+  save_error_maps: True
+  auto_reuse: True
+  cvt: True
+  physical_radius: True

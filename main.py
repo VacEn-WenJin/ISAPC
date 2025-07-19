@@ -328,7 +328,7 @@ def configure_error_propagation(args):
         Parsed command-line arguments
     """
     # Import error configuration module
-    from utils.error_propagation import configure_error_settings
+    # from utils.error_propagation import configure_error_settings
     
     # Create error configuration dictionary
     error_config = {
@@ -363,7 +363,7 @@ def configure_error_propagation(args):
     }
     
     # Configure global error settings
-    configure_error_settings(error_config, sp_error_config, idx_error_config)
+    # configure_error_settings(error_config, sp_error_config, idx_error_config)
     
     # Store configurations in args for passing to analysis functions
     args.error_config = error_config
@@ -435,10 +435,7 @@ def main():
         cube = MUSECube(
             filename=args.filename, 
             redshift=args.redshift, 
-            use_good_wavelength=True,
-            load_errors=True,  # Ensure errors are loaded
-            error_mode=args.error_mode,
-            error_config=args.error_config
+            use_good_wavelength=True
         )
         logger.info("Data cube loaded successfully")
         

@@ -19,9 +19,9 @@ from stellar_population import WeightParser
 from utils.io import save_standardized_results
 from utils.error_propagation import (
     bootstrap_error_estimation,
-    monte_carlo_error_propagation,
-    propagate_errors_multiplication,
-    propagate_errors_division
+    propagate_errors_spectral_index,
+    MCMCErrorEstimator,
+    validate_errors_rms
 )
 
 logger = logging.getLogger(__name__)
@@ -259,11 +259,21 @@ def run_p2p_analysis(args, cube, Pmode=False):
         
         # Check if cube has calculate_spectral_indices_with_errors method
         if hasattr(cube, 'calculate_spectral_indices_with_errors'):
-            indices_result, indices_errors = cube.calculate_spectral_indices_with_errors(
+            indices_result = cube.calculate_spectral_indices_with_errors(
                 indices_list=indices_list,
                 n_jobs=args.n_jobs,
-                error_array=error_array
+                verbose=args.verbose if hasattr(args, 'verbose') else False,
+                n_monte_carlo=1000
             )
+            # Extract errors from the result dictionary
+            indices_errors = {}
+            if indices_result:
+                for index_name in indices_result:
+                    if 'errors' in indices_result[index_name]:
+                        indices_errors[index_name] = indices_result[index_name]['errors']
+                    # Replace the values with just the values array
+                    if 'values' in indices_result[index_name]:
+                        indices_result[index_name] = indices_result[index_name]['values']
         else:
             # Fallback to standard calculation
             indices_result = cube.calculate_spectral_indices(
@@ -531,22 +541,53 @@ def run_p2p_analysis(args, cube, Pmode=False):
                     try:
                         pixel_weights = weights[:, y, x]
                         
-                        # Get pixel-specific weight errors if available
+                        # Calculate weight errors mathematically from fitting residuals
                         weight_errors = None
-                        if hasattr(cube, '_template_weight_errors'):
-                            weight_errors = cube._template_weight_errors[:, y, x]
+                        if hasattr(cube, '_weight_fit_results') and cube._weight_fit_results is not None:
+                            # Get residuals from fitting process
+                            fitting_result = cube._weight_fit_results.get(f"{x}_{y}")
+                            if fitting_result and hasattr(fitting_result, 'weights_errors'):
+                                weight_errors = fitting_result.weights_errors
                         
-                        # Get pixel-specific covariance if available
+                        # If no direct weight errors, estimate from chi2 and covariance
+                        if weight_errors is None:
+                            try:
+                                # Get fitting residuals for this pixel
+                                if hasattr(cube, '_spectra') and hasattr(cube, '_bestfit_field'):
+                                    spectrum = cube._spectra[:, y * cube._n_x + x]
+                                    bestfit = cube._bestfit_field[:, y, x]
+                                    residuals = spectrum - bestfit
+                                    
+                                    # Estimate errors based on residuals and weight magnitudes
+                                    chi2_red = np.nanvar(residuals)
+                                    weight_scale = np.sqrt(chi2_red) if chi2_red > 0 else 0.01
+                                    
+                                    # Simple error estimate: scale with weight magnitude
+                                    weight_errors = np.maximum(
+                                        np.abs(pixel_weights) * weight_scale,
+                                        np.full_like(pixel_weights, 0.001)  # Minimum error floor
+                                    )
+                                else:
+                                    # Conservative fallback: 10% of weight magnitude
+                                    weight_errors = np.maximum(
+                                        np.abs(pixel_weights) * 0.1,
+                                        np.full_like(pixel_weights, 0.001)
+                                    )
+                            except:
+                                # Absolute fallback
+                                weight_errors = np.full_like(pixel_weights, 0.01)
+                        
+                        # Get pixel-specific covariance if available  
                         pixel_covariance = None
                         if weight_covariance is not None and len(weight_covariance.shape) == 4:
                             pixel_covariance = weight_covariance[:, :, y, x]
                         
-                        # Get parameters with errors
+                        # Get parameters with mathematical error propagation (not Monte Carlo)
                         params = weight_parser.get_physical_params(
                             pixel_weights,
                             weight_errors=weight_errors,
-                            weight_covariance=pixel_covariance,
-                            n_monte_carlo=100 if weight_errors is not None else 0
+                            weight_covariance=None,  # Disable MC, use analytical errors
+                            n_monte_carlo=0  # Use mathematical approach only
                         )
                         
                         # Store parameters

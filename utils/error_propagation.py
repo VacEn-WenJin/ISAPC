@@ -507,3 +507,42 @@ def validate_errors_rms(observed: np.ndarray, model: np.ndarray,
         scaled_errors = errors
     
     return rms_factor, scaled_errors
+
+
+def error_weighted_mean(values: np.ndarray, errors: np.ndarray) -> Tuple[float, float]:
+    """
+    Calculate error-weighted mean and its uncertainty
+    
+    Parameters
+    ----------
+    values : array
+        Data values
+    errors : array
+        Error estimates for each value
+        
+    Returns
+    -------
+    mean : float
+        Error-weighted mean
+    mean_error : float
+        Error in the weighted mean
+    """
+    # Remove NaN and infinite values
+    valid = np.isfinite(values) & np.isfinite(errors) & (errors > 0)
+    
+    if not np.any(valid):
+        return np.nan, np.nan
+    
+    values_clean = values[valid]
+    errors_clean = errors[valid]
+    
+    # Calculate weights (inverse variance)
+    weights = 1.0 / (errors_clean**2)
+    
+    # Weighted mean
+    weighted_mean = np.sum(weights * values_clean) / np.sum(weights)
+    
+    # Error in weighted mean
+    mean_error = 1.0 / np.sqrt(np.sum(weights))
+    
+    return weighted_mean, mean_error

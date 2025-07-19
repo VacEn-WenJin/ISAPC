@@ -811,7 +811,7 @@ def calculate_enhanced_alpha_fe(fe5015, mgb, hbeta, model_data, age=None, metall
     """
     try:
         # Validate inputs
-        if not all(np.isfinite([fe5015, mgb, hbeta]) for val in [fe5015, mgb, hbeta]):
+        if not all(np.isfinite(val) for val in [fe5015, mgb, hbeta]):
             return np.nan, np.nan, np.nan, np.nan, np.nan
         
         if model_data is None or len(model_data) == 0:

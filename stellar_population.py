@@ -12,9 +12,9 @@ logger = logging.getLogger(__name__)
 # Try to import error propagation utilities
 try:
     from utils.error_propagation import (
-        monte_carlo_error_propagation,
-        bootstrap_error_estimate,
-        calculate_covariance_matrix
+        bootstrap_error_estimation,
+        calculate_covariance_matrix,
+        error_weighted_mean
     )
     HAS_ERROR_UTILS = True
 except ImportError:

@@ -12,8 +12,9 @@ from scipy.stats import bootstrap
 # Import error propagation utilities
 try:
     from utils.error_propagation import (
-        bootstrap_error_estimate,
+        bootstrap_error_estimation,
         propagate_binning_errors,
+        calculate_covariance_matrix,
         error_weighted_mean,
         MCMCErrorEstimator
     )

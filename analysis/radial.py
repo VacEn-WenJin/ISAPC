@@ -120,13 +120,13 @@ def combine_spectra_with_errors(spectra, wavelength, bin_indices, velocity_field
                             [bin_spectra[-1, j]] * 10
                         ])
                         wave_extended = np.concatenate([
-                            wavelength[0] - np.arange(10, 0, -1) * (wavelength[1] - wavelength[0]),
-                            wavelength,
-                            wavelength[-1] + np.arange(1, 11) * (wavelength[-1] - wavelength[-2])
+                            wave_shifted[0] - np.arange(10, 0, -1) * (wave_shifted[1] - wave_shifted[0]),
+                            wave_shifted,
+                            wave_shifted[-1] + np.arange(1, 11) * (wave_shifted[-1] - wave_shifted[-2])
                         ])
                         
                         # Interpolate back to original grid
-                        bin_spectra[:, j] = np.interp(wavelength, wave_shifted, flux_extended)
+                        bin_spectra[:, j] = np.interp(wavelength, wave_extended, flux_extended)
                         
                         # Also interpolate errors if available
                         if bin_errors_subset is not None:
@@ -135,7 +135,7 @@ def combine_spectra_with_errors(spectra, wavelength, bin_indices, velocity_field
                                 bin_errors_subset[:, j],
                                 [bin_errors_subset[-1, j]] * 10
                             ])
-                            bin_errors_subset[:, j] = np.interp(wavelength, wave_shifted, error_extended)
+                            bin_errors_subset[:, j] = np.interp(wavelength, wave_extended, error_extended)
                     
                     elif edge_treatment == "truncate":
                         # Simple interpolation with NaN for out-of-bounds
