@@ -1,0 +1,31 @@
+COMPILATION INSTRUCTIONS:
+========================
+
+To compile this LaTeX document:
+
+1. Ensure you have a complete LaTeX installation (TeXLive, MiKTeX, etc.)
+
+2. Required packages (usually included in full installations):
+   - amsmath, amssymb, amsfonts
+   - graphicx, booktabs, xcolor
+   - hyperref, fancyhdr, listings
+   - subfigure, float
+   - algorithm, algorithmic
+
+3. Compile with:
+   pdflatex ISAPC_Complete_Workflow_Documentation.tex
+   
+   (Run twice for proper cross-references)
+
+4. For bibliography (if references added):
+   bibtex ISAPC_Complete_Workflow_Documentation
+   pdflatex ISAPC_Complete_Workflow_Documentation.tex
+   pdflatex ISAPC_Complete_Workflow_Documentation.tex
+
+The final PDF will contain:
+- Complete mathematical framework
+- Detailed algorithm descriptions  
+- Implementation code snippets
+- Scientific results and validation
+- Error analysis and quality control
+- Reproducibility guidelines

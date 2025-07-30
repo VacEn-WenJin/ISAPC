@@ -1,0 +1,172 @@
+%==============================================================================
+% COMPLETE REFERENCE LIST FOR ISAPC WORKFLOW DOCUMENTATION
+% All references verified through ADS and journal searches
+%==============================================================================
+
+\begin{thebibliography}{99}
+
+%------------------------------------------------------------------------------
+% PRIMARY REFERENCES - VERIFIED
+%------------------------------------------------------------------------------
+
+\bibitem{Thomas2003}
+Thomas, D., Maraston, C., \& Bender, R. 2003, \textit{Monthly Notices of the Royal Astronomical Society}, 339, 897
+\newline DOI: \texttt{10.1046/j.1365-8711.2003.06248.x}
+\newline arXiv: \texttt{astro-ph/0209250}
+\newline \textbf{PRIMARY SOURCE: TMB03 stellar population models with variable element abundance ratios}
+\newline \textbf{Title:} "Stellar population models of Lick indices with variable element abundance ratios"
+
+%------------------------------------------------------------------------------
+% VELOCITY DISPERSION CORRECTION SOURCES - CRITICAL ISSUE
+%------------------------------------------------------------------------------
+
+\bibitem{VelocityDispersionCorrections}
+\textbf{⚠️  CRITICAL REFERENCE GAP - VELOCITY DISPERSION CORRECTIONS}
+\newline \textbf{Coefficients used throughout analysis:}
+\newline Fe5015: $-0.0008$ \AA\ (km/s)$^{-1}$
+\newline Mgb: $-0.0006$ \AA\ (km/s)$^{-1}$
+\newline H$\beta$: $-0.0003$ \AA\ (km/s)$^{-1}$
+\newline \textbf{STATUS:} These specific coefficients are NOT found in TMB03 (2003) paper
+\newline \textbf{URGENT ACTION REQUIRED:} Original source must be identified before publication
+\newline \textbf{Most likely sources to investigate:}
+\newline - Trager et al. (1998) - mentions velocity dispersion corrections for Lick indices
+\newline - Worthey (1994) - comprehensive stellar population models
+\newline - Internal calibration/empirical derivation (requires documentation)
+
+%------------------------------------------------------------------------------
+% LICK INDICES AND SPECTRAL ANALYSIS - VERIFIED
+%------------------------------------------------------------------------------
+
+\bibitem{Worthey1994}
+Worthey, G. 1994, \textit{The Astrophysical Journal Supplement Series}, 95, 107
+\newline DOI: \texttt{10.1086/192096}
+\newline \textbf{Title:} "Comprehensive Stellar Population Models and the Disentanglement of Age and Metallicity Effects"
+\newline \textbf{Key reference for Lick index stellar population models}
+
+\bibitem{WortheyOttaviani1997}
+Worthey, G. \& Ottaviani, D. L. 1997, \textit{The Astrophysical Journal Supplement Series}, 111, 377
+\newline DOI: \texttt{10.1086/313021}
+\newline \textbf{Title:} "H$\gamma$ and H$\delta$ Absorption Features in Stars and Stellar Populations"
+\newline \textbf{Extended Lick index system with Balmer line analysis}
+
+\bibitem{Trager1998}
+Trager, S. C., Worthey, G., Faber, S. M., Burstein, D., \& González, J. J. 1998, \textit{The Astrophysical Journal Supplement Series}, 116, 1
+\newline DOI: \texttt{10.1086/313099}
+\newline arXiv: \texttt{astro-ph/9712258}
+\newline \textbf{Title:} "Old Stellar Populations. VI. Absorption-Line Spectra of Galaxy Nuclei and Globular Clusters"
+\newline \textbf{Large homogeneous catalog of galaxy spectral line data; mentions velocity dispersion corrections}
+
+\bibitem{Faber1985}
+Faber, S. M., Friel, E. D., Burstein, D., \& Gaskell, C. M. 1985, \textit{The Astrophysical Journal Supplement Series}, 57, 711
+\newline DOI: \texttt{10.1086/191024}
+\newline \textbf{Title:} "Old stellar populations. II. An analysis of K-giant spectra"
+\newline \textbf{Early spectral index analysis including Mgb measurements}
+
+%------------------------------------------------------------------------------
+% STELLAR POPULATION SYNTHESIS - VERIFIED
+%------------------------------------------------------------------------------
+
+\bibitem{Bruzual2003}
+Bruzual, G. \& Charlot, S. 2003, \textit{Monthly Notices of the Royal Astronomical Society}, 344, 1000
+\newline DOI: \texttt{10.1046/j.1365-8711.2003.06897.x}
+\newline arXiv: \texttt{astro-ph/0309134}
+\newline \textbf{Title:} "Stellar population synthesis at the resolution of 2003"
+\newline \textbf{High-resolution stellar population synthesis models}
+
+\bibitem{Maraston2005}
+Maraston, C. 2005, \textit{Monthly Notices of the Royal Astronomical Society}, 362, 799
+\newline DOI: \texttt{10.1111/j.1365-2966.2005.09270.x}
+\newline arXiv: \texttt{astro-ph/0410207}
+\newline \textbf{Title:} "Evolutionary population synthesis: models, analysis of the ingredients and application to high-z galaxies"
+\newline \textbf{Evolutionary stellar population synthesis including TP-AGB phase}
+
+%------------------------------------------------------------------------------
+% INSTRUMENTATION - VERIFIED
+%------------------------------------------------------------------------------
+
+\bibitem{Bacon2010}
+Bacon, R., Accardo, M., Adjali, L., et al. 2010, \textit{Proc. SPIE}, 7735, 773508
+\newline DOI: \texttt{10.1117/12.856027}
+\newline arXiv: \texttt{2211.16795}
+\newline \textbf{Title:} "The MUSE second-generation VLT instrument"
+\newline \textbf{MUSE integral field spectrograph technical description}
+
+%------------------------------------------------------------------------------
+% VIRGO CLUSTER CONTEXT - VERIFIED
+%------------------------------------------------------------------------------
+
+\bibitem{Binggeli1985}
+Binggeli, B., Sandage, A., \& Tammann, G. A. 1985, \textit{The Astronomical Journal}, 90, 1681
+\newline DOI: \texttt{10.1086/113874}
+\newline \textbf{Title:} "Studies of the Virgo cluster. II. A catalog of 2096 galaxies in the Virgo cluster area"
+\newline \textbf{VCC catalog - primary source for Virgo cluster membership}
+
+%------------------------------------------------------------------------------
+% UNVERIFIED REFERENCES REQUIRING ATTENTION
+%------------------------------------------------------------------------------
+
+\bibitem{WortheyUnknown}
+\textbf{⚠️  UNVERIFIED: Worthey et al. 2022 reference}
+\newline \textbf{Referenced for:} TEMP\_ALPHA\_COEFF = -0.015 (temperature-alpha correlation)
+\newline \textbf{Found in:} Phy\_Visu.py line 56, enhanced\_alpha\_fe\_analyzer.py line 338
+\newline \textbf{Status:} No 2022 Worthey paper found in ADS with this coefficient
+\newline \textbf{Action required:} Verify actual source or remove reference
+
+\bibitem{LiuUnknown}
+\textbf{⚠️  UNVERIFIED: Liu et al. 2016 reference}
+\newline \textbf{Referenced for:} Correction implementations
+\newline \textbf{Found in:} enhanced\_alpha\_fe\_analyzer.py line 333
+\newline \textbf{Status:} Insufficient information to verify
+\newline \textbf{Action required:} Provide complete citation or remove reference
+
+\end{thebibliography}
+
+%==============================================================================
+% CRITICAL FINDINGS FROM INTERNET VERIFICATION
+%==============================================================================
+
+% ⚠️  VELOCITY DISPERSION CORRECTION COEFFICIENTS - URGENT PROBLEM
+% After extensive searches through ADS and journal archives, the specific 
+% coefficients (-0.0008, -0.0006, -0.0003 Å/(km/s)^-1) are NOT found in:
+% - Thomas, Maraston & Bender (2003) - main TMB03 paper
+% - Worthey & Ottaviani (1997) - focuses on Hγ and Hδ, not Fe5015/Mgb
+% - Faber et al. (1985) - early K-giant analysis, no specific coefficients
+% - Trager et al. (1998) - mentions corrections but doesn't give these values
+% - Worthey (1994) - comprehensive models but no velocity dispersion coefficients
+
+% THESE COEFFICIENTS APPEAR TO BE:
+% 1. From unpublished calibrations
+% 2. From supplementary material not available online
+% 3. From internal empirical derivations
+% 4. Potentially erroneous values
+
+% FILES CONTAINING THESE COEFFICIENTS:
+% - corrected_alpha_fe_analyzer.py (lines 61-63)
+% - analyze_tmb03_velocity_dispersion.py (lines 96-98, 339-341, 822-824)
+% - test_enhanced_alpha_fe.py (lines 99-101)
+% - check_tmb03_velocity_dispersion.py (lines 245-247)
+% - create_comprehensive_alpha_fe_plots.py (lines 152-154)
+
+% ⚠️  FAKE REFERENCES IDENTIFIED:
+% 1. "Worthey et al. 2022" - NO SUCH PAPER EXISTS in ADS
+%    - Referenced for TEMP_ALPHA_COEFF = -0.015
+%    - Found in Phy_Visu.py line 56 and enhanced_alpha_fe_analyzer.py line 338
+%    - This is a FABRICATED reference
+
+% 2. "Liu et al. 2016" - INSUFFICIENT INFORMATION
+%    - No specific journal, volume, or page provided
+%    - Cannot be verified without more details
+%    - May be legitimate but incompletely cited
+
+% ✅ VERIFIED REFERENCES:
+% All other references have been verified through ADS searches with:
+% - Correct DOI numbers
+% - Proper journal citations
+% - ArXiv identifiers where available
+% - Full titles and author lists confirmed
+
+% IMMEDIATE ACTIONS REQUIRED:
+% 1. Remove or replace "Worthey et al. 2022" - it does not exist
+% 2. Find original source for velocity dispersion coefficients or derive them
+% 3. Complete citation for "Liu et al. 2016" or remove
+% 4. Document methodology if coefficients are empirically derived

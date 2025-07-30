@@ -12,28 +12,29 @@ import time
 from pathlib import Path
 
 def get_galaxy_redshift(galaxy_name):
-    """Get redshift for each galaxy"""
+    """Get redshift for each galaxy from the observed galaxy list"""
     redshifts = {
-        'VCC0308': 0.0042,
-        'VCC0667': 0.0042, 
-        'VCC0688': 0.0042,
-        'VCC0990': 0.0042,
-        'VCC1049': 0.0042,
-        'VCC1146': 0.0042,
-        'VCC1193': 0.0042,
-        'VCC1368': 0.0042,
-        'VCC1410': 0.0042,
-        'VCC1431': 0.0042,
+        'M60': 0.0034,
         'VCC1588': 0.0042,
-        'VCC1826': 0.0042,
-        'VCC1833': 0.0042,
-        'VCC1857': 0.0042,
-        'VCC1899': 0.0042,
-        'VCC1903': 0.0042,
-        'VCC1952': 0.0042,
-        'VCC2050': 0.0042,
-        'VCC2058': 0.0042,
-        'VCC2092': 0.0042,
+        'VCC1890': 0.0040,
+        'VCC1368': 0.0035,
+        'VCC1902': 0.0038,
+        'VCC1524': 0.0052,
+        'VCC1949': 0.0058,
+        'VCC0990': 0.0058,
+        'VCC1410': 0.0054,
+        'VCC1695': 0.0058,
+        'VCC0667': 0.0048,
+        'VCC1549': 0.0046,
+        'VCC0308': 0.0055,
+        'VCC1431': 0.0050,
+        'VCC1811': 0.0023,
+        'VCC0608': 0.0038,
+        'VCC1146': 0.0023,
+        'VCC1049': 0.0021,
+        'VCC1193': 0.0025,
+        'VCC1910': 0.0007,
+        'VCC1486': 0.0004
     }
     return redshifts.get(galaxy_name, 0.0042)
 
