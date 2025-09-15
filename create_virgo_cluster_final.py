@@ -51,10 +51,15 @@ def load_final_gradient_data():
     try:
         # Load the combined gradient summary with both RDB and VNB results
         combined_file = "alpha_gradient_dual/combined_gradient_summary.csv"
+        fallback_file = "enhanced_radial_plots/enhanced_3bin_gradient_summary.csv"
         
         if not os.path.exists(combined_file):
-            logger.error(f"Combined gradient file not found: {combined_file}")
-            return {}
+            if os.path.exists(fallback_file):
+                logger.warning(f"Using fallback gradient file: {fallback_file}")
+                combined_file = fallback_file
+            else:
+                logger.error(f"Combined gradient file not found: {combined_file}")
+                return {}
         
         # Load the CSV
         df = pd.read_csv(combined_file)

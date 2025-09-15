@@ -26,18 +26,11 @@ import os
 import sys
 from astropy.io import fits
 import logging
+from galaxy_catalog import REDSHIFTS as GALAXY_REDSHIFTS, get_redshift
 
 # Add current directory to path
 sys.path.append('.')
 
-# Galaxy redshifts for Virgo cluster galaxies
-GALAXY_REDSHIFTS = {
-    'VCC0308': 0.0055, 'VCC0667': 0.0048, 'VCC0688': 0.0038, 'VCC0990': 0.0058,
-    'VCC1049': 0.0021, 'VCC1146': 0.0023, 'VCC1193': 0.0025, 'VCC1368': 0.0035,
-    'VCC1410': 0.0054, 'VCC1431': 0.0050, 'VCC1486': 0.0004, 'VCC1499': 0.0055,
-    'VCC1549': 0.0046, 'VCC1588': 0.0042, 'VCC1695': 0.0058, 'VCC1811': 0.0023,
-    'VCC1890': 0.0040, 'VCC1902': 0.0038, 'VCC1910': 0.0007, 'VCC1949': 0.0058
-}
 
 def setup_logging():
     """Setup logging for gradient analysis"""
@@ -379,17 +372,49 @@ def calculate_radial_alpha_fe_profile(alpha_fe_data, rdb_data, min_pixels_per_bi
     try:
         alpha_fe_2d = alpha_fe_data['alpha_fe_2d']
         alpha_fe_errors = alpha_fe_data['alpha_fe_errors']
-        bin_distances = rdb_data['bin_distances']
-        effective_radius = rdb_data['effective_radius']
+
+        # Support both flat and nested RDB NPZ layouts
+        bin_distances = None
+        effective_radius = None
+        if isinstance(rdb_data, dict):
+            if 'bin_distances' in rdb_data and 'effective_radius' in rdb_data:
+                bin_distances = rdb_data['bin_distances']
+                effective_radius = rdb_data['effective_radius']
+            else:
+                dist = rdb_data.get('distance')
+                if dist is not None:
+                    # distance may be an object array with dict inside
+                    try:
+                        dist = dist.item() if hasattr(dist, 'item') else dist
+                    except Exception:
+                        pass
+                    if isinstance(dist, dict):
+                        bin_distances = dist.get('bin_distances')
+                        effective_radius = dist.get('effective_radius')
+        if bin_distances is None or effective_radius is None:
+            logger.error("RDB data missing bin_distances/effective_radius")
+            return None
         
         # Get binning information from RDB data
         # The bin_num array tells us which bin each pixel belongs to
-        binning_info = rdb_data.get('binning_info')
+        binning_info = rdb_data.get('binning_info') if isinstance(rdb_data, dict) else None
+        if binning_info is None and isinstance(rdb_data, dict):
+            binfo = rdb_data.get('binning')
+            if binfo is not None:
+                try:
+                    binfo = binfo.item() if hasattr(binfo, 'item') else binfo
+                except Exception:
+                    pass
+                if isinstance(binfo, dict):
+                    binning_info = binfo
         if binning_info is None:
             logger.warning("No binning info found in RDB data, cannot calculate profile")
             return None
         
-        bin_num = binning_info['bin_num']
+        bin_num = binning_info.get('bin_num') if isinstance(binning_info, dict) else None
+        if bin_num is None:
+            logger.warning("Binning info lacks bin_num; cannot calculate profile")
+            return None
         
         # Get unique bin numbers (excluding invalid/unassigned pixels)
         unique_bins = np.unique(bin_num)

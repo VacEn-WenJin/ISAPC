@@ -14,6 +14,8 @@ import numpy as np
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
 
+from galaxy_catalog import get_redshift, get_type, TYPES
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -25,28 +27,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Galaxy list with proper redshifts - TESTING WITH SINGLE GALAXY
+# Galaxy list: build from central catalog so z/type are consistent everywhere
 GALAXIES = [
-    {"name": "VCC0308", "redshift": 0.0055, "type": "dE"},
-    # {"name": "VCC0667", "redshift": 0.0048, "type": "Sd"},
-    # {"name": "VCC0688", "redshift": 0.0038, "type": "Sc"},
-    # {"name": "VCC0990", "redshift": 0.0058, "type": "dS0(N)"},
-    # {"name": "VCC1049", "redshift": 0.0021, "type": "dE(N)"},
-    # {"name": "VCC1146", "redshift": 0.0023, "type": "E"},
-    # {"name": "VCC1193", "redshift": 0.0025, "type": "Sd"},
-    # {"name": "VCC1368", "redshift": 0.0035, "type": "SBa"},
-    # {"name": "VCC1410", "redshift": 0.0054, "type": "Sd"},
-    # {"name": "VCC1431", "redshift": 0.0050, "type": "dE"},
-    # {"name": "VCC1486", "redshift": 0.0004, "type": "Sc"},
-    # {"name": "VCC1499", "redshift": 0.0055, "type": "dE"},
-    # {"name": "VCC1549", "redshift": 0.0046, "type": "dE(N)"},
-    # {"name": "VCC1588", "redshift": 0.0042, "type": "Sd"},
-    # {"name": "VCC1695", "redshift": 0.0058, "type": "dE"},
-    # {"name": "VCC1811", "redshift": 0.0023, "type": "Sc"},
-    # {"name": "VCC1890", "redshift": 0.0040, "type": "dE"},
-    # {"name": "VCC1902", "redshift": 0.0038, "type": "SBa"},
-    # {"name": "VCC1910", "redshift": 0.0007, "type": "dE(N)"},
-    # {"name": "VCC1949", "redshift": 0.0058, "type": "dS0(N)"},
+    {"name": name, "redshift": get_redshift(name), "type": get_type(name)}
+    for name in sorted(TYPES.keys())
 ]
 
 # Pipeline configuration
@@ -123,8 +107,15 @@ def run_single_galaxy(galaxy_info):
         if PIPELINE_CONFIG["cvt"]:
             cmd.append("--cvt")
         if PIPELINE_CONFIG["physical_radius"]:
-            cmd.append("--physical-radius")
-        
+            cmd.append("--physical_radius")
+
+        # Environment tuning to avoid BLAS oversubscription
+        env = os.environ.copy()
+        env.setdefault("OMP_NUM_THREADS", "4")
+        env.setdefault("OPENBLAS_NUM_THREADS", "4")
+        env.setdefault("MKL_NUM_THREADS", "4")
+        env.setdefault("NUMEXPR_NUM_THREADS", "4")
+
         # Run the analysis
         logger.info(f"Running command: {' '.join(cmd)}")
         result = subprocess.run(
@@ -132,7 +123,8 @@ def run_single_galaxy(galaxy_info):
             cwd=Path(__file__).parent,
             capture_output=True,
             text=True,
-            timeout=3600  # 1 hour timeout per galaxy
+            timeout=3600,  # 1 hour timeout per galaxy
+            env=env,
         )
         
         if result.returncode == 0:
@@ -276,6 +268,24 @@ def main():
             try:
                 result = future.result()
                 results.append(result)
+                # If success, trigger AIP for this galaxy immediately
+                if result.get("status") == "success":
+                    try:
+                        logger.info(f"Running AIP alpha/Fe for {galaxy['name']}…")
+                        aip_res = subprocess.run(
+                            ["python", "run_aip_alpha_fe.py", "--galaxy", galaxy['name']],
+                            cwd=Path(__file__).parent,
+                            capture_output=True,
+                            text=True,
+                            timeout=1200,
+                        )
+                        if aip_res.returncode == 0:
+                            logger.info(f"AIP completed for {galaxy['name']}")
+                        else:
+                            logger.warning(f"AIP failed for {galaxy['name']} (code {aip_res.returncode})")
+                            logger.debug(f"AIP STDOUT: {aip_res.stdout}\nAIP STDERR: {aip_res.stderr}")
+                    except Exception as e:
+                        logger.warning(f"AIP exception for {galaxy['name']}: {e}")
             except Exception as e:
                 logger.error(f"Exception for {galaxy['name']}: {e}")
                 results.append({
@@ -287,6 +297,15 @@ def main():
     # Process physics visualization
     physics_result = run_physics_visualization()
     
+    # After all galaxies, collect deliverables into FINAL_DELIVERABLES
+    try:
+        logger.info("Collecting deliverables into FINAL_DELIVERABLES…")
+        subprocess.run([
+            "python", "aip_collect_results.py", "--outputs-dir", "output", "--output-root", "FINAL_DELIVERABLES"
+        ], cwd=Path(__file__).parent, check=False)
+    except Exception:
+        logger.warning("Deliverables collection step skipped due to error.")
+
     # Create summary report
     create_summary_report(results)
     

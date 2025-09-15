@@ -11,6 +11,7 @@ import time
 import datetime
 import logging
 from pathlib import Path
+from galaxy_catalog import get_redshift
 
 def setup_logging():
     """Setup logging for the complete workflow"""
@@ -64,33 +65,9 @@ def find_all_muse_galaxies():
     return galaxies
 
 def get_galaxy_redshift(galaxy_name):
-    """Get redshift for a galaxy"""
-    # Common Virgo cluster redshifts - Update these with actual values!
-    virgo_redshifts = {
-        'VCC0308': 0.0036,
-        'VCC0667': 0.0034,
-        'VCC0688': 0.0031,
-        'VCC0990': 0.0029,
-        'VCC1049': 0.0033,
-        'VCC1146': 0.0035,
-        'VCC1193': 0.0032,
-        'VCC1368': 0.0037,
-        'VCC1410': 0.0034,
-        'VCC1431': 0.0031,
-        'VCC1588': 0.0028,
-        'VCC1627': 0.0032,
-        'VCC1826': 0.0035,
-        'VCC1545': 0.0031,
-        'VCC1833': 0.0034,
-        'VCC2095': 0.0030,
-    }
-    
-    # Default Virgo cluster redshift if not found
-    default_redshift = 0.0033
-    
-    redshift = virgo_redshifts.get(galaxy_name, default_redshift)
+    """Get redshift for a galaxy from the centralized catalog"""
+    redshift = get_redshift(galaxy_name)
     logging.info(f"Using redshift {redshift} for {galaxy_name}")
-    
     return redshift
 
 def check_galaxy_completion(galaxy_name):

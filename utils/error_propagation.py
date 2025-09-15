@@ -7,7 +7,10 @@ import logging
 import numpy as np
 from scipy import stats, interpolate
 from typing import Tuple, Dict, Optional, Callable
-import emcee
+try:
+    import emcee  # type: ignore
+except Exception:  # ImportError or environment issues
+    emcee = None  # defer hard failure to runtime when MCMC is requested
 from multiprocessing import Pool
 
 logger = logging.getLogger(__name__)
@@ -39,6 +42,10 @@ class MCMCErrorEstimator:
         self.n_steps = n_steps
         self.n_burn = n_burn
         self.n_threads = n_threads
+        if emcee is None:
+            logger.warning(
+                "emcee is not installed; MCMC error estimation will be unavailable until emcee is installed."
+            )
         
     def log_likelihood(self, theta: np.ndarray, data: np.ndarray, 
                       model_func: Callable, error: np.ndarray) -> float:
@@ -160,6 +167,11 @@ class MCMCErrorEstimator:
             bounds = bounds + [(-3*position_error, 3*position_error)] * 2
         
         # Set up the sampler
+        if emcee is None:
+            raise ImportError(
+                "emcee is required for MCMC error estimation. Install with `pip install emcee==3.1.6` or add to your environment."
+            )
+
         with Pool(self.n_threads) as pool:
             sampler = emcee.EnsembleSampler(
                 self.n_walkers, n_dim, self.log_probability,
@@ -189,7 +201,7 @@ class MCMCErrorEstimator:
         
         return results
     
-    def _estimate_autocorr(self, sampler: emcee.EnsembleSampler) -> np.ndarray:
+    def _estimate_autocorr(self, sampler) -> np.ndarray:
         """Estimate autocorrelation time with error handling"""
         try:
             return sampler.get_autocorr_time(quiet=True)

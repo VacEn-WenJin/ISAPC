@@ -14,6 +14,7 @@ import glob
 from pathlib import Path
 import time
 from datetime import datetime
+from galaxy_catalog import REDSHIFTS as GALAXY_REDSHIFTS, TYPES as GALAXY_TYPES, get_redshift
 
 # Add current directory to path
 sys.path.append('.')
@@ -27,53 +28,7 @@ from Phy_Visu import (
     estimate_alpha_fe_uncertainty
 )
 
-# Galaxy redshift mapping from your table
-GALAXY_REDSHIFTS = {
-    'VCC0308': 0.0055,  # dE
-    'VCC0667': 0.0048,  # Sd
-    'VCC0688': 0.0042,  # (estimated)
-    'VCC0990': 0.0058,  # dS0(N)
-    'VCC1049': 0.0021,  # dE(N)
-    'VCC1146': 0.0023,  # E
-    'VCC1193': 0.0025,  # Sd
-    'VCC1368': 0.0035,  # SBa
-    'VCC1410': 0.0054,  # Sd
-    'VCC1431': 0.0050,  # dE
-    'VCC1486': 0.0004,  # Sc
-    'VCC1499': 0.0042,  # (estimated)
-    'VCC1549': 0.0046,  # dE(N)
-    'VCC1588': 0.0042,  # Sd
-    'VCC1695': 0.0058,  # dE
-    'VCC1811': 0.0023,  # Sc
-    'VCC1890': 0.0040,  # dE
-    'VCC1902': 0.0038,  # SBa
-    'VCC1910': 0.0007,  # dE(N)
-    'VCC1949': 0.0058,  # dS0(N)
-}
-
-# Galaxy types from your table
-GALAXY_TYPES = {
-    'VCC0308': 'dE',
-    'VCC0667': 'Sd',
-    'VCC0688': 'Unknown',
-    'VCC0990': 'dS0(N)',
-    'VCC1049': 'dE(N)',
-    'VCC1146': 'E',
-    'VCC1193': 'Sd',
-    'VCC1368': 'SBa',
-    'VCC1410': 'Sd',
-    'VCC1431': 'dE',
-    'VCC1486': 'Sc',
-    'VCC1499': 'Unknown',
-    'VCC1549': 'dE(N)',
-    'VCC1588': 'Sd',
-    'VCC1695': 'dE',
-    'VCC1811': 'Sc',
-    'VCC1890': 'dE',
-    'VCC1902': 'SBa',
-    'VCC1910': 'dE(N)',
-    'VCC1949': 'dS0(N)',
-}
+## Redshift/type mappings are imported from galaxy_catalog to avoid drift
 
 def load_tmb03_model():
     """Load the TMB03 model data"""

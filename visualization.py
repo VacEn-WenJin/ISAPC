@@ -1950,6 +1950,163 @@ def plot_spectrum_fit_with_errors(wavelength, observed_flux, model_flux, stellar
     return fig, axes
 
 
+def _get_default_index_windows():
+    """Fallback spectral index windows for Fe5015, Mgb, Hbeta."""
+    return {
+        "Hbeta": {"blue": (4827.875, 4847.875), "band": (4847.875, 4876.625), "red": (4876.625, 4891.625)},
+        "Mgb": {"blue": (5142.625, 5161.375), "band": (5160.125, 5192.625), "red": (5191.375, 5206.375)},
+        "Fe5015": {"blue": (4946.500, 4977.750), "band": (4977.750, 5054.000), "red": (5054.000, 5065.250)},
+    }
+
+
+def compute_index_based_continuum(wave: np.ndarray, fit_flux: np.ndarray, indices_list=None) -> np.ndarray:
+    """
+    Build a continuum array by taking the fitted spectrum and replacing each index band
+    region with a straight pseudo-continuum bridging the mean flux of its blue/red windows.
+
+    This mirrors the continuum definition used for index measurements, ensuring the
+    normalized spectrum is consistent with the index calculation.
+
+    Parameters
+    ----------
+    wave : ndarray
+        Wavelength grid
+    fit_flux : ndarray
+        Fitted (model) spectrum array
+    indices_list : list[str], optional
+        Names of indices to use. If None, falls back to defaults or config.
+
+    Returns
+    -------
+    continuum : ndarray
+        Continuum spectrum for normalization
+    """
+    continuum = np.array(fit_flux, copy=True)
+
+    # Resolve windows from config if available
+    windows_map: dict[str, dict] = {}
+    if indices_list is None:
+        try:
+            from config_manager import get_spectral_indices
+            indices_list = get_spectral_indices()
+        except Exception:
+            indices_list = list(_get_default_index_windows().keys())
+
+    try:
+        from config_manager import get_spectral_line_definition
+        for name in indices_list:
+            win = get_spectral_line_definition(name)
+            if win is None:
+                win = _get_default_index_windows().get(name)
+            if win is not None:
+                windows_map[name] = win
+    except Exception:
+        # Fallback entirely to defaults
+        defaults = _get_default_index_windows()
+        for name in indices_list:
+            if name in defaults:
+                windows_map[name] = defaults[name]
+
+    # Apply pseudo-continuum replacement within each band
+    for name, win in windows_map.items():
+        try:
+            blue = win.get("blue")
+            red = win.get("red")
+            band = win.get("band", win.get("line"))
+            if blue is None or red is None or band is None:
+                continue
+
+            # Masks
+            blue_mask = (wave >= blue[0]) & (wave <= blue[1])
+            red_mask = (wave >= red[0]) & (wave <= red[1])
+            band_mask = (wave >= band[0]) & (wave <= band[1])
+
+            if not np.any(blue_mask) or not np.any(red_mask) or not np.any(band_mask):
+                continue
+
+            # Mean flux in blue/red windows from fit
+            blue_mean = np.nanmean(fit_flux[blue_mask])
+            red_mean = np.nanmean(fit_flux[red_mask])
+            if not np.isfinite(blue_mean) or not np.isfinite(red_mean):
+                continue
+
+            # Centers for interpolation
+            blue_center = np.nanmean([blue[0], blue[1]])
+            red_center = np.nanmean([red[0], red[1]])
+
+            # Linear pseudo-continuum across the band
+            band_w = wave[band_mask]
+            cont_vals = np.interp(band_w, [blue_center, red_center], [blue_mean, red_mean])
+            continuum[band_mask] = cont_vals
+        except Exception as e:
+            logger.debug(f"Continuum build failed for {name}: {e}")
+
+    # Avoid zeros to prevent division issues
+    tiny = np.nanmedian(np.abs(continuum[np.isfinite(continuum)])) * 1e-6 if np.any(np.isfinite(continuum)) else 1e-6
+    continuum = np.where(continuum <= 0, tiny, continuum)
+    return continuum
+
+
+def plot_spectrum_fit_with_normalization(
+    wavelength: np.ndarray,
+    observed_flux: np.ndarray,
+    fit_flux: np.ndarray,
+    indices_list=None,
+    error: Optional[np.ndarray] = None,
+    title: Optional[str] = None,
+    figsize=(12, 9),
+):
+    """
+    Plot combined figure: (1) observed vs model, (2) residuals, (3) normalized spectrum
+    using an index-based pseudo-continuum derived from the fitted spectrum.
+
+    Returns
+    -------
+    fig, axes : matplotlib Figure and list of Axes
+    """
+    # Compute continuum and normalized spectrum
+    continuum = compute_index_based_continuum(wavelength, fit_flux, indices_list)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        norm_flux = observed_flux / continuum
+
+    # Build figure with 3 rows
+    fig, axes = plt.subplots(3, 1, figsize=figsize, sharex=True,
+                             gridspec_kw={'height_ratios': [3, 1, 2]})
+
+    # Panel 1: observed vs model
+    ax0 = axes[0]
+    ax0.plot(wavelength, observed_flux, color='k', lw=0.8, label='Observed')
+    ax0.plot(wavelength, fit_flux, color='tab:orange', lw=0.9, alpha=0.9, label='Model (fit)')
+    ax0.set_ylabel('Flux')
+    ax0.legend(loc='upper right', fontsize=9)
+    if title:
+        ax0.set_title(title)
+
+    # Panel 2: residuals
+    ax1 = axes[1]
+    residuals = observed_flux - fit_flux
+    ax1.plot(wavelength, residuals, color='tab:gray', lw=0.8)
+    ax1.axhline(0, color='k', lw=0.6, alpha=0.7)
+    ax1.set_ylabel('Residual')
+
+    # Panel 3: normalized
+    ax2 = axes[2]
+    ax2.plot(wavelength, norm_flux, color='tab:blue', lw=0.8, label='Observed / Continuum')
+    ax2.plot(wavelength, continuum / continuum, color='tab:green', lw=0.6, alpha=0.7, label='Continuum=1')
+    ax2.set_xlabel('Wavelength')
+    ax2.set_ylabel('Normalized Flux')
+    # Reasonable limits around unity if finite
+    finite = np.isfinite(norm_flux)
+    if np.any(finite):
+        lo, hi = np.nanpercentile(norm_flux[finite], [1, 99])
+        pad = max(0.05, 0.1 * (hi - lo))
+        ax2.set_ylim(max(0.0, lo - pad), hi + pad)
+    ax2.legend(loc='upper right', fontsize=9)
+
+    safe_tight_layout(fig)
+    return fig, axes
+
+
 def plot_binned_spectra(cube, spectra, wavelength, indices=None, title=None, save_path=None):
     """
     Plot binned spectra for selected bins
@@ -3337,9 +3494,9 @@ def plot_monte_carlo_corner(samples, parameter_names, truths=None,
         Corner plot figure
     """
     try:
-        import corner
-    except ImportError:
-        logger.error("corner package required for corner plots. Install with: pip install corner")
+        import corner  # type: ignore
+    except Exception:
+        logger.warning("corner package not available; skipping corner plot generation")
         return None
     
     fig = corner.corner(samples, labels=parameter_names, truths=truths,

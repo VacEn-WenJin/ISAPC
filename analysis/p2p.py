@@ -1821,6 +1821,33 @@ def create_sample_fits(
 
                 fig.savefig(plots_dir / f"{galaxy_name}_P2P_spectrum_{i}.png", dpi=150)
                 plt.close(fig)
+
+                # Also save normalized-spectrum panel based on index-defined continuum
+                try:
+                    # For normalized spectrum, use emission-line reduced spectrum when available
+                    if gas_comp is not None:
+                        observed_noem = observed - gas_comp
+                        fit_stellar = stellar_comp if 'stellar_comp' in locals() and stellar_comp is not None else model
+                        norm_title = f"Pixel ({x}, {y}) — normalized (emission-reduced)"
+                        fig_norm, _ = visualization.plot_spectrum_fit_with_normalization(
+                            wavelength=cube._lambda_gal,
+                            observed_flux=observed_noem,
+                            fit_flux=fit_stellar,
+                            indices_list=None,
+                            title=norm_title
+                        )
+                    else:
+                        fig_norm, _ = visualization.plot_spectrum_fit_with_normalization(
+                            wavelength=cube._lambda_gal,
+                            observed_flux=observed,
+                            fit_flux=model,
+                            indices_list=None,
+                            title=f"Pixel ({x}, {y}) — normalized"
+                        )
+                    fig_norm.savefig(plots_dir / f"{galaxy_name}_P2P_spectrum_norm_{i}.png", dpi=150)
+                    plt.close(fig_norm)
+                except Exception as e:
+                    logger.warning(f"Failed to save normalized spectrum for pixel ({x}, {y}): {e}")
             except Exception as e:
                 logger.error(
                     f"Error in plot_spectrum_fit for pixel ({x}, {y}): {str(e)}"

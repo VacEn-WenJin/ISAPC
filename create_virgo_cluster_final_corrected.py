@@ -114,54 +114,58 @@ def load_final_gradient_data():
     try:
         # Load the combined gradient summary with both RDB and VNB results
         combined_file = "alpha_gradient_dual/combined_gradient_summary.csv"
-        
+        fallback_file = "enhanced_radial_plots/enhanced_3bin_gradient_summary.csv"
+
         if not os.path.exists(combined_file):
-            logger.error(f"Combined gradient file not found: {combined_file}")
-            return {}
-        
+            if os.path.exists(fallback_file):
+                logger.warning(f"Using fallback gradient file: {fallback_file}")
+                combined_file = fallback_file
+            else:
+                logger.error(f"Combined gradient file not found: {combined_file}")
+                return {}
+
         # Load the CSV
         df = pd.read_csv(combined_file)
-        logger.info(f"Loaded {len(df)} gradient measurements")
-        
+        logger.info(f"Loaded {len(df)} gradient measurements from {combined_file}")
+
         # Process data by galaxy
         galaxy_gradients = {}
-        
         for galaxy_name in df['Galaxy'].unique():
             galaxy_data = df[df['Galaxy'] == galaxy_name]
-            
+
             # Get RDB and VNB results for this galaxy
             rdb_data = galaxy_data[galaxy_data['Mode'] == 'RDB']
             vnb_data = galaxy_data[galaxy_data['Mode'] == 'VNB']
-            
+
             galaxy_results = {}
-            
+
             # Process RDB results
             if not rdb_data.empty:
                 rdb_row = rdb_data.iloc[0]
                 galaxy_results['RDB'] = {
                     'slope': rdb_row['Slope'],
                     'slope_error': rdb_row['Slope_Error'],
-                    'significance': get_significance_level(rdb_row['Significance']),
-                    'p_value': rdb_row['P_value'],
-                    'r_squared': rdb_row['R_squared']
+                    'significance': get_significance_level(rdb_row['Significance']) if 'Significance' in rdb_row else 0,
+                    'p_value': rdb_row['P_value'] if 'P_value' in rdb_row else np.nan,
+                    'r_squared': rdb_row['R_squared'] if 'R_squared' in rdb_row else np.nan,
                 }
-            
+
             # Process VNB results
             if not vnb_data.empty:
                 vnb_row = vnb_data.iloc[0]
                 galaxy_results['VNB'] = {
                     'slope': vnb_row['Slope'],
                     'slope_error': vnb_row['Slope_Error'],
-                    'significance': get_significance_level(vnb_row['Significance']),
-                    'p_value': vnb_row['P_value'],
-                    'r_squared': vnb_row['R_squared']
+                    'significance': get_significance_level(vnb_row['Significance']) if 'Significance' in vnb_row else 0,
+                    'p_value': vnb_row['P_value'] if 'P_value' in vnb_row else np.nan,
+                    'r_squared': vnb_row['R_squared'] if 'R_squared' in vnb_row else np.nan,
                 }
-            
+
             if galaxy_results:
                 galaxy_gradients[galaxy_name] = galaxy_results
-        
+
         return galaxy_gradients
-        
+
     except Exception as e:
         logger.error(f"Error loading gradient data: {e}")
         return {}

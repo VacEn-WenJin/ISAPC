@@ -309,8 +309,18 @@ def run_vnb_analysis(args, cube, p2p_results=None):
         logger.info("Using wavelength range 5075-5125 Å for SNR calculation")
     else:
         signal = np.nanmedian(cube._spectra, axis=0)
-        noise = np.nanmedian(np.sqrt(cube._variance), axis=0) if hasattr(cube, "_variance") else np.ones_like(signal) * 0.01
-        logger.info("Using full spectrum for SNR calculation")
+        # Robust noise: prefer variance if present and valid; else fall back to spectral std
+        variance = getattr(cube, "_variance", None)
+        if variance is not None and np.ndim(variance) >= 1:
+            try:
+                noise = np.nanmedian(np.sqrt(variance), axis=0)
+            except Exception:
+                noise = np.nanstd(cube._spectra, axis=0)
+        else:
+            noise = np.nanstd(cube._spectra, axis=0)
+        # Apply tiny floor to avoid zeros
+        noise = np.where(~np.isfinite(noise) | (noise <= 0), 0.01, noise)
+        logger.info("Using full spectrum for SNR calculation (robust fallback)")
 
     # Preprocess signal and noise
     min_threshold = 1.0
@@ -421,33 +431,91 @@ def run_vnb_analysis(args, cube, p2p_results=None):
     else:
         safe_target_snr = target_snr
 
+    # Extra guard for very low-SNR data: cap target to a fraction of max SNR
+    enable_single_bin_fallback = False
+    if np.isfinite(max_pixel_snr) and max_pixel_snr > 0:
+        if max_pixel_snr < 0.6 * safe_target_snr:
+            new_safe = max(2.0, min(0.8 * max_pixel_snr, 5.0))
+            if new_safe < safe_target_snr:
+                logger.warning(
+                    f"Max pixel SNR ({max_pixel_snr:.1f}) too low for target {safe_target_snr:.1f}; "
+                    f"reducing target to {new_safe:.1f} and enabling robust fallback"
+                )
+                safe_target_snr = new_safe
+                enable_single_bin_fallback = True
+    # If the entire field is extremely low SNR, pre-enable fallback
+    if median_snr < 1.5 and max_pixel_snr < 5:
+        enable_single_bin_fallback = True
+
     # Log the number of valid pixels being used
     valid_mask = np.isfinite(signal) & np.isfinite(noise) & (signal > 0) & (noise > 0)
     logger.info(f"Using {np.sum(valid_mask)} valid pixels out of {len(signal)} for Voronoi binning")
     logger.info(f"Median SNR in data: {median_snr:.1f}, Maximum SNR: {max_pixel_snr:.1f}")
     logger.info(f"Trying Voronoi binning with target SNR = {safe_target_snr:.1f}")
 
-    # Run the binning algorithm using optimization for 10-20 bins
-    if hasattr(args, "optimize_bins") and args.optimize_bins:
-        logger.info("Using optimized binning to target 10-20 bins")
-        bin_num, x_gen, y_gen, x_bar, y_bar, sn, n_pixels, scale = optimize_voronoi_binning(
-            x, y, signal, noise, 
-            target_bin_count=15,  # Target around 15 bins
-            min_bins=10,          # Accept minimum 10 bins 
-            max_bins=20,          # Accept maximum 20 bins
-            cvt=use_cvt,
-            quiet=not verbose
-        )
-    else:
-        # Run with standard parameters if optimization not requested
-        bin_num, x_gen, y_gen, x_bar, y_bar, sn, n_pixels, scale = run_voronoi_binning(
-            x, y, signal, noise, 
-            target_snr=safe_target_snr,
-            plot=0, 
-            quiet=False, 
-            cvt=use_cvt,
-            min_snr=min_snr
-        )
+    def _single_bin_fallback():
+        """Create a minimal single-bin solution to allow downstream steps to proceed."""
+        valid = np.isfinite(signal) & np.isfinite(noise) & (signal > 0) & (noise > 0)
+        if not np.any(valid):
+            # If nothing valid, mark everything as bin 0 to keep shapes consistent
+            valid = np.ones_like(signal, dtype=bool)
+        bin_num_fb = -np.ones(len(x), dtype=int)
+        bin_num_fb[valid] = 0
+        # Bin center (generator) at the median of valid positions
+        x_gen_fb = np.array([np.median(x[valid])])
+        y_gen_fb = np.array([np.median(y[valid])])
+        x_bar_fb = x_gen_fb.copy()
+        y_bar_fb = y_gen_fb.copy()
+        # Aggregate SNR estimate for the bin
+        sn_fb = np.array([np.nanmedian(pixel_snr[valid])])
+        n_pixels_fb = np.array([int(np.sum(valid))])
+        scale_fb = 1.0
+        logger.warning("Using single-bin fallback due to low SNR or binning failure")
+        return bin_num_fb, x_gen_fb, y_gen_fb, x_bar_fb, y_bar_fb, sn_fb, n_pixels_fb, scale_fb
+
+    # Run the binning algorithm with guards and fallbacks
+    try:
+        if hasattr(args, "optimize_bins") and args.optimize_bins:
+            logger.info("Using optimized binning to target 10-20 bins")
+            bin_num, x_gen, y_gen, x_bar, y_bar, sn, n_pixels, scale = optimize_voronoi_binning(
+                x, y, signal, noise,
+                target_bin_count=15,  # Target around 15 bins
+                min_bins=10,          # Accept minimum 10 bins
+                max_bins=20,          # Accept maximum 20 bins
+                cvt=use_cvt,
+                quiet=not verbose
+            )
+        else:
+            # Run with standard parameters if optimization not requested
+            bin_num, x_gen, y_gen, x_bar, y_bar, sn, n_pixels, scale = run_voronoi_binning(
+                x, y, signal, noise,
+                target_snr=safe_target_snr,
+                plot=0,
+                quiet=False,
+                cvt=use_cvt,
+                min_snr=min_snr
+            )
+    except Exception as e:
+        logger.warning(f"Voronoi binning failed with error: {e}")
+        # Try a more permissive retry once, then fallback
+        try:
+            retry_target = max(2.0, min(0.8 * max_pixel_snr if np.isfinite(max_pixel_snr) else 5.0, 5.0))
+            logger.info(f"Retrying Voronoi binning with reduced target SNR = {retry_target:.1f}")
+            bin_num, x_gen, y_gen, x_bar, y_bar, sn, n_pixels, scale = run_voronoi_binning(
+                x, y, signal, noise,
+                target_snr=retry_target,
+                plot=0,
+                quiet=True,
+                cvt=use_cvt,
+                min_snr=1
+            )
+        except Exception as e2:
+            logger.warning(f"Retry failed: {e2}")
+            if enable_single_bin_fallback:
+                bin_num, x_gen, y_gen, x_bar, y_bar, sn, n_pixels, scale = _single_bin_fallback()
+            else:
+                # As a last resort, use fallback to avoid aborting the pipeline
+                bin_num, x_gen, y_gen, x_bar, y_bar, sn, n_pixels, scale = _single_bin_fallback()
 
     # Create bin indices
     bin_indices = []

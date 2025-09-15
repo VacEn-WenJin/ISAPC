@@ -2,7 +2,7 @@
 """
 ISAPC Batch Processing Script - Multithreaded
 Run all MUSE galaxies with proven working parameters
-Using 3 jobs for improved performance
+Threading: joblib n_jobs=4 and BLAS threads pinned to 4 (empirically fastest on this host)
 """
 
 import subprocess
@@ -10,33 +10,11 @@ import glob
 import os
 import time
 from pathlib import Path
+from galaxy_catalog import get_redshift
 
 def get_galaxy_redshift(galaxy_name):
-    """Get redshift for each galaxy from the observed galaxy list"""
-    redshifts = {
-        'M60': 0.0034,
-        'VCC1588': 0.0042,
-        'VCC1890': 0.0040,
-        'VCC1368': 0.0035,
-        'VCC1902': 0.0038,
-        'VCC1524': 0.0052,
-        'VCC1949': 0.0058,
-        'VCC0990': 0.0058,
-        'VCC1410': 0.0054,
-        'VCC1695': 0.0058,
-        'VCC0667': 0.0048,
-        'VCC1549': 0.0046,
-        'VCC0308': 0.0055,
-        'VCC1431': 0.0050,
-        'VCC1811': 0.0023,
-        'VCC0608': 0.0038,
-        'VCC1146': 0.0023,
-        'VCC1049': 0.0021,
-        'VCC1193': 0.0025,
-        'VCC1910': 0.0007,
-        'VCC1486': 0.0004
-    }
-    return redshifts.get(galaxy_name, 0.0042)
+    """Get redshift for each galaxy from the centralized catalog"""
+    return get_redshift(galaxy_name)
 
 def run_isapc_for_galaxy(fits_file):
     """Run ISAPC for a single galaxy with proven parameters"""
@@ -63,7 +41,7 @@ def run_isapc_for_galaxy(fits_file):
         '--vel-init', '0.0',
         '--sigma-init', '50.0',
         '--poly-degree', '3',
-        '--n-jobs', '3',  # Use 3 jobs for multithreading
+        '--n-jobs', '4',  # Use 4 jobs based on local benchmark
         '--save-error-maps',
         '--auto-reuse',
         '--cvt',
@@ -76,8 +54,14 @@ def run_isapc_for_galaxy(fits_file):
     start_time = time.time()
     
     try:
+        # Environment tuning to avoid oversubscription and match benchmark
+        env = os.environ.copy()
+        env.setdefault("OMP_NUM_THREADS", "4")
+        env.setdefault("OPENBLAS_NUM_THREADS", "4")
+        env.setdefault("MKL_NUM_THREADS", "4")
+        env.setdefault("NUMEXPR_NUM_THREADS", "4")
         # Run the command
-        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True, env=env)
         
         end_time = time.time()
         duration = end_time - start_time
