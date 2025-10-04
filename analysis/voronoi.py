@@ -305,22 +305,32 @@ def run_vnb_analysis(args, cube, p2p_results=None):
     wave_mask = (cube._lambda_gal >= 5075) & (cube._lambda_gal <= 5125)
     if np.sum(wave_mask) > 0:
         signal = np.nanmedian(cube._spectra[wave_mask], axis=0)
-        noise = np.nanstd(cube._spectra[wave_mask], axis=0)
+        # Prefer robust local noise; fallback to std
+        try:
+            from scipy.stats import median_abs_deviation as _mad
+            noise = _mad(cube._spectra[wave_mask], axis=0, nan_policy='omit') * 1.4826
+            # If MAD is degenerate (zeros), mix with std
+            bad = ~np.isfinite(noise) | (noise <= 0)
+            if np.any(bad):
+                alt = np.nanstd(cube._spectra[wave_mask], axis=0)
+                noise = np.where(bad, alt, noise)
+        except Exception:
+            noise = np.nanstd(cube._spectra[wave_mask], axis=0)
         logger.info("Using wavelength range 5075-5125 Å for SNR calculation")
     else:
         signal = np.nanmedian(cube._spectra, axis=0)
-        # Robust noise: prefer variance if present and valid; else fall back to spectral std
-        variance = getattr(cube, "_variance", None)
-        if variance is not None and np.ndim(variance) >= 1:
+        # Handle variance safely; if missing/None, estimate robustly from spectra
+        if hasattr(cube, "_variance") and cube._variance is not None:
+            var = np.array(cube._variance)
+            var = np.where(np.isfinite(var) & (var >= 0), var, np.nan)
+            noise = np.nanmedian(np.sqrt(var), axis=0)
+        else:
             try:
-                noise = np.nanmedian(np.sqrt(variance), axis=0)
+                from scipy.stats import median_abs_deviation as _mad
+                noise = _mad(cube._spectra, axis=0, nan_policy='omit') * 1.4826
             except Exception:
                 noise = np.nanstd(cube._spectra, axis=0)
-        else:
-            noise = np.nanstd(cube._spectra, axis=0)
-        # Apply tiny floor to avoid zeros
-        noise = np.where(~np.isfinite(noise) | (noise <= 0), 0.01, noise)
-        logger.info("Using full spectrum for SNR calculation (robust fallback)")
+        logger.info("Using full spectrum for SNR calculation")
 
     # Preprocess signal and noise
     min_threshold = 1.0
@@ -431,56 +441,20 @@ def run_vnb_analysis(args, cube, p2p_results=None):
     else:
         safe_target_snr = target_snr
 
-    # Extra guard for very low-SNR data: cap target to a fraction of max SNR
-    enable_single_bin_fallback = False
-    if np.isfinite(max_pixel_snr) and max_pixel_snr > 0:
-        if max_pixel_snr < 0.6 * safe_target_snr:
-            new_safe = max(2.0, min(0.8 * max_pixel_snr, 5.0))
-            if new_safe < safe_target_snr:
-                logger.warning(
-                    f"Max pixel SNR ({max_pixel_snr:.1f}) too low for target {safe_target_snr:.1f}; "
-                    f"reducing target to {new_safe:.1f} and enabling robust fallback"
-                )
-                safe_target_snr = new_safe
-                enable_single_bin_fallback = True
-    # If the entire field is extremely low SNR, pre-enable fallback
-    if median_snr < 1.5 and max_pixel_snr < 5:
-        enable_single_bin_fallback = True
-
     # Log the number of valid pixels being used
     valid_mask = np.isfinite(signal) & np.isfinite(noise) & (signal > 0) & (noise > 0)
     logger.info(f"Using {np.sum(valid_mask)} valid pixels out of {len(signal)} for Voronoi binning")
     logger.info(f"Median SNR in data: {median_snr:.1f}, Maximum SNR: {max_pixel_snr:.1f}")
     logger.info(f"Trying Voronoi binning with target SNR = {safe_target_snr:.1f}")
 
-    def _single_bin_fallback():
-        """Create a minimal single-bin solution to allow downstream steps to proceed."""
-        valid = np.isfinite(signal) & np.isfinite(noise) & (signal > 0) & (noise > 0)
-        if not np.any(valid):
-            # If nothing valid, mark everything as bin 0 to keep shapes consistent
-            valid = np.ones_like(signal, dtype=bool)
-        bin_num_fb = -np.ones(len(x), dtype=int)
-        bin_num_fb[valid] = 0
-        # Bin center (generator) at the median of valid positions
-        x_gen_fb = np.array([np.median(x[valid])])
-        y_gen_fb = np.array([np.median(y[valid])])
-        x_bar_fb = x_gen_fb.copy()
-        y_bar_fb = y_gen_fb.copy()
-        # Aggregate SNR estimate for the bin
-        sn_fb = np.array([np.nanmedian(pixel_snr[valid])])
-        n_pixels_fb = np.array([int(np.sum(valid))])
-        scale_fb = 1.0
-        logger.warning("Using single-bin fallback due to low SNR or binning failure")
-        return bin_num_fb, x_gen_fb, y_gen_fb, x_bar_fb, y_bar_fb, sn_fb, n_pixels_fb, scale_fb
-
-    # Run the binning algorithm with guards and fallbacks
+    # Run the binning algorithm using optimization for 10-20 bins
     try:
         if hasattr(args, "optimize_bins") and args.optimize_bins:
             logger.info("Using optimized binning to target 10-20 bins")
             bin_num, x_gen, y_gen, x_bar, y_bar, sn, n_pixels, scale = optimize_voronoi_binning(
-                x, y, signal, noise,
+                x, y, signal, noise, 
                 target_bin_count=15,  # Target around 15 bins
-                min_bins=10,          # Accept minimum 10 bins
+                min_bins=10,          # Accept minimum 10 bins 
                 max_bins=20,          # Accept maximum 20 bins
                 cvt=use_cvt,
                 quiet=not verbose
@@ -488,34 +462,32 @@ def run_vnb_analysis(args, cube, p2p_results=None):
         else:
             # Run with standard parameters if optimization not requested
             bin_num, x_gen, y_gen, x_bar, y_bar, sn, n_pixels, scale = run_voronoi_binning(
-                x, y, signal, noise,
+                x, y, signal, noise, 
                 target_snr=safe_target_snr,
-                plot=0,
-                quiet=False,
+                plot=0, 
+                quiet=False, 
                 cvt=use_cvt,
                 min_snr=min_snr
             )
-    except Exception as e:
-        logger.warning(f"Voronoi binning failed with error: {e}")
-        # Try a more permissive retry once, then fallback
-        try:
-            retry_target = max(2.0, min(0.8 * max_pixel_snr if np.isfinite(max_pixel_snr) else 5.0, 5.0))
-            logger.info(f"Retrying Voronoi binning with reduced target SNR = {retry_target:.1f}")
-            bin_num, x_gen, y_gen, x_bar, y_bar, sn, n_pixels, scale = run_voronoi_binning(
-                x, y, signal, noise,
-                target_snr=retry_target,
-                plot=0,
-                quiet=True,
-                cvt=use_cvt,
-                min_snr=1
-            )
-        except Exception as e2:
-            logger.warning(f"Retry failed: {e2}")
-            if enable_single_bin_fallback:
-                bin_num, x_gen, y_gen, x_bar, y_bar, sn, n_pixels, scale = _single_bin_fallback()
-            else:
-                # As a last resort, use fallback to avoid aborting the pipeline
-                bin_num, x_gen, y_gen, x_bar, y_bar, sn, n_pixels, scale = _single_bin_fallback()
+    except Exception as _vnb_err:
+        logger.warning(f"Voronoi binning failed ({_vnb_err}); falling back to single-bin VNB.")
+        # Fallback: single Voronoi bin over all valid pixels
+        valid = (signal > 0) & (noise > 0) & np.isfinite(signal) & np.isfinite(noise)
+        if np.sum(valid) < 1:
+            # If nothing valid, create a single pseudo-pixel bin to avoid crash
+            valid = np.zeros_like(signal, dtype=bool)
+            valid[:1] = True
+        full_bin_num = np.full(len(x), -1, dtype=int)
+        full_bin_num[valid] = 0
+        bin_num = full_bin_num
+        xv, yv = x[valid], y[valid]
+        x_gen = np.array([float(np.nanmedian(xv)) if xv.size else 0.0])
+        y_gen = np.array([float(np.nanmedian(yv)) if yv.size else 0.0])
+        x_bar = x_gen.copy(); y_bar = y_gen.copy()
+        snr_vals = (signal[valid] / np.maximum(noise[valid], 1e-6)) if np.any(valid) else np.array([1.0])
+        sn = np.array([float(np.nanmedian(snr_vals)) if snr_vals.size else 1.0])
+        n_pixels = np.array([int(np.sum(valid))])
+        scale = 1.0
 
     # Create bin indices
     bin_indices = []
@@ -1156,14 +1128,18 @@ def create_vnb_plots(cube, vnb_results, galaxy_name, plots_dir, args):
                     
                 # Velocity map with physical scaling
                 fig, ax = plt.subplots(figsize=(10, 8))
+                # Guard percentiles from empty arrays
+                vel_finite = velocity[np.isfinite(velocity)]
+                vmin = np.percentile(vel_finite, 5) if vel_finite.size > 0 else None
+                vmax = np.percentile(vel_finite, 95) if vel_finite.size > 0 else None
                 visualization.plot_bin_map(
                     bin_num_2d,
                     velocity,
                     ax=ax,
                     cmap="coolwarm",
                     title=f"{galaxy_name} - VNB Velocity",
-                    vmin=np.percentile(velocity[np.isfinite(velocity)], 5),
-                    vmax=np.percentile(velocity[np.isfinite(velocity)], 95),
+                    vmin=vmin,
+                    vmax=vmax,
                     colorbar_label="Velocity (km/s)",
                     physical_scale=True,
                     pixel_size=(cube._pxl_size_x, cube._pxl_size_y),
@@ -1176,14 +1152,17 @@ def create_vnb_plots(cube, vnb_results, galaxy_name, plots_dir, args):
                 
                 # Dispersion map with physical scaling
                 fig, ax = plt.subplots(figsize=(10, 8))
+                disp_finite = dispersion[np.isfinite(dispersion)]
+                dmin = np.percentile(disp_finite, 5) if disp_finite.size > 0 else None
+                dmax = np.percentile(disp_finite, 95) if disp_finite.size > 0 else None
                 visualization.plot_bin_map(
                     bin_num_2d,
                     dispersion,
                     ax=ax,
                     cmap="viridis",
                     title=f"{galaxy_name} - VNB Dispersion",
-                    vmin=np.percentile(dispersion[np.isfinite(dispersion)], 5),
-                    vmax=np.percentile(dispersion[np.isfinite(dispersion)], 95),
+                    vmin=dmin,
+                    vmax=dmax,
                     colorbar_label="Dispersion (km/s)",
                     physical_scale=True,
                     pixel_size=(cube._pxl_size_x, cube._pxl_size_y),
@@ -1527,6 +1506,7 @@ def create_vnb_plots(cube, vnb_results, galaxy_name, plots_dir, args):
                                         label = "Dispersion (km/s)"
                                         log_scale = False
                                         
+                                    # Let plot_bin_map handle value mapping and normalization safely
                                     visualization.plot_bin_map(
                                         bin_num_2d,
                                         line_values,
