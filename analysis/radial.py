@@ -18,7 +18,8 @@ from binning import (
     RadialBinnedData,
     calculate_radial_bins,
     calculate_wavelength_intersection,
-    calculate_radial_bins_re_based
+    calculate_radial_bins_re_based,
+    combine_spectra_efficiently  # fallback combiner
 )
 from utils.io import save_standardized_results
 from utils.error_propagation import (
@@ -77,6 +78,14 @@ def combine_spectra_with_errors(spectra, wavelength, bin_indices, velocity_field
     if use_covariance and errors is not None:
         x_coords = np.arange(nx * ny) % nx
         y_coords = np.arange(nx * ny) // nx
+
+    try:
+        total_spec = spectra.shape[1]
+        logger.info(f"[RDB BINNING] starting combination: n_wave={n_wave} n_spec={total_spec} n_bins={n_bins}")
+        sizes = [len(bi) for bi in bin_indices]
+        logger.info(f"[RDB BINNING] bin pixel counts: {sizes}")
+    except Exception:
+        pass
     
     for i, indices in enumerate(bin_indices):
         if len(indices) == 0:
@@ -85,6 +94,14 @@ def combine_spectra_with_errors(spectra, wavelength, bin_indices, velocity_field
         # Get spectra for this bin
         bin_spectra = spectra[:, indices].copy()
         bin_errors_subset = errors[:, indices].copy() if errors is not None else None
+
+        # Diagnostics: raw bin stats before any velocity correction
+        try:
+            raw_med = float(np.nanmedian(bin_spectra)) if bin_spectra.size else np.nan
+            raw_nonzero = int(np.count_nonzero(np.abs(bin_spectra) > 0))
+            logger.info(f"[RDB BIN {i}] pre-shift: n_pix={len(indices)} median={raw_med:.4g} nonzero={raw_nonzero}/{bin_spectra.size}")
+        except Exception:
+            pass
         
         # Handle velocity correction
         if velocity_field is not None:
@@ -160,6 +177,20 @@ def combine_spectra_with_errors(spectra, wavelength, bin_indices, velocity_field
                                            kind='linear', bounds_error=False,
                                            fill_value='extrapolate')
                             bin_errors_subset[:, j] = f_err(wavelength)
+                else:
+                    # Mark invalid velocities
+                    if not np.isfinite(vel):
+                        logger.info(f"[RDB BIN {i}] pixel {j} velocity NaN skipped")
+                    elif np.abs(vel) >= 1000:
+                        logger.info(f"[RDB BIN {i}] pixel {j} velocity {vel:.1f} km/s skipped (out of range)")
+
+        # Diagnostics: after velocity correction
+        try:
+            post_med = float(np.nanmedian(bin_spectra)) if bin_spectra.size else np.nan
+            post_nonzero = int(np.count_nonzero(np.abs(bin_spectra) > 0))
+            logger.info(f"[RDB BIN {i}] post-shift: median={post_med:.4g} nonzero={post_nonzero}/{bin_spectra.size}")
+        except Exception:
+            pass
         
         # Combine spectra with optimal weighting
         if bin_errors_subset is not None:
@@ -212,7 +243,10 @@ def combine_spectra_with_errors(spectra, wavelength, bin_indices, velocity_field
                 weights /= weight_sum
                 
                 # Combine spectra
-                binned_spectra[:, i] = np.sum(bin_spectra * weights, axis=1)
+                combined = np.sum(bin_spectra * weights, axis=1)
+                binned_spectra[:, i] = combined
+                if not np.any(combined):
+                    logger.info(f"[RDB BIN {i}] combined spectrum all zeros after weighting")
                 
                 # Propagate errors
                 binned_errors[:, i] = 1.0 / np.sqrt(np.sum(1.0 / safe_errors**2, axis=1))
@@ -223,6 +257,8 @@ def combine_spectra_with_errors(spectra, wavelength, bin_indices, velocity_field
             n_valid[n_valid == 0] = 1  # Avoid division by zero
             
             binned_spectra[:, i] = np.nansum(bin_spectra, axis=1) / n_valid
+            if not np.any(binned_spectra[:, i]):
+                logger.info(f"[RDB BIN {i}] combined spectrum all zeros (simple mean)")
     
     if errors is not None:
         return binned_spectra, binned_errors
@@ -367,17 +403,44 @@ def run_rdb_analysis(args, cube, p2p_results=None):
         # Use 3 Re as the maximum radius as requested
         max_radius_scale = 3.0  # 3 times Re as maximum radius
         
-        bin_num, bin_edges, bin_radii = calculate_radial_bins_re_based(
-            x, y,
-            center_x=center_x,
-            center_y=center_y,
-            pa=pa,
-            ellipticity=ellipticity,
-            effective_radius=Re_arcsec,
-            r_galaxy=r_galaxy.ravel() if r_galaxy is not None else None,
-            max_radius_scale=max_radius_scale,  # Use 3 Re as maximum radius
-            n_bins=n_rings  # Still use the specified number of rings
-        )
+        # Choose binning strategy: flux-equalized for inner bins if requested
+        try:
+            equalize_flux = bool(getattr(args, 'rdb_equalize_flux', False))
+            n_inner_eq = int(getattr(args, 'rdb_equalize_n_inner', 3))
+            bin2_bias = float(getattr(args, 'rdb_bin2_bias', 1.0))
+        except Exception:
+            equalize_flux = False; n_inner_eq = 3; bin2_bias = 1.0
+
+        if equalize_flux:
+            from binning import calculate_flux_equalized_bins
+            # Build a robust flux map (median across wavelength) for flux quotas
+            try:
+                flux_2d = np.nanmedian(cube._cube_data, axis=0)
+            except Exception:
+                flux_2d = np.nanmedian(cube._spectra.reshape(-1, cube._n_y, cube._n_x), axis=0)
+            logger.info(f"RDB equalize-flux enabled: inner={n_inner_eq}, bin2_bias={bin2_bias:.2f}")
+            bin_num, bin_edges, bin_radii = calculate_flux_equalized_bins(
+                x, y, flux_2d,
+                center_x=center_x, center_y=center_y, pa=pa, ellipticity=ellipticity,
+                effective_radius=Re_arcsec,
+                r_galaxy=(r_galaxy if r_galaxy is not None else None),
+                max_radius_scale=max_radius_scale,
+                n_bins=n_rings,
+                n_inner_equalize=n_inner_eq,
+                bin2_bias=bin2_bias
+            )
+        else:
+            bin_num, bin_edges, bin_radii = calculate_radial_bins_re_based(
+                x, y,
+                center_x=center_x,
+                center_y=center_y,
+                pa=pa,
+                ellipticity=ellipticity,
+                effective_radius=Re_arcsec,
+                r_galaxy=r_galaxy.ravel() if r_galaxy is not None else None,
+                max_radius_scale=max_radius_scale,  # Use 3 Re as maximum radius
+                n_bins=n_rings  # Still use the specified number of rings
+            )
     else:
         # Fallback to standard radial binning if Re-binning not available
         logger.warning("Using standard radial binning as Re could not be calculated")
@@ -487,6 +550,70 @@ def run_rdb_analysis(args, cube, p2p_results=None):
         binned_spectra = result
         binned_errors = None
 
+    # --- Integrity protection: backup original combined spectra ---
+    orig_binned_spectra = binned_spectra.copy()
+    orig_binned_errors = binned_errors.copy() if binned_errors is not None else None
+
+    def _restore_if_zeroed(stage_label: str):
+        """Check each bin; if entirely zero (or all identical) but original had flux variation, restore it."""
+        try:
+            restored = 0
+            for bi in range(binned_spectra.shape[1]):
+                col = binned_spectra[:, bi]
+                orig = orig_binned_spectra[:, bi]
+                # Criteria: saved column all zeros OR (max==min) while original had dynamic range > small threshold
+                if (np.all(col == 0)) or (np.nanmax(col) - np.nanmin(col) < 1e-12 and (np.nanmax(orig) - np.nanmin(orig) > 1e-6)):
+                    # Try primary restore from original backup
+                    binned_spectra[:, bi] = orig
+                    if binned_errors is not None and orig_binned_errors is not None:
+                        binned_errors[:, bi] = orig_binned_errors[:, bi]
+                    # If still flat / zero, reconstruct from raw member spectra simple mean
+                    if np.all(binned_spectra[:, bi] == 0) and spectra is not None and bi < len(bin_indices):
+                        member_idx = bin_indices[bi]
+                        if len(member_idx) > 0:
+                            recon = np.nanmean(spectra[:, member_idx], axis=1)
+                            binned_spectra[:, bi] = recon
+                    restored += 1
+            if restored:
+                logger.warning(f"Restored {restored} zeroed/flattened binned spectra columns at stage '{stage_label}'.")
+        except Exception as _e:
+            logger.debug(f"Integrity restore skipped ({stage_label}): {_e}")
+
+    # Initial integrity check immediately after combination
+    _restore_if_zeroed('post-combine')
+    save_path = data_dir / f"{galaxy_name}_RDB_binned.npz"
+    # If after initial restore more than half of non-central bins still zero, attempt fallback recombination
+    try:
+        zero_cols = [bi for bi in range(1, binned_spectra.shape[1]) if np.all(binned_spectra[:, bi] == 0)]
+        if len(zero_cols) >= max(1, (binned_spectra.shape[1]-1)//2):
+            logger.warning("Significant number of zeroed bins detected; attempting fallback combination (combine_spectra_efficiently).")
+            fb_result = combine_spectra_efficiently(
+                spectra, wavelength, bin_indices, velocity_field,
+                cube._n_x, cube._n_y,
+                edge_treatment="extend",
+                use_separate_velocity=True,
+                errors=spec_errors,
+                use_covariance=True,
+                correlation_length=2.0
+            )
+            if spec_errors is not None:
+                fb_spectra, fb_errors = fb_result
+            else:
+                fb_spectra, fb_errors = fb_result, None
+            # Replace only zero columns to preserve any good ones
+            replaced = 0
+            for bi in zero_cols:
+                if bi < fb_spectra.shape[1] and not np.all(fb_spectra[:, bi] == 0):
+                    binned_spectra[:, bi] = fb_spectra[:, bi]
+                    if binned_errors is not None and fb_errors is not None:
+                        binned_errors[:, bi] = fb_errors[:, bi]
+                    replaced += 1
+            if replaced:
+                logger.warning(f"Replaced {replaced} zeroed columns using fallback combiner.")
+            _restore_if_zeroed('post-fallback')
+    except Exception as _e:
+        logger.warning(f"Fallback combination failed: {_e}")
+
     # Create metadata
     metadata = {
         "nx": cube._n_x,
@@ -530,6 +657,9 @@ def run_rdb_analysis(args, cube, p2p_results=None):
         metadata=metadata,
         bin_radii=bin_radii,
     )
+
+    # Second integrity check after wrapping (in case external references modified array)
+    _restore_if_zeroed('post-wrapper')
 
     # Set up binning in the cube - this connects our binned data to the cube
     if hasattr(cube, "setup_binning"):
@@ -601,6 +731,30 @@ def run_rdb_analysis(args, cube, p2p_results=None):
                 except Exception as e:
                     logger.debug(f"Error calculating stellar params for bin {bin_idx}: {e}")
 
+            # Ensure arrays match the number of radial bins (distance points)
+            try:
+                target_len = len(bin_radii) if 'bin_radii' in locals() and bin_radii is not None else n_bins
+                def _align_len(arr, n):
+                    a = np.asarray(arr).ravel()
+                    if a.size == n:
+                        return a
+                    # pad or truncate to n
+                    out = np.full(n, np.nan, dtype=float)
+                    m = min(n, a.size)
+                    if m > 0:
+                        out[:m] = a[:m]
+                    return out
+                adjusted = False
+                for k in list(stellar_pop_params.keys()):
+                    old = stellar_pop_params[k]
+                    if np.asarray(old).size != target_len:
+                        stellar_pop_params[k] = _align_len(old, target_len)
+                        adjusted = True
+                if adjusted:
+                    logger.info(f"Aligned stellar population arrays to radial bins: target_len={target_len}")
+            except Exception as _e_align:
+                logger.debug(f"Stellar population alignment skipped: {_e_align}")
+
             logger.info(f"Stellar population parameters extracted in {time.time() - start_sp_time:.1f} seconds")
         except Exception as e:
             logger.error(f"Failed to extract stellar population parameters: {e}")
@@ -648,6 +802,8 @@ def run_rdb_analysis(args, cube, p2p_results=None):
             "bin_radii": bin_radii,
             "max_radius_scale": max_radius_scale if 'max_radius_scale' in locals() else None,
         },
+        # Store full spatial velocity/dispersion fields (may be per-spaxel maps when using binned fitting)
+        # and immediately compute robust per-radial-bin aggregates to avoid later dimension mismatch logic.
         "stellar_kinematics": {
             "velocity": stellar_velocity_field,
             "dispersion": stellar_dispersion_field,
@@ -678,6 +834,54 @@ def run_rdb_analysis(args, cube, p2p_results=None):
             "redshift": cube._redshift if hasattr(cube, "_redshift") else 0.0,
         },
     }
+
+    # ------------------------------------------------------------------
+    # Aggregate stellar kinematics per radial bin right away so that
+    # downstream plotting uses 1D arrays matching len(bin_radii).
+    # We prefer using the velocity/dispersion maps with bin_indices mapping.
+    # ------------------------------------------------------------------
+    try:
+        sk = rdb_results["stellar_kinematics"]
+        vel_map = np.asarray(sk.get("velocity"))
+        disp_map = np.asarray(sk.get("dispersion"))
+
+        # Determine if maps are 2D (spatial). If already 1D of correct length, just copy.
+        if vel_map.ndim == 1 and vel_map.size == len(bin_indices):
+            vel_binned = vel_map.copy()
+            sig_binned = np.asarray(disp_map).copy() if disp_map.ndim == 1 else np.full(len(bin_indices), np.nan)
+        else:
+            # Build arrays via bin_indices (list of arrays of spaxel flatten indices)
+            # If maps are 2D, flatten them consistently with earlier binning convention (row-major)
+            if vel_map.ndim == 2:
+                vel_flat = vel_map.ravel()
+            else:
+                vel_flat = vel_map
+            if disp_map.ndim == 2:
+                disp_flat = disp_map.ravel()
+            else:
+                disp_flat = disp_map
+
+            vel_binned = np.full(len(bin_indices), np.nan)
+            sig_binned = np.full(len(bin_indices), np.nan)
+            for i, idx in enumerate(bin_indices):
+                try:
+                    if idx.size == 0:
+                        continue
+                    # idx holds original pixel indices relative to flattened cube ordering
+                    vvals = vel_flat[idx[(idx < vel_flat.size)]]
+                    svals = disp_flat[idx[(idx < disp_flat.size)]]
+                    if vvals.size > 0:
+                        vel_binned[i] = np.nanmedian(vvals)
+                    if svals.size > 0:
+                        sig_binned[i] = np.nanmedian(svals)
+                except Exception as _e:
+                    logger.debug(f"Failed aggregating bin {i}: {_e}")
+
+        # Attach aggregated arrays
+        rdb_results["stellar_kinematics"]["velocity_binned"] = vel_binned
+        rdb_results["stellar_kinematics"]["dispersion_binned"] = sig_binned
+    except Exception as e:
+        logger.warning(f"Failed early kinematic aggregation: {e}")
 
     # Add stellar population parameters if available
     if stellar_pop_params is not None:
@@ -774,6 +978,8 @@ def run_rdb_analysis(args, cube, p2p_results=None):
 
     # Save binned data for later reuse
     try:
+        # Final integrity check just before save
+        _restore_if_zeroed('pre-save')
         binned_data.save(data_dir / f"{galaxy_name}_RDB_binned.npz")
     except Exception as e:
         logger.warning(f"Error saving binned data: {e}")
@@ -787,20 +993,108 @@ def run_rdb_analysis(args, cube, p2p_results=None):
     should_plot = not hasattr(args, "no_plots") or not args.no_plots
     if should_plot:
         try:
+            # Export SNR, signal, noise maps if present
+            try:
+                from visualization import plot_bin_map, standardize_figure_saving
+                plots_dir = Path(output_dir) / galaxy_name / "Plots"
+                plots_dir.mkdir(parents=True, exist_ok=True)
+                # Attempt bin map reconstruction
+                bin_num = None
+                if "binning" in rdb_results and isinstance(rdb_results["binning"], dict):
+                    for k in ["radial_bin_map", "bin_map", "bin_num", "bin_numbers_2d"]:
+                        if k in rdb_results["binning"]:
+                            bin_num = rdb_results["binning"][k]
+                            break
+                # Save maps if possible
+                for key, cmap, label in [("snr", "viridis", "SNR"), ("signal", "plasma", "Signal"), ("noise", "magma", "Noise")]:
+                    if key in rdb_results and isinstance(rdb_results[key], np.ndarray):
+                        arr = rdb_results[key]
+                        try:
+                            if arr.ndim == 2:
+                                # Render 2D arrays directly
+                                fig, ax = plt.subplots(figsize=(8, 7))
+                                valid = arr[np.isfinite(arr)]
+                                if valid.size > 0:
+                                    vmin, vmax = np.percentile(valid, 2), np.percentile(valid, 98)
+                                else:
+                                    vmin, vmax = np.nanmin(arr), np.nanmax(arr)
+                                im = ax.imshow(arr, origin="lower", cmap=cmap, vmin=vmin, vmax=vmax, aspect="equal")
+                                plt.colorbar(im, ax=ax, label=label)
+                                ax.set_title(f"{galaxy_name} - RDB {label}")
+                                standardize_figure_saving(fig, plots_dir / f"{galaxy_name}_RDB_{key}_map.png")
+                                plt.close(fig)
+                            elif isinstance(bin_num, np.ndarray):
+                                # Fall back to bin-based map if available
+                                fig, ax = plt.subplots(figsize=(8, 7))
+                                plot_bin_map(bin_num, arr, ax=ax, cmap=cmap, title=f"{galaxy_name} - RDB {label}", colorbar_label=label)
+                                standardize_figure_saving(fig, plots_dir / f"{galaxy_name}_RDB_{key}_map.png")
+                                plt.close(fig)
+                        except Exception as e:
+                            logger.debug(f"RDB {key} export skipped: {e}")
+            except Exception as e:
+                logger.debug(f"RDB SNR export skipped: {e}")
+
             # Verify that the dimensions match before plotting to avoid errors
-            if 'bin_distances' in rdb_results['distance'] and 'velocity' in rdb_results['stellar_kinematics']:
+            if 'bin_distances' in rdb_results['distance'] and 'stellar_kinematics' in rdb_results:
                 distances = rdb_results['distance']['bin_distances']
-                velocity = rdb_results['stellar_kinematics']['velocity']
-                dispersion = rdb_results['stellar_kinematics']['dispersion']
-                
-                # Log the data shape to help debug dimension mismatches
-                logger.info(f"Expected data shape: distances={len(distances)}, velocity={len(velocity)}, dispersion={len(dispersion)}")
-                
-                if len(distances) != len(velocity):
-                    logger.warning(f"Dimension mismatch: distances={len(distances)}, velocity={len(velocity)}")
-                
-                if len(distances) != len(dispersion):
-                    logger.warning(f"Dimension mismatch: distances={len(distances)}, dispersion={len(dispersion)}")
+                sk = rdb_results['stellar_kinematics']
+
+                # Prefer pre-computed binned arrays if available
+                if 'velocity_binned' in sk and 'dispersion_binned' in sk:
+                    velocity = np.asarray(sk['velocity_binned'])
+                    dispersion = np.asarray(sk['dispersion_binned'])
+                else:
+                    velocity = sk.get('velocity')
+                    dispersion = sk.get('dispersion')
+
+                # Log shapes for debugging
+                logger.info(f"Radial plotting kinematics: distances={len(distances)}, velocity_len={len(velocity)}, dispersion_len={len(dispersion)}")
+
+                needs_aggregation = (len(distances) != len(velocity)) or (len(distances) != len(dispersion))
+                if needs_aggregation:
+                    try:
+                        # We expect that we have per-spaxel (flattened) velocity/dispersion and a mapping of spaxels to radial bins
+                        binning_info = rdb_results.get('binning', {})
+                        radial_bin_assignments = None
+                        # Preferred: an array with per-spaxel radial bin numbers (same length as velocity)
+                        for key in ['radial_bin_numbers', 'radial_bins', 'bin_num']:
+                            if key in binning_info:
+                                cand = binning_info[key]
+                                if isinstance(cand, np.ndarray) and cand.ndim in (1, 2):
+                                    radial_bin_assignments = cand
+                                    break
+                        if radial_bin_assignments is not None:
+                            # Flatten if 2D to match flattened kinematic arrays (heuristic)
+                            if radial_bin_assignments.ndim == 2 and radial_bin_assignments.size == velocity.size:
+                                radial_bin_flat = radial_bin_assignments.ravel()
+                            elif radial_bin_assignments.ndim == 1:
+                                radial_bin_flat = radial_bin_assignments
+                            else:
+                                # Shape mismatch; abort aggregation
+                                radial_bin_flat = None
+                            if radial_bin_flat is not None:
+                                # Ensure integer type
+                                radial_bin_flat = radial_bin_flat.astype(int)
+                                n_rad_bins = len(distances)
+                                vel_binned = np.zeros(n_rad_bins) * np.nan
+                                sig_binned = np.zeros(n_rad_bins) * np.nan
+                                for rb in range(n_rad_bins):
+                                    mask = radial_bin_flat == rb
+                                    if mask.any():
+                                        vel_vals = velocity[mask] if velocity.shape[0] == radial_bin_flat.shape[0] else None
+                                        sig_vals = dispersion[mask] if dispersion.shape[0] == radial_bin_flat.shape[0] else None
+                                        if vel_vals is not None and vel_vals.size > 0:
+                                            vel_binned[rb] = np.nanmedian(vel_vals)
+                                        if sig_vals is not None and sig_vals.size > 0:
+                                            sig_binned[rb] = np.nanmedian(sig_vals)
+                                # Store aggregated arrays for downstream plotting
+                                rdb_results['stellar_kinematics']['velocity_binned'] = vel_binned
+                                rdb_results['stellar_kinematics']['dispersion_binned'] = sig_binned
+                                logger.info('Created aggregated velocity_binned / dispersion_binned arrays to match radial distances.')
+                        else:
+                            logger.warning('Could not find radial bin assignment array to aggregate kinematics.')
+                    except Exception as agg_err:
+                        logger.warning(f'Failed to aggregate kinematics into radial bins: {agg_err}')
         except Exception as e:
             logger.warning(f"Error checking dimensions: {e}")
             
@@ -838,6 +1132,27 @@ def create_rdb_plots(cube, rdb_results, galaxy_name, plots_dir, args):
         ny, nx = cube._n_y, cube._n_x
         expected_shape = (ny, nx)
         logger.info(f"Expected data shape: {expected_shape}")
+        
+        # Quick export: SNR/signal/noise maps if present as 2D arrays in results
+        try:
+            for key, cmap, label in [("snr", "viridis", "SNR"), ("signal", "plasma", "Signal"), ("noise", "magma", "Noise")]:
+                arr = rdb_results.get(key)
+                if isinstance(arr, np.ndarray) and arr.ndim == 2:
+                    fig, ax = plt.subplots(figsize=(8, 7))
+                    valid = arr[np.isfinite(arr)]
+                    if valid.size > 0:
+                        vmin, vmax = np.percentile(valid, 2), np.percentile(valid, 98)
+                    else:
+                        vmin, vmax = np.nanmin(arr), np.nanmax(arr)
+                    im = ax.imshow(arr, origin="lower", cmap=cmap, vmin=vmin, vmax=vmax, aspect="equal")
+                    plt.colorbar(im, ax=ax, label=label)
+                    ax.set_title(f"{galaxy_name} - RDB {label}")
+                    visualization.standardize_figure_saving(
+                        fig, plots_dir / f"{galaxy_name}_RDB_{key}_map.png"
+                    )
+                    plt.close(fig)
+        except Exception as e:
+            logger.debug(f"Quick SNR/signal/noise export skipped: {e}")
         
         # Create flux map with correct dimensions
         flux_map = visualization.prepare_flux_map(cube)
@@ -1195,9 +1510,15 @@ def create_rdb_plots(cube, rdb_results, galaxy_name, plots_dir, args):
         # Create kinematics plots
         if "stellar_kinematics" in rdb_results and "distance" in rdb_results:
             try:
-                # Get bin-based data
-                velocity = np.asarray(rdb_results["stellar_kinematics"]["velocity"])
-                dispersion = np.asarray(rdb_results["stellar_kinematics"]["dispersion"])
+                # Get kinematic data (prefer pre-aggregated per-radial-bin arrays if available)
+                sk = rdb_results.get("stellar_kinematics", {})
+                if "velocity_binned" in sk and "dispersion_binned" in sk:
+                    velocity = np.asarray(sk["velocity_binned"])  # length should match bin_distances
+                    dispersion = np.asarray(sk["dispersion_binned"])  # same length
+                    logger.info("Using aggregated velocity_binned / dispersion_binned for radial profiles.")
+                else:
+                    velocity = np.asarray(sk.get("velocity", []))
+                    dispersion = np.asarray(sk.get("dispersion", []))
                 
                 if "bin_distances" in rdb_results["distance"]:
                     bin_distances = np.asarray(rdb_results["distance"]["bin_distances"])
@@ -1232,11 +1553,33 @@ def create_rdb_plots(cube, rdb_results, galaxy_name, plots_dir, args):
                 valid_velocity = velocity
                 
                 if len(valid_distances) != len(valid_velocity):
-                    logger.warning(f"Dimension mismatch: distances={len(valid_distances)}, velocity={len(valid_velocity)}")
-                    # Find common length
-                    min_len = min(len(valid_distances), len(valid_velocity))
-                    valid_distances = valid_distances[:min_len]
-                    valid_velocity = valid_velocity[:min_len]
+                    logger.warning(f"Velocity profile dimension mismatch (distances={len(valid_distances)}, velocity={len(valid_velocity)}); attempting to reconcile.")
+                    # Attempt to detect case where velocity is per-spaxel; if so, compute median per bin on the fly
+                    if len(valid_velocity) > len(valid_distances) and 'binning' in rdb_results and 'bin_num' in rdb_results['binning']:
+                        try:
+                            bin_ids = rdb_results['binning']['bin_num']
+                            if isinstance(bin_ids, np.ndarray):
+                                if bin_ids.ndim == 2:
+                                    bin_ids_flat = bin_ids.ravel()
+                                else:
+                                    bin_ids_flat = bin_ids
+                                if bin_ids_flat.shape[0] == valid_velocity.shape[0]:
+                                    vel_binned = []
+                                    for rb in range(len(valid_distances)):
+                                        m = bin_ids_flat == rb
+                                        if np.any(m):
+                                            vel_binned.append(np.nanmedian(valid_velocity[m]))
+                                        else:
+                                            vel_binned.append(np.nan)
+                                    valid_velocity = np.asarray(vel_binned)
+                                    logger.info("Computed on-the-fly binned velocity profile due to dimension mismatch.")
+                        except Exception as _e:
+                            logger.warning(f"Failed on-the-fly velocity aggregation: {_e}")
+                    # Final safeguard truncate
+                    if len(valid_distances) != len(valid_velocity):
+                        min_len = min(len(valid_distances), len(valid_velocity))
+                        valid_distances = valid_distances[:min_len]
+                        valid_velocity = valid_velocity[:min_len]
                 
                 ax.plot(valid_distances, valid_velocity, "o-", markersize=6, linewidth=1.5)
                 ax.set_xlabel("Radius (arcsec)")
@@ -2058,7 +2401,39 @@ def create_rdb_plots(cube, rdb_results, galaxy_name, plots_dir, args):
                     plt.close('all')
                     
                 # Create detailed spectral index plots for selected bins
-                if hasattr(cube, "_spectra") and hasattr(cube, "_lambda_gal") and hasattr(cube, "_template_weights"):
+                # Prefer in-memory binned data, else load from saved NPZ in Data/
+                can_make_detailed = False
+                binned_spectra = None
+                wavelength = None
+                if hasattr(cube, "_binned_data") and cube._binned_data is not None:
+                    try:
+                        binned_spectra = cube._binned_data.spectra
+                        wavelength = cube._binned_data.wavelength
+                        can_make_detailed = binned_spectra is not None and wavelength is not None
+                    except Exception:
+                        can_make_detailed = False
+                if not can_make_detailed:
+                    try:
+                        # Derive Data directory from plots_dir (../.. / Data)
+                        data_dir_guess = plots_dir.parent.parent / "Data"
+                        # Try common filenames
+                        cand = [
+                            data_dir_guess / f"{galaxy_name}_RDB_binned.npz",
+                            data_dir_guess / f"{galaxy_name}_stack_RDB_binned.npz",
+                        ]
+                        for f in cand:
+                            if f.exists():
+                                npz = np.load(f, allow_pickle=True)
+                                if "wavelength" in npz and "spectra" in npz:
+                                    wavelength = npz["wavelength"]
+                                    binned_spectra = npz["spectra"]
+                                    can_make_detailed = True
+                                    break
+                    except Exception as _e:
+                        logger.debug(f"Could not load binned data from NPZ: {_e}")
+                        can_make_detailed = False
+
+                if can_make_detailed:
                     try:
                         # Import spectral_indices
                         import spectral_indices
@@ -2069,75 +2444,412 @@ def create_rdb_plots(cube, rdb_results, galaxy_name, plots_dir, args):
                         idx_detail_dir.mkdir(exist_ok=True, parents=True)
                         
                         # Get binned data
-                        if hasattr(cube, "_binned_data") and cube._binned_data is not None:
-                            binned_spectra = cube._binned_data.spectra
-                            wavelength = cube._binned_data.wavelength
-                            
-                            # Select a subset of bins to plot
-                            n_bins = binned_spectra.shape[1]
-                            bins_to_plot = []
-                            
-                            if n_bins <= 10:
-                                bins_to_plot = list(range(n_bins))
-                            else:
-                                # Plot first, middle and last
-                                bins_to_plot = [0, n_bins // 2, n_bins - 1]
-                            
-                            # Plot selected bins
-                            for bin_idx in bins_to_plot:
-                                if bin_idx < binned_spectra.shape[1]:
+                        # Select only the first 3 innermost bins to plot
+                        n_bins = binned_spectra.shape[1]
+                        bins_to_plot = list(range(min(3, n_bins)))
+
+                        saved_norm_paths = []
+                        # For overlay-in-one-panel plot, collect normalized traces
+                        overlay_traces = []  # list of dicts per bin: {"label", "wave", "norm_obs", "norm_fit"}
+                        # Try to get R/Re per bin for labeling
+                        bin_r_over_re = None
+                        try:
+                            if isinstance(rdb_results, dict):
+                                dist_info = rdb_results.get("distance", {})
+                                bin_radii = dist_info.get("bin_distances")  # arcsec radii per bin edge or center
+                                re_arcsec = dist_info.get("effective_radius")
+                                if bin_radii is not None and re_arcsec is not None:
+                                    # If bin_radii is edges, approximate center positions for first 3 bins
+                                    arr = np.array(bin_radii)
+                                    if arr.ndim == 1 and arr.size >= 4:
+                                        # centers for first 3 annuli
+                                        centers = 0.5 * (arr[:-1] + arr[1:])
+                                    else:
+                                        centers = np.array(bin_radii)
+                                    bin_r_over_re = centers / float(re_arcsec)
+                        except Exception:
+                            bin_r_over_re = None
+                        # Plot selected bins (first 3) and save normalized-only figures per bin
+                        for bin_idx in bins_to_plot:
+                            if bin_idx < binned_spectra.shape[1]:
                                     try:
-                                        # Get stellar template fit
+                                        # Choose fitted spectrum on wavelength grid
                                         if hasattr(cube, "_bin_bestfit") and cube._bin_bestfit is not None:
-                                            bestfit = cube._bin_bestfit[:, bin_idx]
+                                            fit_wave = wavelength
+                                            fit_flux = cube._bin_bestfit[:, bin_idx]
                                         else:
-                                            # Skip if no bestfit available
-                                            continue
-                                            
-                                        # Get template and optimal weights
-                                        if hasattr(cube, "_sps") and hasattr(cube, "_optimal_weights"):
-                                            template = cube._sps.lam_temp
-                                            weights = cube._optimal_weights[:, bin_idx]
-                                        else:
-                                            template = wavelength
-                                            weights = np.ones_like(wavelength)
+                                            # Fallback: use observed binned spectrum as fit
+                                            fit_wave = wavelength
+                                            fit_flux = binned_spectra[:, bin_idx]
                                         
-                                        # Get gas emission if available
+                                        # Get gas emission if available (use bin-level emission, not field)
                                         em_wave = None
                                         em_flux = None
-                                        if hasattr(cube, "_gas_bestfit") and cube._gas_bestfit is not None:
-                                            em_wave = wavelength
-                                            em_flux = cube._gas_bestfit[:, bin_idx]
+                                        if hasattr(cube, "_bin_gas_bestfit") and cube._bin_gas_bestfit is not None:
+                                            try:
+                                                # Expect shape (n_wave, n_bins)
+                                                em_wave = wavelength
+                                                em_flux = cube._bin_gas_bestfit[:, bin_idx]
+                                            except Exception:
+                                                em_wave = None
+                                                em_flux = None
                                         
-                                        # Get velocity
-                                        vel = rdb_results["stellar_kinematics"]["velocity"][bin_idx]
+                                        # Get per-bin stellar velocity as scalar to avoid broadcasting issues
+                                        v_star = 0.0
+                                        try:
+                                            if hasattr(cube, "_bin_velocity") and cube._bin_velocity is not None:
+                                                v_val = cube._bin_velocity[bin_idx]
+                                                if np.isfinite(v_val):
+                                                    v_star = float(v_val)
+                                            else:
+                                                # Fallback: use median of velocity field within bin indices if available
+                                                if "pixel_indices" in rdb_results and bin_idx in rdb_results["pixel_indices"]:
+                                                    pyx = rdb_results["pixel_indices"][bin_idx]
+                                                    vfield = rdb_results.get("stellar_kinematics", {}).get("velocity_field")
+                                                    if vfield is not None and len(pyx) > 0:
+                                                        vals = [vfield[y, x] for (y, x) in pyx if np.isfinite(vfield[y, x])]
+                                                        if len(vals) > 0:
+                                                            v_star = float(np.nanmedian(vals))
+                                        except Exception:
+                                            v_star = 0.0
                                         
                                         # Create calculator
+                                        # Gas velocity: if available, use bin gas vel else use stellar vel
+                                        v_gas = v_star
+                                        try:
+                                            if hasattr(cube, "_bin_emission_vel") and isinstance(cube._bin_emission_vel, dict):
+                                                # prefer Hbeta if present
+                                                if "Hbeta" in cube._bin_emission_vel and np.isfinite(cube._bin_emission_vel["Hbeta"][bin_idx]):
+                                                    v_gas = float(cube._bin_emission_vel["Hbeta"][bin_idx])
+                                        except Exception:
+                                            pass
+
+                                        # ------------------------------------------------------------------
+                                        # Refined rest-frame handling
+                                        # We determine whether the spectra are already in systemic rest frame
+                                        # by estimating the observed redshift (median of line centers) vs the
+                                        # catalog/systemic redshift. Classification:
+                                        #   - If median z_obs ~ 0  (|z_obs| < 0.001)  -> already rest frame
+                                        #   - If z_obs ~ z_sys (|z_obs - z_sys| < 0.001) -> observed frame
+                                        #   - Else ambiguous -> assume rest (avoid double shifting) and warn
+                                        # We always remove residual stellar velocity (v_star) for index
+                                        # calculations so lines align with templates.
+                                        # ------------------------------------------------------------------
+                                        try:
+                                            from galaxy_catalog import get_redshift as _get_z
+                                        except Exception:
+                                            _get_z = lambda _g: 0.0
+                                        _c = 299792.458
+
+                                        if 'frame_classification' not in locals():
+                                            frame_classification = {
+                                                'checked': False,
+                                                'status': 'unknown',  # 'rest' | 'observed' | 'ambiguous'
+                                                'z_sys': None,
+                                            }
+
+                                        def _estimate_z_obs(_wave, _flux, _z_catalog):
+                                            lines = {
+                                                'Hbeta': 4861.33,
+                                                'Mgb': 5175.0,
+                                                'Fe5270': 5270.0,
+                                                'Fe5335': 5335.0,
+                                            }
+                                            z_vals = []
+                                            for _lname, _rest in lines.items():
+                                                guess = _rest * (1 + _z_catalog)
+                                                mask = (_wave > guess - 25) & (_wave < guess + 25)
+                                                if mask.sum() < 10:
+                                                    continue
+                                                w_sub = _wave[mask]
+                                                f_sub = _flux[mask]
+                                                if f_sub.size < 5:
+                                                    continue
+                                                sm = np.convolve(f_sub, np.ones(5)/5.0, mode='same')
+                                                center = w_sub[np.argmin(sm)]
+                                                z_obs = center / _rest - 1.0
+                                                z_vals.append(z_obs)
+                                            if not z_vals:
+                                                return None
+                                            return float(np.nanmedian(z_vals))
+
+                                        # If the cube wavelength axis is already systemic-rest (set in MUSECube preprocessing)
+                                        if getattr(cube, '_wave_frame', None) == 'rest' and not frame_classification['checked']:
+                                            frame_classification.update({
+                                                'checked': True,
+                                                'status': 'rest',
+                                                'z_sys': float(getattr(cube, '_redshift', 0.0) or 0.0)
+                                            })
+                                            logger.info(f"[RDB Frame] {galaxy_name}: early-rest-frame=True (pre-shift); forcing status=rest")
+                                        if not frame_classification['checked'] and bin_idx == bins_to_plot[0]:
+                                            try:
+                                                if hasattr(cube, '_redshift') and cube._redshift not in (None, 0):
+                                                    z_sys = float(cube._redshift)
+                                                else:
+                                                    z_sys = float(_get_z(galaxy_name))
+                                                z_obs_med = _estimate_z_obs(wavelength, binned_spectra[:, bin_idx], z_sys)
+                                                if z_obs_med is None:
+                                                    frame_classification['status'] = 'ambiguous'
+                                                else:
+                                                    if abs(z_obs_med) < 0.001:
+                                                        frame_classification['status'] = 'rest'
+                                                    elif abs(z_obs_med - z_sys) < 0.001:
+                                                        frame_classification['status'] = 'observed'
+                                                    else:
+                                                        frame_classification['status'] = 'ambiguous'
+                                                frame_classification['z_sys'] = z_sys
+                                                frame_classification['checked'] = True
+                                                logger.info(f"[RDB Frame] {galaxy_name}: z_sys={z_sys:.5f} z_obs_med={z_obs_med} -> status={frame_classification['status']}")
+                                            except Exception as _e:
+                                                logger.warning(f"[RDB Frame] Detection failed ({_e}); assuming rest frame")
+                                                frame_classification['status'] = 'ambiguous'
+                                                frame_classification['z_sys'] = 0.0
+                                                frame_classification['checked'] = True
+
+                                        z_sys = frame_classification.get('z_sys') or 0.0
+                                        status = frame_classification.get('status', 'ambiguous')
+                                        if status == 'observed':
+                                            # Need to remove systemic and stellar velocity only if preprocessing did not already do it
+                                            if getattr(cube, '_wave_frame', None) == 'rest':
+                                                # Safety: systemic already removed, avoid double-shift
+                                                v_apply = v_star
+                                                v_gas_apply = v_gas
+                                            else:
+                                                v_apply = z_sys * _c + v_star
+                                                v_gas_apply = z_sys * _c + v_gas
+                                        else:
+                                            # Rest or ambiguous treated as rest-frame after early shift
+                                            v_apply = v_star
+                                            v_gas_apply = v_gas
+
                                         calc = LineIndexCalculator(
                                             wave=wavelength,
                                             flux=binned_spectra[:, bin_idx],
-                                            fit_wave=template,
-                                            fit_flux=weights,
+                                            fit_wave=fit_wave,
+                                            fit_flux=fit_flux,
                                             em_wave=em_wave,
                                             em_flux_list=em_flux,
-                                            velocity_correction=vel,
+                                            velocity_correction=v_apply,
+                                            gas_velocity_correction=v_gas_apply,
                                             continuum_mode="fit",
-                                            show_warnings=False
+                                            show_warnings=False,
+                                            # Do NOT re-shift wavelength here: spectra are already in systemic rest
+                                            # and pixel-level stellar velocities have been corrected during binning.
+                                            # Enabling this would double-apply velocity and misplace indices.
+                                            apply_velocity_shift=False
                                         )
+                                        # Record frame classification into metadata (once)
+                                        try:
+                                            if 'frame_classification' in locals() and hasattr(binned_data, 'metadata'):
+                                                md = binned_data.metadata if binned_data.metadata is not None else {}
+                                                md['wave_frame'] = 'rest' if status != 'observed' else 'observed'
+                                                md['systemic_redshift_used'] = float(z_sys)
+                                                # If cube already rest, mark applied True irrespective of classification
+                                                already_rest = getattr(cube, '_systemic_rest_applied', False)
+                                                md['rest_frame_applied'] = True if already_rest or status != 'observed' else False
+                                                md['rest_frame_classification'] = status
+                                                binned_data.metadata = md
+                                                # Persist updated frame metadata immediately (the initial save happened before classification)
+                                                # Guard so we only overwrite once per run
+                                                if not md.get('_frame_metadata_persisted'):
+                                                    try:
+                                                        md['_frame_metadata_persisted'] = True
+                                                        binned_data.metadata = md
+                                                        from pathlib import Path as _P2
+                                                        (binned_data_save_path := (_P2(output_dir) / galaxy_name / 'Data' / f"{galaxy_name}_RDB_binned.npz"))
+                                                        if binned_data_save_path.exists():
+                                                            binned_data.save(binned_data_save_path)
+                                                            logger.info(f"[RDB Frame] Persisted rest-frame metadata update to {binned_data_save_path}")
+                                                    except Exception as _persist_err:
+                                                        logger.debug(f"Could not persist updated rest-frame metadata: {_persist_err}")
+                                        except Exception as _e_md:
+                                            logger.debug(f"Could not update rest-frame metadata: {_e_md}")
                                         
                                         # Plot all lines
                                         fig, axes = calc.plot_all_lines(
                                             mode="RDB",
                                             number=bin_idx,
                                             save_path=str(idx_detail_dir),
-                                            show_index=True
+                                            show_index=True,
+                                            save_normalized=True,
+                                            normalized_smoothing=5
                                         )
+                                        # Track normalized file path for later combination
+                                        try:
+                                            from pathlib import Path as _P
+                                            norm_path = _P(idx_detail_dir) / f"RDB{bin_idx}_norm.png"
+                                            if norm_path.exists():
+                                                saved_norm_paths.append(str(norm_path))
+                                        except Exception:
+                                            pass
                                         plt.close(fig)
+
+                                        # Prepare data for overlay plot (normalized observed and template per bin)
+                                        try:
+                                            # Import continuum builder
+                                            from visualization import compute_index_based_continuum as _build_cont
+                                            # Emission-reduced observed
+                                            if em_flux is not None and np.size(em_flux) == np.size(binned_spectra[:, bin_idx]):
+                                                obs_emred = binned_spectra[:, bin_idx] - em_flux
+                                            else:
+                                                obs_emred = binned_spectra[:, bin_idx]
+                                            # Continuum from template on same grid
+                                            continuum = _build_cont(wavelength, fit_flux, None)
+                                            with np.errstate(invalid="ignore", divide="ignore"):
+                                                norm_obs = obs_emred / continuum
+                                                norm_fit = fit_flux / continuum
+                                            # Robust, MKL-free smoothing using moving average; handles NaNs gracefully
+                                            def _smooth(arr, win=11):
+                                                try:
+                                                    a = np.asarray(arr, dtype=float)
+                                                    n = a.size
+                                                    if n < 3:
+                                                        return a
+                                                    w = int(win) if isinstance(win, (int, np.integer)) else 11
+                                                    if w % 2 == 0:
+                                                        w += 1
+                                                    w = max(3, min(w, n if n % 2 == 1 else n - 1))
+                                                    # Replace non-finite with local median (or 1.0 if all non-finite)
+                                                    if not np.all(np.isfinite(a)):
+                                                        finite = np.isfinite(a)
+                                                        if np.any(finite):
+                                                            med = np.nanmedian(a[finite])
+                                                        else:
+                                                            med = 1.0
+                                                        a = np.where(finite, a, med)
+                                                    kernel = np.ones(w, dtype=float) / w
+                                                    return np.convolve(a, kernel, mode="same")
+                                                except Exception:
+                                                    return np.asarray(arr, dtype=float)
+
+                                            norm_obs_sm = _smooth(norm_obs, win=11)
+                                            norm_fit_sm = _smooth(norm_fit, win=11)
+                                            # Sanitize
+                                            if np.any(~np.isfinite(norm_obs_sm)):
+                                                norm_obs_sm = np.nan_to_num(norm_obs_sm, nan=1.0, posinf=1.0, neginf=1.0)
+                                            if np.any(~np.isfinite(norm_fit_sm)):
+                                                norm_fit_sm = np.nan_to_num(norm_fit_sm, nan=1.0, posinf=1.0, neginf=1.0)
+                                            # Label with bin index and R/Re if available
+                                            if bin_r_over_re is not None and bin_idx < len(bin_r_over_re):
+                                                label = f"bin {bin_idx} (R/Re={bin_r_over_re[bin_idx]:.2f})"
+                                            else:
+                                                label = f"bin {bin_idx}"
+                                            overlay_traces.append({
+                                                "label": label,
+                                                "wave": wavelength,
+                                                "norm_obs": norm_obs_sm,
+                                                "norm_fit": norm_fit_sm,
+                                            })
+                                        except Exception as _e:
+                                            logger.debug(f"Overlay trace build failed for bin {bin_idx}: {_e}")
                                     except Exception as e:
                                         logger.warning(f"Error creating spectral index plot for bin {bin_idx}: {e}")
                                         import traceback
                                         logger.debug(traceback.format_exc())
                                         plt.close("all")
+
+                            # Create a single combined figure with the three normalized panels
+                            try:
+                                if len(saved_norm_paths) > 0:
+                                    import matplotlib.image as mpimg
+                                    rows = len(saved_norm_paths)
+                                    figC, axesC = plt.subplots(rows, 1, figsize=(12, 4 * rows))
+                                    axes_list = [axesC] if rows == 1 else list(axesC)
+                                    for i, (axC, img_path) in enumerate(zip(axes_list, saved_norm_paths)):
+                                        img = mpimg.imread(img_path)
+                                        # Preserve aspect without collapsing later panels: fix extent
+                                        axC.imshow(img, aspect='auto')
+                                        axC.set_xticks([])
+                                        axC.set_yticks([])
+                                        axC.set_xlabel("")
+                                        axC.set_ylabel("")
+                                        axC.set_title(f"RDB bin {bins_to_plot[i]} (normalized)")
+                                    combined_path = idx_detail_dir / "RDB_first3_norm_combined.png"
+                                    figC.savefig(combined_path, dpi=150, bbox_inches="tight")
+                                    plt.close(figC)
+                            except Exception as e:
+                                logger.warning(f"Failed to create combined 3-bin normalized figure: {e}")
+
+                            # New: create a single-panel shaded multi-bin normalized plot (SAURON-like) combining bins 0-2
+                            try:
+                                if len(overlay_traces) > 0 and len(saved_norm_paths) >= 3:
+                                    import matplotlib.pyplot as _plt
+                                    from visualization import compute_index_based_continuum as _cont_win, _get_default_index_windows as _def_wins
+                                    _figS, _axS = _plt.subplots(1, 1, figsize=(12, 5))
+                                    # Determine windows once
+                                    try:
+                                        wins = _def_wins()
+                                    except Exception:
+                                        wins = {}
+                                    # Shade windows
+                                    for nm, w in wins.items():
+                                        blue = w.get('blue'); band = w.get('band', w.get('line')); red = w.get('red')
+                                        if blue and band and red:
+                                            _axS.axvspan(blue[0], blue[1], color='lightgray', alpha=0.18)
+                                            _axS.axvspan(band[0], band[1], color='silver', alpha=0.18)
+                                            _axS.axvspan(red[0], red[1], color='lightgray', alpha=0.18)
+                                            xlbl = (band[0] + band[1]) / 2.0
+                                            _axS.text(xlbl, 0.305, nm, ha='center', va='bottom', fontsize='x-small', transform=_axS.get_xaxis_transform())
+                                    # Plot each bin
+                                    for i, tr in enumerate(overlay_traces):
+                                        col = ['tab:blue','tab:orange','tab:green'][i % 3]
+                                        _axS.plot(tr['wave'], tr['norm_obs'], color=col, lw=1.2, label=tr['label'])
+                                    _axS.axhline(1.0, color='k', lw=0.7, alpha=0.5)
+                                    _axS.set_xlim(wavelength[0], wavelength[-1])
+                                    try:
+                                        all_vals = np.concatenate([tr['norm_obs'] for tr in overlay_traces])
+                                        lo = np.nanpercentile(all_vals, 1.0); hi = np.nanpercentile(all_vals, 99.0)
+                                        if not (np.isfinite(lo) and np.isfinite(hi) and hi > lo):
+                                            lo, hi = 0.7, 1.3
+                                        pad = 0.05 * (hi - lo)
+                                        _axS.set_ylim(lo - pad, hi + pad)
+                                    except Exception:
+                                        _axS.set_ylim(0.7, 1.3)
+                                    _axS.set_xlabel('Rest-frame Wavelength (Å)')
+                                    _axS.set_ylabel('Normalized Flux')
+                                    _axS.set_title(f'{galaxy_name} RDB bins 0–2 (normalized, shaded indices)')
+                                    _axS.legend(loc='upper right', frameon=False, ncol=min(3, len(overlay_traces)))
+                                    combo_path = idx_detail_dir / 'RDB_first3_norm_shaded_overlay.png'
+                                    _figS.savefig(combo_path, dpi=150, bbox_inches='tight')
+                                    _plt.close(_figS)
+                            except Exception as e:
+                                logger.warning(f"Failed to create shaded single-panel normalized figure: {e}")
+
+                            # Create an overlay plot: first 3 bins in a single panel for direct comparison
+                            try:
+                                if len(overlay_traces) > 0:
+                                    import matplotlib.pyplot as _plt
+                                    _figO, _axO = _plt.subplots(1, 1, figsize=(12, 4.5))
+                                    # Explicit, consistent colors for bins 0/1/2
+                                    bin_colors = ['tab:blue', 'tab:orange', 'tab:green']
+                                    for i, tr in enumerate(overlay_traces):
+                                        col = bin_colors[i] if i < len(bin_colors) else _plt.rcParams['axes.prop_cycle'].by_key().get('color', ['C0','C1','C2'])[i % 3]
+                                        _axO.plot(tr["wave"], tr["norm_obs"], color=col, lw=1.6, label=tr["label"])  # observed (emission-reduced)
+                                        # Optional: template as dashed with alpha
+                                        _axO.plot(tr["wave"], tr["norm_fit"], color=col, lw=1.0, ls='--', alpha=0.5)
+                                    _axO.axhline(1.0, color='k', lw=0.8, alpha=0.5)
+                                    _axO.set_xlim(wavelength[0], wavelength[-1])
+                                    # Robust y-lims around unity
+                                    try:
+                                        all_vals = np.concatenate([tr["norm_obs"] for tr in overlay_traces])
+                                        # Use robust percentiles to capture all bins while avoiding outliers
+                                        lo = np.nanpercentile(all_vals, 2)
+                                        hi = np.nanpercentile(all_vals, 98)
+                                        if not (np.isfinite(lo) and np.isfinite(hi) and hi > lo):
+                                            lo, hi = 0.6, 1.4
+                                        pad = 0.05 * (hi - lo)
+                                        _axO.set_ylim(max(0.3, lo - pad), min(1.8, hi + pad))
+                                    except Exception:
+                                        _axO.set_ylim(0.6, 1.4)
+                                    _axO.set_xlabel("Wavelength (Å)")
+                                    _axO.set_ylabel("Normalized flux")
+                                    _axO.set_title(f"{galaxy_name} RDB: First 3 bins (overlay, emission-reduced)")
+                                    _axO.legend(loc='best', frameon=False, ncol=min(3, len(overlay_traces)))
+                                    overlay_path = idx_detail_dir / "RDB_first3_norm_overlay.png"
+                                    _figO.savefig(overlay_path, dpi=150, bbox_inches="tight")
+                                    _plt.close(_figO)
+                            except Exception as e:
+                                logger.warning(f"Failed to create overlay 3-bin normalized figure: {e}")
                     except Exception as e:
                         logger.warning(f"Error creating detailed spectral index plots: {e}")
                         import traceback
