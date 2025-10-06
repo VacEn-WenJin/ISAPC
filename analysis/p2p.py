@@ -176,6 +176,7 @@ def run_p2p_analysis(args, cube, Pmode=False):
         ppxf_vel_disp_init=args.sigma_init,
         ppxf_deg=args.poly_degree if hasattr(args, "poly_degree") else 3,
         n_jobs=args.n_jobs,
+        subset_indices=getattr(args, "subset_indices", None),
     )
 
     (
@@ -224,10 +225,34 @@ def run_p2p_analysis(args, cube, Pmode=False):
             ppxf_sig_init=args.sigma_init,
             ppxf_deg=2,
             n_jobs=args.n_jobs,
+            subset_indices=getattr(args, "subset_indices", None),
         )
         logger.info(
             f"Emission line fitting completed in {time.time() - start_time:.1f} seconds"
         )
+
+        # Ensure downstream plotting helpers have access to wavelength grid matching optimal_tmpls
+        try:
+            if isinstance(emission_result, dict) and "wavelength" not in emission_result:
+                # Prefer the template wavelength grid used for optimal_tmpls
+                lam_temp = None
+                if hasattr(cube, "_sps") and getattr(cube._sps, "lam_temp", None) is not None:
+                    lam_temp = cube._sps.lam_temp
+                # Fallback to galaxy wavelength if it matches the first dim of optimal_tmpls
+                opt = emission_result.get("optimal_tmpls")
+                lam_gal = getattr(cube, "_lambda_gal", None)
+                if isinstance(opt, np.ndarray) and opt.ndim == 3:
+                    n_wave_opt = opt.shape[0]
+                    if lam_temp is not None and len(lam_temp) == n_wave_opt:
+                        emission_result["wavelength"] = lam_temp
+                    elif lam_gal is not None and len(lam_gal) == n_wave_opt:
+                        emission_result["wavelength"] = lam_gal
+                    else:
+                        emission_result["wavelength"] = lam_temp if lam_temp is not None else lam_gal
+                else:
+                    emission_result["wavelength"] = lam_temp if lam_temp is not None else lam_gal
+        except Exception:
+            pass
 
     # Extract emission line errors if available
     gas_velocity_error = None
@@ -1590,13 +1615,88 @@ def create_emission_maps(emission_params, plots_dir, galaxy_name, pixel_size=Non
     # Find all emission line flux maps
     flux_maps = {}
 
-    # Collect all flux maps
-    for key, value in emission_params.items():
-        if key.startswith("flux_") and isinstance(value, np.ndarray):
-            line_name = key[5:]  # Remove 'flux_' prefix
-            flux_maps[line_name] = value
+    # If we have per-component emission, plot component kinematics and component fluxes
+    try:
+        if isinstance(emission_params, dict) and "emission_components" in emission_params:
+            ec = emission_params["emission_components"]
+            ncomp = int(ec.get("n_components", 0))
+            comp_kin = ec.get("component_kinematics", {})
+            comp_vel = comp_kin.get("velocity")
+            comp_sig = comp_kin.get("sigma")
 
-    # If no 'flux_' prefixed keys found, check for 'flux'
+            # Plot component kinematics if arrays are present
+            if isinstance(comp_vel, np.ndarray) and comp_vel.ndim == 3 and ncomp > 0:
+                for ci in range(min(ncomp, comp_vel.shape[0])):
+                    vmap = comp_vel[ci]
+                    smap = comp_sig[ci] if isinstance(comp_sig, np.ndarray) and comp_sig.ndim == 3 and comp_sig.shape[0] > ci else None
+                    # Velocity map
+                    try:
+                        fig, ax = plt.subplots(1, 2 if smap is not None else 1, figsize=(12 if smap is not None else 6, 5))
+                        axes = ax if isinstance(ax, np.ndarray) else [ax]
+                        # Compute symmetric range for velocity
+                        vvalid = vmap[np.isfinite(vmap)]
+                        if vvalid.size > 0:
+                            vmax_abs = np.nanpercentile(np.abs(vvalid), 95)
+                            im0 = axes[0].imshow(vmap, origin='lower', cmap='coolwarm', vmin=-vmax_abs, vmax=vmax_abs)
+                            plt.colorbar(im0, ax=axes[0], label='Velocity [km/s]')
+                            axes[0].set_title(f"Gas comp {ci+1} Velocity")
+                        # Sigma map
+                        if smap is not None:
+                            svalid = smap[np.isfinite(smap)]
+                            if svalid.size > 0:
+                                smin = np.nanpercentile(svalid, 5)
+                                smax = np.nanpercentile(svalid, 95)
+                                im1 = axes[1].imshow(smap, origin='lower', cmap='inferno', vmin=smin, vmax=smax)
+                                plt.colorbar(im1, ax=axes[1], label='Dispersion [km/s]')
+                                axes[1].set_title(f"Gas comp {ci+1} Dispersion")
+                        for a in axes:
+                            a.set_xticks([]); a.set_yticks([]); a.grid(True, alpha=0.25)
+                        fn = plots_dir / f"{galaxy_name}_P2P_gas_component_{ci+1}_kinematics.png"
+                        plt.tight_layout(); plt.savefig(fn, dpi=150); plt.close()
+                    except Exception as e:
+                        logger.debug(f"Component kinematics plotting failed for comp {ci+1}: {e}")
+
+            # Plot per-component flux maps per line if available
+            comp_flux = ec.get("flux_components")
+            if isinstance(comp_flux, dict) and ncomp > 0:
+                for line_name, cube_flux in comp_flux.items():
+                    try:
+                        cube_flux = np.asarray(cube_flux)
+                        if cube_flux.ndim == 3 and cube_flux.shape[0] >= 1:
+                            for ci in range(min(ncomp, cube_flux.shape[0])):
+                                fmap = cube_flux[ci]
+                                valid = fmap[np.isfinite(fmap) & (fmap > 0)]
+                                if valid.size == 0:
+                                    continue
+                                fig, ax = plt.subplots(figsize=(8, 7))
+                                norm = mcolors.LogNorm(vmin=np.nanpercentile(valid, 1), vmax=np.nanpercentile(valid, 99))
+                                im = ax.imshow(fmap, origin='lower', cmap='inferno', norm=norm)
+                                plt.colorbar(im, ax=ax, label='Flux')
+                                ax.set_title(f"{line_name} Flux (comp {ci+1})")
+                                ax.grid(True, alpha=0.3)
+                                plt.tight_layout()
+                                plt.savefig(plots_dir / f"{galaxy_name}_P2P_{line_name}_flux_comp{ci+1}.png", dpi=150)
+                                plt.close(fig)
+                    except Exception as e:
+                        logger.debug(f"Component flux plotting failed for {line_name}: {e}")
+    except Exception as e:
+        logger.debug(f"Per-component emission plotting skipped: {e}")
+
+    # Preferred: nested dict under 'emission_flux'
+    if isinstance(emission_params, dict) and "emission_flux" in emission_params:
+        ef = emission_params["emission_flux"]
+        if isinstance(ef, dict):
+            for line_name, flux in ef.items():
+                if isinstance(flux, np.ndarray):
+                    flux_maps[line_name] = flux
+
+    # Fallbacks: flat keys or generic 'flux'
+    if not flux_maps:
+        for key, value in emission_params.items():
+            if isinstance(key, str) and key.startswith("flux_") and isinstance(value, np.ndarray):
+                line_name = key[5:]  # Remove 'flux_' prefix
+                flux_maps[line_name] = value
+
     if not flux_maps and "flux" in emission_params:
         # If flux is a dictionary, it might contain line fluxes
         if isinstance(emission_params["flux"], dict):
@@ -1715,6 +1815,77 @@ def create_emission_maps(emission_params, plots_dir, galaxy_name, pixel_size=Non
             logger.error(f"Error creating OIII/Hb ratio map: {str(e)}")
             plt.close("all")
 
+    # Configurable band-ratio maps (continuum bands)
+    try:
+        from config_manager import get_band_ratio_definitions
+        ratios = get_band_ratio_definitions()
+
+        # Try to build continuum band flux maps if not provided
+        bands = None
+        if isinstance(emission_params, dict):
+            cont = emission_params.get("continuum")
+            if not isinstance(cont, dict):
+                cont = {}
+                emission_params["continuum"] = cont
+            bands = cont.get("bands")
+            if not isinstance(bands, dict):
+                # Attempt on-the-fly construction from fitted continuum
+                wl = emission_params.get("wavelength")
+                opt = emission_params.get("optimal_tmpls")
+                if wl is not None and isinstance(opt, np.ndarray) and opt.ndim == 3:
+                    try:
+                        ny, nx = opt.shape[1:]
+                        bands = {}
+                        for r in ratios:
+                            for win in (r.get("num"), r.get("den")):
+                                if not (isinstance(win, tuple) and len(win) == 2):
+                                    continue
+                                w0, w1 = float(win[0]), float(win[1])
+                                mask = (wl >= w0) & (wl <= w1)
+                                if np.count_nonzero(mask) < 1:
+                                    # Skip if band outside wavelength coverage
+                                    continue
+                                # Median flux of fitted continuum within the band
+                                band_map = np.nanmedian(opt[mask, :, :], axis=0)
+                                bands[f"{w0}_{w1}"] = band_map
+                        # Attach constructed bands if any
+                        if bands:
+                            cont["bands"] = bands
+                    except Exception as be:
+                        logger.debug(f"Continuum band construction failed: {be}")
+
+        band_ratio_maps = {}
+        if isinstance(bands, dict) and bands:
+            for r in ratios:
+                name = r.get("name", "ratio")
+                num = r.get("num")
+                den = r.get("den")
+                if not (isinstance(num, tuple) and isinstance(den, tuple) and len(num) == 2 and len(den) == 2):
+                    continue
+                num_key = f"{num[0]}_{num[1]}"
+                den_key = f"{den[0]}_{den[1]}"
+                if num_key in bands and den_key in bands:
+                    num_map = np.asarray(bands[num_key])
+                    den_map = np.asarray(bands[den_key])
+                    with np.errstate(divide='ignore', invalid='ignore'):
+                        ratio_map = np.where(den_map > 0, num_map / den_map, np.nan)
+                    band_ratio_maps[name] = ratio_map
+                    # Plot
+                    valid = ratio_map[np.isfinite(ratio_map) & (ratio_map > 0)]
+                    if valid.size > 0:
+                        fig, ax = plt.subplots(figsize=(8, 7))
+                        norm = mcolors.LogNorm(vmin=np.percentile(valid, 1), vmax=np.percentile(valid, 99))
+                        im = ax.imshow(ratio_map, origin='lower', cmap='viridis', norm=norm, aspect='equal')
+                        plt.colorbar(im, ax=ax, label=name)
+                        ax.set_title(f"{name} Ratio")
+                        fig.tight_layout()
+                        fig.savefig(plots_dir / f"{galaxy_name}_P2P_{name}_ratio.png", dpi=150)
+                        plt.close(fig)
+        if band_ratio_maps:
+            emission_params.setdefault("band_ratios", {}).update(band_ratio_maps)
+    except Exception as e:
+        logger.debug(f"Band-ratio map generation skipped: {e}")
+
 
 def create_sample_fits(
     cube, velocity_field, bestfit_field, emission_result, plots_dir, galaxy_name
@@ -1821,33 +1992,6 @@ def create_sample_fits(
 
                 fig.savefig(plots_dir / f"{galaxy_name}_P2P_spectrum_{i}.png", dpi=150)
                 plt.close(fig)
-
-                # Also save normalized-spectrum panel based on index-defined continuum
-                try:
-                    # For normalized spectrum, use emission-line reduced spectrum when available
-                    if gas_comp is not None:
-                        observed_noem = observed - gas_comp
-                        fit_stellar = stellar_comp if 'stellar_comp' in locals() and stellar_comp is not None else model
-                        norm_title = f"Pixel ({x}, {y}) — normalized (emission-reduced)"
-                        fig_norm, _ = visualization.plot_spectrum_fit_with_normalization(
-                            wavelength=cube._lambda_gal,
-                            observed_flux=observed_noem,
-                            fit_flux=fit_stellar,
-                            indices_list=None,
-                            title=norm_title
-                        )
-                    else:
-                        fig_norm, _ = visualization.plot_spectrum_fit_with_normalization(
-                            wavelength=cube._lambda_gal,
-                            observed_flux=observed,
-                            fit_flux=model,
-                            indices_list=None,
-                            title=f"Pixel ({x}, {y}) — normalized"
-                        )
-                    fig_norm.savefig(plots_dir / f"{galaxy_name}_P2P_spectrum_norm_{i}.png", dpi=150)
-                    plt.close(fig_norm)
-                except Exception as e:
-                    logger.warning(f"Failed to save normalized spectrum for pixel ({x}, {y}): {e}")
             except Exception as e:
                 logger.error(
                     f"Error in plot_spectrum_fit for pixel ({x}, {y}): {str(e)}"

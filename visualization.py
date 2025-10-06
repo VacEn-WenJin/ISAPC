@@ -672,48 +672,74 @@ def plot_bin_map(bin_num, values=None, ax=None, cmap='viridis', title=None,
     
     # Safety check - make sure bin_num is proper array
     bin_num = np.asarray(bin_num)
-    
+
     # Create a masked array for the bin data
     if values is not None:
         # Safety check - ensure values is proper array
         values = np.asarray(values)
-        
-        # Create a map of values by bin number
-        value_map = np.zeros_like(bin_num, dtype=float)
-        value_map.fill(np.nan)  # Fill with NaN by default
-        
-        # Validate bin numbers and ensure they're within range
-        valid_bins = np.unique(bin_num[bin_num >= 0])
-        
-        # Check if values has enough elements
-        if len(values) < len(valid_bins):
-            logger.warning(f"Values array has {len(values)} elements but there are {len(valid_bins)} bins. " +
-                          "Using available values and filling the rest with NaN.")
-            # Fill only the bins we have values for
-            max_bin_to_fill = min(len(values), np.max(valid_bins) + 1)
-            for i in range(max_bin_to_fill):
-                value_map[bin_num == i] = values[i] if i < len(values) else np.nan
+
+        # Case A: values provided per-pixel (2D map). Plot directly.
+        if values.shape == bin_num.shape and values.ndim == 2:
+            value_map = values.astype(float, copy=False)
         else:
-            # Normal case - fill all bins
-            for i in valid_bins:
-                if i < len(values):
-                    value_map[bin_num == i] = values[i]
-        
+            # Case B: values provided per-bin (1D). Map onto pixels via bin_num.
+            value_map = np.zeros_like(bin_num, dtype=float)
+            value_map.fill(np.nan)  # Fill with NaN by default
+
+            # Validate bin numbers and ensure they're within range
+            valid_bins = np.unique(bin_num[bin_num >= 0])
+
+            if values.ndim == 1:
+                # Non-contiguous bin ids: fill using order of valid_bins if values shorter
+                if len(values) < len(valid_bins):
+                    logger.warning(
+                        f"Values array has {len(values)} elements but there are {len(valid_bins)} bins. "
+                        "Using available values and filling the rest with NaN."
+                    )
+                    # Map first len(values) valid bins in sorted order
+                    for j, b in enumerate(np.sort(valid_bins)[: len(values)]):
+                        value_map[bin_num == b] = values[j]
+                else:
+                    # Normal case - fill all bins by their id where possible
+                    # For safety, handle bin ids beyond values length
+                    for b in valid_bins:
+                        if 0 <= b < len(values):
+                            value_map[bin_num == b] = values[b]
+                        else:
+                            # Leave as NaN if out of range
+                            continue
+            else:
+                # Unexpected shape, fallback to NaNs and log
+                logger.warning(
+                    f"Unsupported values shape {values.shape}; expected 1D per-bin or 2D per-pixel."
+                )
+                value_map[:] = np.nan
+
         # Create masked array
         masked_data = np.ma.array(value_map, mask=~np.isfinite(value_map))
-        
+
         # Determine color normalization
         valid_data = masked_data.compressed()
-        if len(valid_data) > 0:
+        if valid_data.size > 0:
+            # Safely determine vmin/vmax if not provided
             if vmin is None:
-                vmin = np.nanmin(valid_data)
+                try:
+                    vmin = np.nanmin(valid_data)
+                except ValueError:
+                    vmin = None
             if vmax is None:
-                vmax = np.nanmax(valid_data)
-                
-            if log_scale and np.all(valid_data > 0):
-                norm = LogNorm(vmin=vmin, vmax=vmax)
+                try:
+                    vmax = np.nanmax(valid_data)
+                except ValueError:
+                    vmax = None
+
+            if vmin is not None and vmax is not None and vmin < vmax:
+                if log_scale and np.all(valid_data > 0):
+                    norm = LogNorm(vmin=vmin, vmax=vmax)
+                else:
+                    norm = Normalize(vmin=vmin, vmax=vmax)
             else:
-                norm = Normalize(vmin=vmin, vmax=vmax)
+                norm = None
         else:
             norm = None
     else:
@@ -2024,15 +2050,41 @@ def compute_index_based_continuum(wave: np.ndarray, fit_flux: np.ndarray, indice
             if not np.any(blue_mask) or not np.any(red_mask) or not np.any(band_mask):
                 continue
 
-            # Mean flux in blue/red windows from fit
-            blue_mean = np.nanmean(fit_flux[blue_mask])
-            red_mean = np.nanmean(fit_flux[red_mask])
-            if not np.isfinite(blue_mean) or not np.isfinite(red_mean):
-                continue
-
+            # Mean flux in blue/red windows from fit; if empty, fall back to interpolation at window center
             # Centers for interpolation
             blue_center = np.nanmean([blue[0], blue[1]])
             red_center = np.nanmean([red[0], red[1]])
+
+            # Helper: safe interpolation within wave bounds
+            def _safe_interp(xc: float):
+                try:
+                    # Clamp within wave range
+                    x0, x1 = float(wave[0]), float(wave[-1])
+                    xv = min(max(xc, x0), x1)
+                    return np.interp(xv, wave, fit_flux)
+                except Exception:
+                    return np.nan
+
+            # Compute means with finite-value checks; fallback to interpolation when masks are empty or all-NaN
+            if np.any(blue_mask):
+                blue_vals = fit_flux[blue_mask]
+                if np.any(np.isfinite(blue_vals)):
+                    blue_mean = np.nanmean(blue_vals)
+                else:
+                    blue_mean = _safe_interp(blue_center)
+            else:
+                blue_mean = _safe_interp(blue_center)
+
+            if np.any(red_mask):
+                red_vals = fit_flux[red_mask]
+                if np.any(np.isfinite(red_vals)):
+                    red_mean = np.nanmean(red_vals)
+                else:
+                    red_mean = _safe_interp(red_center)
+            else:
+                red_mean = _safe_interp(red_center)
+            if not np.isfinite(blue_mean) or not np.isfinite(red_mean):
+                continue
 
             # Linear pseudo-continuum across the band
             band_w = wave[band_mask]

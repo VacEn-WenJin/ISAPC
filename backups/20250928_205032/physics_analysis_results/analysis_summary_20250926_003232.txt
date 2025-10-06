@@ -1,0 +1,44 @@
+Complete Physics Analysis Summary
+Generated: 2025-09-26 00:32:32.506701
+============================================================
+
+Total galaxies analyzed: 20
+Successful analyses: 19
+Success rate: 95.0%
+
+Overall Statistics:
+  Total pixels: 38,019
+  Quality pixels: 8,597 (22.6%)
+  Alpha/Fe calculated: 5,404 (62.9% of quality)
+
+Alpha/Fe Abundance Statistics:
+  Mean [α/Fe]: 0.227 ± 0.009
+  Range: 0.208 to 0.242
+
+Gradient Analysis:
+  Galaxies with gradients: 19
+  Significant gradients: 2
+  Mean slope: 0.0013 ± 0.0073 dex/(R/Re)
+
+Individual Galaxy Results:
+------------------------------------------------------------
+VCC1588     : [α/Fe]=0.222 (371 pix), V/σ=0.90, grad=-0.0032 (not_significant)
+VCC0308     : [α/Fe]=0.238 (368 pix), V/σ=1.54, grad=0.0031 (not_significant)
+VCC0667     : [α/Fe]=0.222 (383 pix), V/σ=1.17, grad=-0.0017 (not_significant)
+VCC0688     : [α/Fe]=0.208 (164 pix), V/σ=1.14, grad=-0.0036 (not_significant)
+VCC0990     : [α/Fe]=0.228 ( 53 pix), V/σ=1.13, grad=-0.0059 (not_significant)
+VCC1049     : [α/Fe]=0.221 (178 pix), V/σ=1.12, grad=0.0086 (not_significant)
+VCC1146     : [α/Fe]=0.230 (366 pix), V/σ=0.72, grad=0.0014 (not_significant)
+VCC1193     : [α/Fe]=0.209 (149 pix), V/σ=1.19, grad=0.0174 (not_significant)
+VCC1368     : [α/Fe]=0.234 (386 pix), V/σ=1.15, grad=0.0055 (not_significant)
+VCC1410     : [α/Fe]=0.224 (124 pix), V/σ=1.15, grad=0.0029 (not_significant)
+VCC1431     : [α/Fe]=0.242 (340 pix), V/σ=1.16, grad=-0.0044 (not_significant)
+VCC1486     : [α/Fe]=0.234 (154 pix), V/σ=1.14, grad=0.0112 (not_significant)
+VCC1499     : FAILED - No pixels pass quality filters
+VCC1549     : [α/Fe]=0.232 (335 pix), V/σ=1.04, grad=-0.0053 (not_significant)
+VCC1695     : [α/Fe]=0.228 (334 pix), V/σ=1.04, grad=0.0040 (not_significant)
+VCC1811     : [α/Fe]=0.213 (383 pix), V/σ=1.18, grad=0.0144 (significant)
+VCC1890     : [α/Fe]=0.225 (208 pix), V/σ=1.12, grad=-0.0041 (not_significant)
+VCC1902     : [α/Fe]=0.226 (386 pix), V/σ=1.03, grad=-0.0029 (not_significant)
+VCC1910     : [α/Fe]=0.242 (348 pix), V/σ=1.11, grad=-0.0004 (not_significant)
+VCC1949     : [α/Fe]=0.230 (374 pix), V/σ=1.16, grad=-0.0115 (significant)

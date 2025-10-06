@@ -3,6 +3,7 @@
 Test script to run ISAPC on a single galaxy
 '''
 import sys
+import os
 import subprocess
 from pathlib import Path
 
@@ -32,13 +33,22 @@ def test_single_galaxy():
         "-m", "ALL",
         "--target-snr", "20",
         "--n-rings", "6",
-        "--physical-radius",
-        "--use-re-bins",
-        "--max-radius-scale", "3.0"
+        "--physical-radius"
     ]
     
     print(f"Running command: {' '.join(cmd)}")
-    result = subprocess.run(cmd)
+    # Enable two-component gas fitting for this smoke test via env override
+    env = dict(**os.environ)
+    # Write a tiny config overlay if present
+    from tempfile import NamedTemporaryFile
+    with NamedTemporaryFile("w", delete=False) as tf:
+        tf.write("""
+[GasKinematics]
+components = 2
+mode = narrow_broad
+""")
+        env["ISAPC_CONFIG"] = tf.name
+    result = subprocess.run(cmd, env=env)
     
     if result.returncode == 0:
         print(f"✓ Successfully analyzed {galaxy}")

@@ -1,0 +1,199 @@
+% Use a standard AASTeX class available in TeX Live; 6.3.1 is widely supported
+\documentclass[linenumbers,trackchanges,twocolumn]{aastex631}
+\newcommand{\vdag}{(v)^\dagger}
+\newcommand\aastex{AAS\TeX}
+\newcommand\latex{La\TeX}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{multirow}  % For table formatting
+
+\begin{document}
+
+\title{Environmental Dependence of $\alpha$ Abundance Gradient\\ in Virgo Cluster Dwarf Galaxies}
+
+\author[0009-0002-8135-7011]{A}
+    \affiliation{A}
+\email{example@email.com}
+
+\begin{abstract}
+Star formation quenching plays a crucial role in the evolution of galaxies. Whether internal mechanisms or external environmental factors primarily govern quenching processes remains debated. Previous studies have revealed significant environmental effects through stellar population analyses of relatively massive galaxies (mostly with $M_*>10^9$~M$_{\odot}$) and Local Group dwarfs (mostly with $M_*<10^7$~M$_{\odot}$). However, environmental effects on galaxies in the mass range $10^7 < M_* < 10^9 M_{\odot}$ remain understudied. Here we present preliminary results from stellar population analysis based on data from a comprehensive 2D spectroscopic survey of 21 Virgo cluster galaxies spanning the full mass range $10^7 < M_* < 10^9 M_{\odot}$ and across a range of halo-centric distances, using the PCWI instrument at Palomar Observatory. By analyzing the spatial distribution of $\alpha$-elements at different radial distances across these galaxies, we hope to reveal new insights into the environmental dependence of dwarf galaxy formation histories.
+\end{abstract}
+
+\keywords{IFU, Galaxy evolution, alpha abundance}
+
+\section{Introduction}
+
+The $\alpha$ abundance gradient of galaxies describes the distribution of $\alpha$-elements (e.g., O, Mg, Si) relative to Fe across different radii within galaxies. $\alpha$-elements are primarily produced in Type II supernovae, while Fe is predominantly synthesized in Type Ia supernovae, leading to the use of the [$\alpha$/Fe] ratio as a diagnostic tool for understanding galaxy formation and evolution \citep{burbidge1957synthesis, tinsley1979chemical}.
+
+The formation of $\alpha$-element abundance gradients in galaxies is closely tied to their star formation histories and the interplay between Type II and Type Ia supernovae. In the hierarchical galaxy formation paradigm, the relative timing and spatial distribution of these two types of supernovae create characteristic abundance patterns that serve as archaeological records of galaxy assembly \citep{Matteucci1986, Thomas2005}. Steeper negative gradients indicate more extended star formation histories in galaxy outskirts, while flat or positive gradients suggest rapid, centrally concentrated star formation followed by quenching \citep{Kobayashi2004}.
+
+Environmental processes can significantly alter these gradients through various mechanisms. Ram pressure stripping preferentially removes gas from galaxy outskirts, truncating star formation and preserving high [$\alpha$/Fe] ratios in these regions \citep{Gunn1972, Boselli2008a}. Tidal interactions and harassment can redistribute stellar populations and trigger central starbursts, flattening pre-existing gradients \citep{Moore1996}. Additionally, starvation—the cessation of cold gas accretion—leads to inside-out quenching that manifests as enhanced [$\alpha$/Fe] in galaxy peripheries \citep{Larson1980, Peng2015}.
+
+Recent integral field spectroscopy surveys have revolutionized our understanding of stellar population gradients. \citet{McDermid_2015} found that massive early-type galaxies in the ATLAS$^{3\mathrm{D}}$ survey typically exhibit flat or mildly negative [$\alpha$/Fe] gradients, suggesting relatively homogeneous star formation histories. In contrast, \citet{Liu_2016} discovered that low-mass early-type galaxies in dense environments show enhanced [$\alpha$/Fe] ratios and steeper gradients, indicating rapid quenching potentially driven by environmental effects. The MaNGA survey has extended these studies to larger samples, with \citet{Zheng_2019} revealing systematic variations in the Mgb/$\langle$Fe$\rangle$ gradients as a function of both galaxy mass and environment.
+
+However, a critical gap remains in the mass range $10^7 < M_* < 10^9$ M$_{\odot}$, where both internal feedback and environmental processes are expected to be important. Simulations predict that this mass regime represents a transition where environmental quenching begins to dominate over internal processes \citep{Mistani2016}. The Virgo cluster, with its ongoing assembly and range of environmental densities, provides an ideal laboratory to test these predictions.
+
+In this study, we investigate the spatial distribution of $\alpha$-elements in 21 Virgo cluster dwarf galaxies using 2D spectroscopic data, aiming to reveal new insights into the environmental effects on the formation and evolution of these galaxies. We present a comprehensive analysis of stellar population gradients measured from integral field spectroscopy, examining how these gradients vary with galaxy mass, morphology, and location within the cluster.
+
+\section{Sample and Observations}
+
+\subsection{Sample Selection}
+
+Previous studies of $\alpha$ abundance have explored various galaxy populations with different approaches. \citet{McDermid_2015} investigated stellar population scaling relations in early-type galaxies from the ATLAS$^{3\mathrm{D}}$ survey, focusing on relatively massive systems. \citet{Liu_2016} extended this work to lower mass early-type galaxies, examining the relationship between stellar population properties and galaxy mass. More recently, \citet{Zheng_2019} utilized the MaNGA survey to study spatially-resolved stellar populations across a broad range of galaxy types and masses. 
+
+However, these studies have limitations in addressing environmental effects on dwarf galaxies. The ATLAS$^{3\mathrm{D}}$ sample primarily consists of massive early-type galaxies ($M_* > 10^{10}$ M$_{\odot}$), while MaNGA's spatial resolution limits detailed analysis of the lowest mass dwarfs. Furthermore, previous work has not systematically investigated how cluster environment influences $\alpha$ abundance gradients in the critical mass range of $10^7 < M_* < 10^9$ M$_{\odot}$, where environmental quenching mechanisms may compete with internal processes.
+
+To address this gap, we have assembled a sample of 21 Virgo cluster galaxies spanning the full dwarf mass range ($10^7 < M_* < 10^9$ M$_{\odot}$) and various cluster-centric distances. This sample allows us to directly probe the environmental dependence of chemical enrichment histories in dwarf galaxies through spatially-resolved spectroscopy.
+
+\input{table1_sample}
+
+Our sample consists of 21 Virgo cluster galaxies with diverse morphological types: 10 elliptical galaxies (E and dE), 2 S0 galaxies (dS0), and 9 spiral galaxies (Sa-Sd). The galaxies span a range of apparent magnitudes from $r = 9.97$ to $r = 15.16$, with redshifts between $z = 0.0004$ and $z = 0.0058$. We also observed 9 spiral and 1 S0 galaxies in H$\alpha$ during the 2018 run, enabling gas kinematics and emission line corrections for H$\beta$. Table \ref{tab:galaxy_sample} presents the complete observational details.
+
+\subsection{Observations}
+
+We conducted observations using the Palomar Cosmic Web Imager (PCWI) on the Palomar 200-inch Hale Telescope over multiple observing runs between 2016 and 2018. PCWI provides a field of view of $60''\,\times\,40''$ with a spatial sampling of $0.5''$ per spaxel, yielding approximately 2400 spatial elements per exposure. The instrument's spectral resolution of $R\sim5000$ is well-suited for measuring stellar kinematics and absorption line indices in our target galaxies.
+
+Our observational campaign was designed to achieve sufficient signal-to-noise ratio (S/N $>$ 20) for reliable stellar population measurements out to at least one effective radius for each galaxy. The spatial resolution achieved with PCWI (typical seeing $\sim$1.5") combined with the proximity of Virgo (16.5 Mpc) allows us to resolve gradients down to $\sim$120 pc, sufficient to trace radial variations in stellar populations across multiple effective radii for most sample galaxies.
+
+\subsection{Basic Data Reduction}
+
+We start from pipeline-reduced PCWI data cubes with standard calibrations applied (bias subtraction, flat fielding, geometric and wavelength calibration, and flux calibration using spectrophotometric standards). Individual exposures of the same target are registered using bright continuum sources and combined with inverse-variance weighting. Residual small-scale wavelength offsets are checked against bright sky lines and corrected when needed with a rigid shift well below one spectral pixel. Heliocentric corrections are applied to the wavelength solution.
+
+For all subsequent analyses, spectra are converted to the systemic rest frame exactly once by dividing wavelengths by $(1+z_\mathrm{sys})$. We record this operation in per-product metadata (wave\_frame, rest\_frame\_applied, systemic\_redshift\_used) and verify there is no second application downstream. Spectra, uncertainty vectors, and masks are propagated consistently through the workflow.
+
+\subsection{Flux Calibration and Sky Subtraction}
+
+Flux calibration is tied to standard stars observed each night and cross-checked against broadband imaging for large-scale systematics. Sky background is removed using off-target sky frames when available; otherwise, we model sky residuals in source-poor regions of the field and subtract a smooth sky spectrum. Remaining narrow sky features are masked during the fits and index measurements. We find that these steps reduce large-scale fluxing residuals to the few-percent level over the wavelength windows of interest (H$\beta$, Fe, and Mgb).
+
+\section{Spectroscopic Analysis Methods}
+
+\subsection{Radial Binning and Normalized Spectra}
+
+We perform a radial (annular) binning scheme tailored to achieve uniform S/N while retaining spatial leverage on the inner gradients. Specifically, we define three inner radial bins (RDB0, RDB1, RDB2) within $\sim$1 R$_e$ using elliptical annuli. Before combining, each spaxel's spectrum is shifted by its measured stellar velocity to the systemic rest frame; spectra are then coadded with inverse-variance weights and their variances propagated. We produce emission-subtracted spectra by fitting and subtracting nebular components on the coadded spectra.
+
+For visualization and quality control, we generate normalized spectra for the first three bins using sideband continua around the principal indices. We also provide multi-bin overlays and a SAURON-like shaded visualization highlighting the index bandpasses and pseudo-continua. These products allow rapid inspection for residual sky features, misalignments, or over/under subtraction of emission. All figures shown in this work are based on the single-application rest-frame spectra and avoid any additional wavelength shifting during plotting.
+
+\subsection{Stellar Continuum Fitting}
+
+We employ the penalized pixel fitting (pPXF) method \citep{Cappellari2004, Cappellari2017} to fit the stellar continuum and extract stellar kinematics. The fitting process uses the MILES stellar library \citep{SanchezBlazquez2006}. We fit the spectra in the observed instrumental resolution and include a low-order multiplicative polynomial to absorb residual broadband calibration mismatch without biasing narrow absorption features. Prominent nebular emission lines (e.g., H$\beta$, [O\,III]) are either masked or fitted simultaneously with separate Gaussian components; when fitted, gas kinematics are allowed to differ from stellar kinematics.
+
+We compute per-spaxel formal uncertainties from the variance cubes and pass them to pPXF, ensuring that the weight of each pixel is appropriately set. Bad pixels, sky residuals, and cosmic rays are masked using a union of pipeline masks and sigma-clipping on residuals.
+
+\subsection{Kinematic Extraction}
+
+Stellar line-of-sight velocity and velocity dispersion are derived with pPXF at the spaxel level when S/N permits; otherwise, we adopt Voronoi or radial binning (see next subsection) to reach S/N$\gtrsim20$ per \AA. For our radial analysis, we apply the stellar velocity field correction to each spaxel spectrum prior to coaddition: each spectrum is shifted to the systemic rest frame using its local stellar velocity, thereby removing rotational broadening and preserving intrinsic dispersion. We also compute aggregated per-bin kinematics (median velocity and dispersion) from the constituent spaxels to characterize the bins.
+
+When fitting coadded spectra, we refit the stellar continuum and, if necessary, re-estimate the gas emission components to obtain high-S/N emission-subtracted spectra for line-index work.
+
+\subsection{Stellar Population Parameters}
+
+\subsubsection{Line Index Measurements}
+
+We measure absorption line indices following the Lick/IDS bandpass definitions \citep{Worthey1994, Trager2000} on emission-subtracted, rest-frame coadded spectra in each radial bin. The key indices for our analysis include:
+\begin{itemize}
+\item H$\beta$ (4847.875--4876.625 \AA): age-sensitive Balmer line
+\item Mgb (5160.125--5192.625 \AA): Mg abundance indicator
+\item Fe5015 (4977.750--5015.000 \AA): Fe abundance indicator
+\item Fe5270 (5245.650--5285.650 \AA): Fe abundance indicator
+\item Fe5335 (5312.125--5352.125 \AA): Fe abundance indicator
+\end{itemize}
+
+We adopt the standard pseudo-continuum sidebands for each index and evaluate indices as equivalent widths. The composite iron index is defined as $\langle\mathrm{Fe}\rangle = (\mathrm{Fe}5270+\mathrm{Fe}5335)/2$. Indices are measured on spectra normalized by a local continuum around each feature to mitigate low-order calibration residuals. Uncertainties are estimated by Monte Carlo: we generate $N=200$ noise realizations using the propagated error vectors (including coaddition weights) and remeasure indices, adopting the dispersion of the realizations as the 1$\sigma$ error. Bins failing quality criteria (e.g., S/N$<15$, strong sky residuals in passbands) are excluded from gradient fits.
+
+\subsubsection{Age and Metallicity Determination}
+
+% Leave space for age/metallicity determination
+During the spectrum fitting by pPXF, the observed spectrum are fitted with stellar templates, which are in a grid with axis age and metallicity. To figure out the final combined stellar parameters for each pixel, the age and metallicity can be linearly combined: $$\lg(Age)=\frac{\sum_{i=0}^{i=24}(\lg(A_{i})\sum_{j=0}^{j=5}{(W_{i,j})})}{\sum_{i,j}W_{i,j}}$$\\$$[M/H] = \frac{\sum_{j=0}^{j=5}(Z_j \sum_{i=0}^{i=24}(W_{i,j}))}{\sum_{i,j} W_{i,j}}$$
+
+\subsubsection{[$\alpha$/Fe] Ratio Calculation}
+
+To derive [$\alpha$/Fe] ratios, we use $\alpha$-enhanced stellar population model grids (e.g., TMB03; \citealt{Thomas2003}) as the calibration between Mgb and $\langle$Fe$\rangle$. For each radial bin, we determine [$\alpha$/Fe] by interpolating the model grid at the age and metallicity inferred from the stellar continuum fit and locating the point in the Mgb--$\langle$Fe$\rangle$ plane that matches the observed indices. We adopt a dual-evaluation strategy to guard against local model degeneracies: (i) grid interpolation at fixed age/metallicity and (ii) a small grid search allowing for $\pm0.1$ dex variations in age/metallicity, taking the median [$\alpha$/Fe] and the half-range as a systematic component. Final [$\alpha$/Fe] uncertainties combine Monte Carlo index errors with this systematic term in quadrature.
+
+\subsection{Radial Gradient Analysis}
+
+We measure radial gradients by fitting linear relations to stellar population parameters as a function of galactocentric radius, expressed in units of effective radius (R/R$_e$). Following SAURON/ATLAS$^{3\mathrm{D}}$ conventions (e.g., \citealt{McDermid_2015}), gradients are reported in dex per R$_e$.
+
+We construct circular annuli in elliptical geometry matched to each galaxy's photometric axis ratio and position angle; spectra are grouped into three inner radial bins (RDB0--RDB2) for uniform S/N and robust comparison across the sample. Before coaddition, each spaxel spectrum is shifted by its stellar velocity to the systemic rest frame. Emission lines are re-fitted on the coadded spectra and subtracted prior to index measurement. Linear gradients are then fit using weighted least squares with index (or [$\alpha$/Fe]) uncertainties as weights. We compute gradient errors by bootstrap resampling of bins and by perturbing the indices within their uncertainties.
+
+Quality control is enforced via a velocity-alignment diagnostic that measures the offset of key absorption features across bins; galaxies with $|\Delta v|$ above a conservative threshold or with evidence of double-shifting are flagged and either refit or excluded from gradient statistics. This procedure ensures that velocity corrections are applied exactly once and that residual misalignments do not bias the gradients.
+
+\section{Results}
+
+\subsection{Stellar Kinematics}
+
+% Leave space for kinematic results
+[Presentation of velocity fields, velocity dispersion maps, and kinematic classification to be added here]
+
+\subsection{Stellar Population Maps}
+
+% Leave space for 2D maps
+[2D maps of age, metallicity, and alpha/Fe ratio to be added here]
+
+\subsection{Radial Gradients}
+
+\subsubsection{Age Gradients}
+% Leave space for age gradient results
+[Age gradient measurements and statistics to be added here]
+
+\subsubsection{Metallicity Gradients}
+% Leave space for metallicity gradient results
+[Metallicity gradient measurements and statistics to be added here]
+
+\subsubsection{[$\alpha$/Fe] Gradients}
+% Leave space for alpha/Fe gradient results
+[Alpha/Fe gradient measurements and statistics to be added here]
+
+\subsection{Environmental Dependencies}
+
+% Leave space for environmental correlations
+[Correlations between gradients and environmental parameters (clustercentric distance, local density, etc.) to be added here]
+
+\section{Discussion}
+
+\subsection{Comparison with Previous Studies}
+
+Our measurements of [$\alpha$/Fe] gradients in Virgo cluster dwarf galaxies can be compared with results from previous IFU surveys. The ATLAS$^{3\mathrm{D}}$ survey \citep{McDermid_2015} found that massive early-type galaxies typically show flat or mildly negative gradients...
+
+% Leave space for detailed comparison
+[Detailed comparison with ATLAS3D, MaNGA, CALIFA, and other surveys to be added here]
+
+\subsection{Environmental Quenching Mechanisms}
+
+The observed gradients provide constraints on the dominant environmental quenching mechanisms operating in the Virgo cluster:
+
+\subsubsection{Ram Pressure Stripping}
+% Leave space for ram pressure discussion
+[Discussion of ram pressure stripping signatures in the gradients to be added here]
+
+\subsubsection{Starvation}
+% Leave space for starvation discussion
+[Discussion of starvation effects on gradients to be added here]
+
+\subsubsection{Tidal Interactions}
+% Leave space for tidal interaction discussion
+[Discussion of tidal effects and harassment to be added here]
+
+\subsection{Implications for Dwarf Galaxy Evolution}
+
+% Leave space for evolution implications
+[Discussion of what the results mean for dwarf galaxy evolution models to be added here]
+
+\subsection{The Role of Galaxy Mass}
+
+% Leave space for mass-dependent effects
+[Discussion of how quenching mechanisms vary with galaxy mass to be added here]
+
+\section{Summary and Conclusions}
+
+In this paper, we have presented a comprehensive study of stellar population gradients in 21 Virgo cluster dwarf galaxies using integral field spectroscopy from PCWI. Our main findings are:
+
+
+These results provide new constraints on environmental quenching mechanisms in the critical mass range $10^7 < M_* < 10^9$ M$_{\odot}$, where both internal and external processes are expected to be important. Future work with larger samples and complementary multi-wavelength data will further elucidate the complex interplay between mass and environment in shaping dwarf galaxy evolution.
+
+% Leave space for future work
+[Future work and final remarks to be added here]
+
+
+\bibliographystyle{aasjournal}
+\bibliography{main}
+\end{document} 

@@ -1,20 +1,39 @@
 ISAPC Pipeline Summary Report
 ==================================================
 
-Total galaxies processed: 1
-Successful analyses: 1
+Total galaxies processed: 20
+Successful analyses: 20
 Failed analyses: 0
 Success rate: 100.0%
 
 Successful Galaxies:
 --------------------
-  VCC0308: 825.3 seconds
+  VCC0308: 975.6 seconds
+  VCC0990: 1019.2 seconds
+  VCC0667: 1271.1 seconds
+  VCC0688: 1392.3 seconds
+  VCC1049: 1789.6 seconds
+  VCC1146: 2233.4 seconds
+  VCC1193: 2871.0 seconds
+  VCC1368: 3434.7 seconds
+  VCC1499: 437.8 seconds
+  VCC1431: 2020.4 seconds
+  VCC1410: 2654.0 seconds
+  VCC1486: 1583.8 seconds
+  VCC1549: 990.2 seconds
+  VCC1588: 1004.3 seconds
+  VCC1695: 1083.4 seconds
+  VCC1902: 803.7 seconds
+  VCC1890: 1009.5 seconds
+  VCC1910: 864.4 seconds
+  VCC1811: 1725.1 seconds
+  VCC1949: 688.7 seconds
 
 Configuration Used:
 ------------------
-  template_file: data/templates/spectra_emiles_9.0.npz
+  template_file: templates/spectra_emiles_9.0.npz
   output_dir: output
-  data_dir: data/MUSE
+  data_dir: data/IFU
   n_workers: 4
   modes: ['P2P', 'VNB', 'RDB']
   target_snr: 20.0

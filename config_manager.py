@@ -72,6 +72,14 @@ def load_config(config_path=None):
     # Load configuration from file
     config_loaded = False
 
+    # Environment override for tests or isolated runs
+    try:
+        env_path = os.environ.get("ISAPC_CONFIG", None)
+        if env_path and os.path.exists(env_path):
+            config_path = env_path
+    except Exception:
+        pass
+
     if config_path is not None:
         # Try user-specified path
         if os.path.exists(config_path):
@@ -150,6 +158,35 @@ def get_snr_wavelength_range():
     return (min_wave, max_wave)
 
 
+def get_band_ratio_definitions():
+    """Return configured band ratios as a list of dicts.
+
+    Each item: {
+        'name': 'F1400_F1435',
+        'num': (1400.0, 1410.0),
+        'den': (1430.0, 1440.0)
+    }
+    """
+    config = get_config()
+    ratios = []
+    if config.has_section("BandRatios"):
+        for key, val in config.items("BandRatios"):
+            try:
+                # Expect format: name = num_min,num_max; den_min,den_max
+                if ";" in val:
+                    num_str, den_str = val.split(";", 1)
+                    num = tuple(float(x.strip()) for x in num_str.split(","))
+                    den = tuple(float(x.strip()) for x in den_str.split(","))
+                    if len(num) == 2 and len(den) == 2:
+                        ratios.append({"name": key, "num": num, "den": den})
+            except Exception:
+                continue
+    # Provide a sensible default if nothing configured
+    if not ratios:
+        ratios.append({"name": "F1400_F1435", "num": (1395.0, 1405.0), "den": (1430.0, 1440.0)})
+    return ratios
+
+
 def get_voronoi_parameters():
     """Get default parameters for Voronoi binning"""
     config = get_config()
@@ -195,6 +232,65 @@ def get_spectral_fitting_parameters():
     }
 
     return params
+
+
+def get_gas_kinematics_parameters():
+    """Get parameters controlling gas kinematics fitting (1 or 2 components).
+
+    Returns
+    -------
+    dict
+        Dictionary with keys:
+        - components (int): number of gas kinematic components (1 or 2)
+        - mode (str): 'one', 'narrow_broad', or 'duplicate'
+        - narrow_sigma_init (float)
+        - broad_sigma_init (float)
+        - narrow_sigma_bounds (tuple[float,float])
+        - broad_sigma_bounds (tuple[float,float])
+        - velocity_window (float): +/- window (km/s) around initial velocity
+    """
+    config = get_config()
+
+    # Read values with safe fallbacks
+    components = config.getint("GasKinematics", "components", fallback=1)
+    mode = config.get("GasKinematics", "mode", fallback="one").strip()
+
+    narrow_sigma_init = config.getfloat(
+        "GasKinematics", "narrow_sigma_init", fallback=40.0
+    )
+    broad_sigma_init = config.getfloat(
+        "GasKinematics", "broad_sigma_init", fallback=120.0
+    )
+
+    # Bounds as comma-separated values
+    def _get_bounds(key: str, default: tuple[float, float]):
+        val = config.get("GasKinematics", key, fallback=None)
+        if not val:
+            return default
+        try:
+            parts = [float(x.strip()) for x in val.split(",")]
+            if len(parts) == 2:
+                return (parts[0], parts[1])
+        except Exception:
+            pass
+        return default
+
+    narrow_sigma_bounds = _get_bounds("narrow_sigma_bounds", (10.0, 150.0))
+    broad_sigma_bounds = _get_bounds("broad_sigma_bounds", (60.0, 300.0))
+
+    velocity_window = config.getfloat(
+        "GasKinematics", "velocity_window", fallback=300.0
+    )
+
+    return {
+        "components": max(1, min(2, components)),
+        "mode": mode,
+        "narrow_sigma_init": narrow_sigma_init,
+        "broad_sigma_init": broad_sigma_init,
+        "narrow_sigma_bounds": narrow_sigma_bounds,
+        "broad_sigma_bounds": broad_sigma_bounds,
+        "velocity_window": velocity_window,
+    }
 
 
 def get_error_propagation_parameters():

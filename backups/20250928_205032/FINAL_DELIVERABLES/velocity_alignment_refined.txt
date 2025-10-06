@@ -1,0 +1,80 @@
+VCC0308 bin 0 median Δv=1488.3 km/s values=['1532.7', '1443.8']
+VCC0308 bin 1 median Δv=1488.3 km/s values=['1532.7', '1443.8']
+VCC0308 bin 2 median Δv=1488.8 km/s values=['1538.7', '1438.9']
+VCC0667 bin 0 median Δv=1421.0 km/s values=['1402.2', '1439.8']
+VCC0667 bin 1 median Δv=47.0 km/s values=['1532.8', '-1438.9']
+VCC0667 bin 2 median Δv=1494.2 km/s values=['1541.1', '1447.3']
+VCC0688 bin 0 median Δv=1488.1 km/s values=['1532.3', '1444.0']
+VCC0688 bin 1 median Δv=1487.0 km/s values=['1531.1', '1442.8']
+VCC0688 bin 2 median Δv=44.3 km/s values=['1533.3', '-1444.7']
+VCC0990 bin 0 median Δv=1490.8 km/s values=['1539.7', '1442.0']
+VCC0990 bin 1 median Δv=1490.6 km/s values=['1534.0', '1447.2']
+VCC0990 bin 2 median Δv=1488.1 km/s values=['1531.5', '1444.7']
+VCC1049 bin 0 median Δv=-426.7 km/s values=['590.8', '-1444.2']
+VCC1049 bin 1 median Δv=-727.1 km/s values=['-15.6', '-1438.5']
+VCC1049 bin 2 median Δv=1492.9 km/s values=['1540.2', '1445.5']
+VCC1146 bin 0 median Δv=44.6 km/s values=['1532.8', '-1443.5']
+VCC1146 bin 1 median Δv=49.3 km/s values=['1537.4', '-1438.9']
+VCC1146 bin 2 median Δv=43.0 km/s values=['1531.1', '-1445.1']
+VCC1193 bin 0 median Δv=45.9 km/s values=['1540.1', '-1448.3']
+VCC1193 bin 1 median Δv=48.4 km/s values=['1537.1', '-1440.3']
+VCC1193 bin 2 median Δv=46.2 km/s values=['1540.4', '-1448.0']
+VCC1368 bin 0 median Δv=1002.3 km/s values=['1071.3', '933.3']
+VCC1368 bin 1 median Δv=1259.5 km/s values=['1071.3', '1447.6']
+VCC1368 bin 2 median Δv=1488.6 km/s values=['1535.8', '1441.4']
+VCC1410 bin 0 median Δv=347.5 km/s values=['-747.5', '1442.4']
+VCC1410 bin 1 median Δv=378.2 km/s values=['-684.1', '1440.5']
+VCC1410 bin 2 median Δv=378.2 km/s values=['-684.1', '1440.5']
+VCC1431 bin 0 median Δv=1490.9 km/s values=['1537.4', '1444.4']
+VCC1431 bin 1 median Δv=1490.9 km/s values=['1537.4', '1444.4']
+VCC1431 bin 2 median Δv=1490.9 km/s values=['1537.4', '1444.4']
+VCC1486 bin 0 median Δv=-1490.8 km/s values=['-1534.7', '-1447.0']
+VCC1486 bin 1 median Δv=43.7 km/s values=['1535.5', '-1448.2']
+VCC1486 bin 2 median Δv=1490.5 km/s values=['1534.1', '1447.0']
+VCC1549 bin 0 median Δv=47.5 km/s values=['1541.4', '-1446.3']
+VCC1549 bin 1 median Δv=1491.5 km/s values=['1541.4', '1441.5']
+VCC1549 bin 2 median Δv=1491.5 km/s values=['1541.4', '1441.5']
+VCC1588 bin 0 median Δv=43.0 km/s values=['1533.4', '-1447.4']
+VCC1588 bin 1 median Δv=1486.6 km/s values=['1533.4', '1439.7']
+VCC1588 bin 2 median Δv=43.0 km/s values=['1533.4', '-1447.4']
+VCC1695 bin 0 median Δv=43.4 km/s values=['1534.1', '-1447.3']
+VCC1695 bin 1 median Δv=1489.9 km/s values=['1541.6', '1438.2']
+VCC1695 bin 2 median Δv=1485.9 km/s values=['1532.1', '1439.7']
+VCC1811 bin 0 median Δv=45.8 km/s values=['1534.8', '-1443.2']
+VCC1811 bin 1 median Δv=1486.1 km/s values=['1533.8', '1438.4']
+VCC1811 bin 2 median Δv=1487.9 km/s values=['1535.6', '1440.3']
+VCC1890 bin 0 median Δv=1320.8 km/s values=['1199.1', '1442.5']
+VCC1890 bin 1 median Δv=47.0 km/s values=['1538.3', '-1444.2']
+VCC1890 bin 2 median Δv=1331.7 km/s values=['1220.9', '1442.5']
+VCC1902 bin 0 median Δv=1489.8 km/s values=['1531.9', '1447.7']
+VCC1902 bin 1 median Δv=1489.8 km/s values=['1531.9', '1447.7']
+VCC1902 bin 2 median Δv=1489.8 km/s values=['1531.9', '1447.7']
+VCC1910 bin 0 median Δv=47.3 km/s values=['1537.7', '-1443.2']
+VCC1910 bin 1 median Δv=1020.8 km/s values=['1539.7', '501.8']
+VCC1910 bin 2 median Δv=1020.3 km/s values=['1539.3', '501.3']
+VCC1949 bin 0 median Δv=1490.9 km/s values=['1536.7', '1445.1']
+VCC1949 bin 1 median Δv=1494.1 km/s values=['1539.9', '1448.3']
+VCC1949 bin 2 median Δv=1488.3 km/s values=['1534.1', '1442.5']
+Galaxy     Frame   Rest? z_sys    med_dv   std      Status
+VCC0308    rest    True   0.00550   1488.3      0.2 FLAG
+VCC0667    rest    True   0.00480   1421.0    665.7 FLAG
+VCC0688    rest    True   0.00380   1487.0    680.4 FLAG
+VCC0990    rest    True   0.00580   1490.6      1.2 FLAG
+VCC1049    rest    True   0.00210   -426.7    983.4 FLAG
+VCC1146    rest    True   0.00230     44.6      2.7 FLAG
+VCC1193    rest    True   0.00250     46.2      1.1 FLAG
+VCC1368    rest    True   0.00350   1259.5    198.6 FLAG
+VCC1410    rest    True   0.00540    378.2     14.5 FLAG
+VCC1431    rest    True   0.00500   1490.9      0.0 FLAG
+VCC1486    rest    True   0.00040     43.7   1217.3 FLAG
+VCC1499    rest    True   0.00420      nan      nan OK
+VCC1549    rest    True   0.00460   1491.5    680.7 FLAG
+VCC1588    rest    True   0.00420     43.0    680.5 FLAG
+VCC1695    rest    True   0.00580   1485.9    680.9 FLAG
+VCC1811    rest    True   0.00230   1486.1    679.4 FLAG
+VCC1890    rest    True   0.00400   1320.8    603.1 FLAG
+VCC1902    rest    True   0.00380   1489.8      0.0 FLAG
+VCC1910    rest    True   0.00070   1020.3    458.8 FLAG
+VCC1949    rest    True   0.00580   1490.9      2.4 FLAG
+
+Galaxies exceeding |Δv|>25.0 km/s: VCC0308, VCC0667, VCC0688, VCC0990, VCC1049, VCC1146, VCC1193, VCC1368, VCC1410, VCC1431, VCC1486, VCC1549, VCC1588, VCC1695, VCC1811, VCC1890, VCC1902, VCC1910, VCC1949

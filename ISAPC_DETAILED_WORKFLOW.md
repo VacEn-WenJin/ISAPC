@@ -204,6 +204,30 @@ else:
 radial_positions[0] = 0.0  # Physical motivation
 ```
 
+#### Optional: Flux-equalized inner radial bins
+**Location**: `binning.py:calculate_flux_equalized_bins()` with wiring in `analysis/radial.py`
+
+**Goal**: Make the first N inner annuli contain approximately equal total flux (default N=3) to stabilize inner gradients, with an option to make the 2nd bin slightly narrower.
+
+**How it works**:
+- Build a flux map (median over valid wavelengths) and cumulative flux vs. elliptical radius.
+- Choose inner bin edges where the cumulative flux crosses equal quotas: total_inner_flux / N.
+- Apply a bias to the 2nd bin width if requested: shrink edge_2 toward edge_1 by factor `rdb_bin2_bias` (e.g., 0.9).
+- Beyond N, revert to the standard spacing (linear or default R_e–based) used by RDB.
+
+**CLI flags (main.py)**:
+- `--rdb-equalize-flux` enable equalized inner bins
+- `--rdb-equalize-n-inner <int>` number of inner bins to equalize (default 3)
+- `--rdb-bin2-bias <float>` bias factor for the 2nd bin (<1.0 makes it smaller; default 1.0)
+
+**Artifacts**:
+- Stored in the RDB NPZ under the `binning` dictionary: `bin_edges`, `bin_radii`, `n_rings`, etc.
+- Diagnostic figures show the updated edges and radii.
+
+**Notes**:
+- If the flux map is degenerate or insufficient, the code falls back to the standard binning strategy.
+- The 2nd bin being narrower is intended to reduce mixing between the very-central and next annulus.
+
 ### **Step 4.2: Voronoi Binning (VNB)**
 **Location**: `analysis/voronoi.py`
 **Method**: Cappellari & Copin (2003) adaptive binning

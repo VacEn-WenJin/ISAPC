@@ -206,7 +206,7 @@ def save_standardized_results(galaxy_name, analysis_type, results, base_dir):
             "errors": ["velocity_error", "dispersion_error"]
         },
         "emission": {
-            "fields": ["velocity_field", "dispersion_field", "emission_flux"],
+            "fields": ["velocity_field", "dispersion_field", "emission_flux", "emission_components"],
             "errors": ["velocity_error", "dispersion_error", "flux_error"]
         },
         "indices": {

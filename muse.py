@@ -350,6 +350,12 @@ class MUSECube:
         """Preprocess the data cube: apply redshift correction, select wavelength range, and rebin spectra"""
         try:
             # Apply redshift correction
+            # Store original observed wavelength axis (before dividing by (1+z)) so we can audit later
+            self._observed_wavelength = self._obs_wvl_air_angstrom.copy()
+            # Divide by (1+z) to create a rest-frame wavelength grid. Because the systemic redshift is
+            # constant across the field, re-labelling the wavelength axis is equivalent to shifting to
+            # the rest frame (no interpolation needed). Downstream modules can now treat spectra as
+            # already systemic-rest corrected and only remove residual stellar velocities.
             wvl_air_angstrom = self._obs_wvl_air_angstrom / (1 + self._redshift)
 
             # Select valid wavelength range
@@ -401,24 +407,26 @@ class MUSECube:
                 self._variance_2d = np.nan_to_num(
                     self._variance_2d, nan=1.0, posinf=1.0, neginf=1.0
                 )
-
-            # Log-rebin of the spectra
+            # Log-rebin of the spectra on (now) rest-frame wavelength grid (already shifted above)
             self._vel_scale = np.min(
                 SPEED_OF_LIGHT * np.diff(np.log(self._wvl_air_angstrom))
             )
 
+            lam_range = [float(np.min(self._wvl_air_angstrom)), float(np.max(self._wvl_air_angstrom))]
             self._spectra, self._ln_lambda_gal, _ = ppxf_util.log_rebin(
-                lam=[np.min(self._wvl_air_angstrom), np.max(self._wvl_air_angstrom)],
+                lam=lam_range,
                 spec=self._spectra_2d,
                 velscale=self._vel_scale,
             )
             self._log_variance, _, _ = ppxf_util.log_rebin(
-                lam=[np.min(self._wvl_air_angstrom), np.max(self._wvl_air_angstrom)],
+                lam=lam_range,
                 spec=self._variance_2d,
                 velscale=self._vel_scale,
             )
-            self._lambda_gal = np.exp(self._ln_lambda_gal)
-            self._FWHM_gal = self._FWHM_gal / (1 + self._redshift)
+            self._lambda_gal = np.exp(self._ln_lambda_gal)  # rest-frame log grid
+            # Instrumental FWHM correction scale to rest frame
+            if self._redshift not in (None, 0, 0.0):
+                self._FWHM_gal = self._FWHM_gal / (1 + self._redshift)
 
             self._row = rows.ravel() + 1
             self._col = cols.ravel() + 1
@@ -431,6 +439,23 @@ class MUSECube:
             # Store the shape of the wavelength axis for later reference
             self._n_wave_fit = len(self._lambda_gal)
             self._bestfit_field = np.full((self._n_wave_fit, n_y, n_x), np.nan)
+
+            # ---- Rest-frame bookkeeping flags ----
+            # Indicate that the systemic redshift has already been applied (wavelength axis is rest frame)
+            self._wave_frame = 'rest'           # public-ish internal flag for other modules
+            self._systemic_rest_applied = True  # boolean convenience flag
+            # Keep a reference to the rest-frame wavelength actually used after trimming
+            self._rest_wavelength = self._wvl_air_angstrom  # already divided above
+            # Provide accessor-friendly attribute matching binned objects naming
+            self._wavelength_frame_metadata = {
+                'wave_frame': 'rest',
+                'systemic_redshift_used': float(self._redshift) if self._redshift is not None else None,
+                'rest_frame_applied': True,
+                'observed_wavelength_min': float(self._observed_wavelength[0]),
+                'observed_wavelength_max': float(self._observed_wavelength[-1]),
+                'rest_wavelength_min': float(self._rest_wavelength[0]),
+                'rest_wavelength_max': float(self._rest_wavelength[-1])
+            }
 
         except Exception as e:
             logger.error(f"Error preprocessing cube: {str(e)}")
@@ -698,6 +723,7 @@ class MUSECube:
         ppxf_deg: int = 3,
         n_jobs: int = -1,
         use_binned: bool = None,
+        subset_indices: Optional[List[int]] = None,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, list[np.ndarray]]:
         # Determine whether to use binned mode
         if use_binned is None:
@@ -714,7 +740,7 @@ class MUSECube:
         else:
             # Original pixel-by-pixel implementation
             return self._fit_spectra_original(
-                template_filename, ppxf_vel_init, ppxf_vel_disp_init, ppxf_deg, n_jobs
+                template_filename, ppxf_vel_init, ppxf_vel_disp_init, ppxf_deg, n_jobs, subset_indices=subset_indices
             )
 
     def _fit_spectra_original(
@@ -724,6 +750,7 @@ class MUSECube:
         ppxf_vel_disp_init: int = 40,
         ppxf_deg: int = 3,
         n_jobs: int = -1,
+        subset_indices: Optional[List[int]] = None,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, list[np.ndarray]]:
         """
         Fit the stellar continuum in each spaxel using pPXF.
@@ -936,9 +963,19 @@ class MUSECube:
                                 logger.debug(f"Fitting failed at ({i},{j}): {str(e)}")
                             return i, j, None
 
+            # Determine iteration indices (optional smoke subset)
+            iter_indices = range(n_spaxel)
+            if subset_indices is not None:
+                try:
+                    # Ensure within bounds and unique
+                    iter_indices = [i for i in subset_indices if 0 <= i < n_spaxel]
+                except Exception:
+                    iter_indices = range(n_spaxel)
+
+            total_tasks = len(iter_indices) if hasattr(iter_indices, '__len__') else n_spaxel
             fit_results = ParallelTqdm(
-                n_jobs=n_jobs, desc="Fitting spectra", total_tasks=n_spaxel, backend='threading'
-            )(delayed(fit_spaxel)(idx) for idx in range(n_spaxel))
+                n_jobs=n_jobs, desc="Fitting spectra", total_tasks=total_tasks, backend='threading'
+            )(delayed(fit_spaxel)(idx) for idx in iter_indices)
 
             for fit_result in fit_results:
                 if fit_result[2] is None:
@@ -1283,6 +1320,7 @@ class MUSECube:
         n_jobs: int = -1,
         verbose: bool = True,
         use_binned: bool = None,
+        subset_indices: Optional[List[int]] = None,
     ) -> Dict[str, Any]:
         """
         Universal emission line fitting for both pixel-by-pixel and binned data
@@ -1339,6 +1377,7 @@ class MUSECube:
                 ppxf_deg,
                 n_jobs,
                 verbose,
+                subset_indices=subset_indices,
             )
 
     def _fit_emission_lines_original(
@@ -1350,6 +1389,7 @@ class MUSECube:
         ppxf_deg: int = 8,
         n_jobs: int = -1,
         verbose: bool = True,
+        subset_indices: Optional[List[int]] = None,
     ) -> Dict[str, Any]:
         """
         Fit emission line components based on stellar template.
@@ -1405,13 +1445,27 @@ class MUSECube:
             lam_range_gal = [np.min(self._lambda_gal), np.max(self._lambda_gal)]
 
             from ppxf.ppxf_util import emission_lines
+            # Configurable gas components
+            try:
+                from config_manager import get_gas_kinematics_parameters
+                gaskin = get_gas_kinematics_parameters()
+            except Exception:
+                gaskin = {
+                    "components": 1,
+                    "mode": "one",
+                    "narrow_sigma_init": 40.0,
+                    "broad_sigma_init": 120.0,
+                    "narrow_sigma_bounds": (10.0, 150.0),
+                    "broad_sigma_bounds": (60.0, 300.0),
+                    "velocity_window": 300.0,
+                }
 
             gas_templates, gas_names, line_wave = emission_lines(
                 self._sps.ln_lam_temp, lam_range_gal, self._FWHM_gal
             )
 
-            # Set up gas components - using 1 gas kinematic component
-            ngas_comp = 1
+            # Set up gas components based on config
+            ngas_comp = max(1, min(2, gaskin.get("components", 1)))
             gas_templates = np.tile(gas_templates, ngas_comp)
             gas_names = np.asarray(
                 [a + f"_({p + 1})" for p in range(ngas_comp) for a in gas_names]
@@ -1477,6 +1531,15 @@ class MUSECube:
                         (self._n_y, self._n_x), np.nan
                     )
 
+            # Initialize per-component storage
+            self._component_velocity = np.full((ngas_comp, self._n_y, self._n_x), np.nan)
+            self._component_sigma = np.full((ngas_comp, self._n_y, self._n_x), np.nan)
+            self._emission_flux_components = {}
+            for name in gas_names:
+                base_name = name.split("_(")[0] if "_(" in name else name
+                if base_name not in self._emission_flux_components:
+                    self._emission_flux_components[base_name] = np.full((ngas_comp, self._n_y, self._n_x), np.nan)
+
             # Store ppxf results for each spaxel
             self._ppxf_gas_results = []
 
@@ -1540,35 +1603,47 @@ class MUSECube:
                         [optimal_template, gas_templates]
                     )
 
-                    # Define component types - [0] for stellar, [1] for gas components
-                    component = [0] + [1] * gas_templates.shape[
-                        1
-                    ]  # Correct number based on actual templates
-                    gas_component = np.array(component) > 0  # True for gas components
+                    # Define component types: 0=stars, 1=gas comp1, 2=gas comp2 (if any)
+                    nlines_per_comp = gas_templates.shape[1] // ngas_comp if ngas_comp > 0 else 0
+                    if ngas_comp == 1:
+                        component = [0] + [1] * (nlines_per_comp)
+                    else:
+                        component = [0] + [1] * nlines_per_comp + [2] * nlines_per_comp
+                    gas_component = np.array(component) > 0
 
-                    # Define moments for each component type
-                    moments = [
-                        -2,
-                        2,
-                    ]  # -2 for stellar (fixed dispersion), 2 for gas (full kinematics)
-                    ncomp = len(moments)  # Should be 2
+                    # Define moments for each component
+                    if ngas_comp == 1:
+                        moments = [-2, 2]  # keep stellar fixed, fit gas
+                    else:
+                        moments = [-2, 2, 2]
+                    ncomp = len(moments)
                     tied = [["", ""] for _ in range(ncomp)]
 
                     # Set initial parameters
-                    start = [
-                        [
-                            vel_init,
-                            dispersion_field[i, j],
-                        ],  # Stellar initial kinematics
-                        [vel_init, ppxf_sig_init],  # Gas initial kinematics
-                    ]
+                    start = []
+                    # Stellar initial kinematics
+                    start.append([vel_init, dispersion_field[i, j]])
+                    # Gas components
+                    if ngas_comp == 1:
+                        start.append([vel_init, ppxf_sig_init])
+                    else:
+                        start.append([vel_init, gaskin.get("narrow_sigma_init", 40.0)])
+                        start.append([vel_init, gaskin.get("broad_sigma_init", 120.0)])
 
                     # Set boundary conditions
-                    vlim = lambda x: vel_init + x * np.array([-100, 100])
-                    bounds = [
-                        [vlim(2), [20, 300]],  # Stellar bounds
-                        [vlim(2), [20, 100]],  # Gas bounds
-                    ]
+                    vel_window = float(gaskin.get("velocity_window", 300.0))
+                    vlim = lambda: [vel_init - vel_window, vel_init + vel_window]
+                    bounds = []
+                    # Stellar bounds
+                    bounds.append([vlim(), [20, 300]])
+                    # Gas bounds per component
+                    if ngas_comp == 1:
+                        bounds.append([vlim(), [20, 300]])
+                    else:
+                        nmin, nmax = gaskin.get("narrow_sigma_bounds", (10.0, 150.0))
+                        bmin, bmax = gaskin.get("broad_sigma_bounds", (60.0, 300.0))
+                        bounds.append([vlim(), [nmin, nmax]])
+                        bounds.append([vlim(), [bmin, bmax]])
 
                     # Call ppxf with appropriate parameters and warning suppression
                     try:
@@ -1650,21 +1725,22 @@ class MUSECube:
                             else [vel_init, self._dispersion_field[i, j]]
                         )
 
-                        # Get gas kinematics
+                        # Get gas kinematics (support 1 or 2 gas components)
                         gas_sol = None
-                        if hasattr(pp, "gas_kinematics"):
-                            gas_sol = pp.gas_kinematics[0]  # Take first gas component
-                        else:
-                            # Try to extract from sol
-                            if (
-                                hasattr(pp, "sol")
-                                and hasattr(pp, "ncomp")
-                                and pp.ncomp > 1
-                            ):
-                                gas_sol = [
-                                    pp.sol[1][0],
-                                    pp.sol[1][1],
-                                ]  # Take the second component's solution
+                        gas_sol_list = []
+                        try:
+                            if hasattr(pp, "gas_kinematics") and pp.gas_kinematics is not None:
+                                # pp.gas_kinematics is a list per gas component
+                                gas_sol_list = [g for g in pp.gas_kinematics]
+                            elif hasattr(pp, "sol") and hasattr(pp, "ncomp") and pp.ncomp > 1:
+                                # pp.sol[k] per component: 0=stars, 1+=gas components
+                                for comp_idx in range(1, min(1 + ngas_comp, len(pp.sol))):
+                                    gas_sol_list.append([pp.sol[comp_idx][0], pp.sol[comp_idx][1]])
+                        except Exception:
+                            gas_sol_list = []
+
+                        if gas_sol_list:
+                            gas_sol = gas_sol_list[0]
 
                         # Store results
                         result = {
@@ -1673,7 +1749,8 @@ class MUSECube:
                             "stellar_bestfit": stellar_bestfit,
                             "total_bestfit": bestfit,
                             "sol": stellar_sol,  # Stellar kinematics
-                            "gas_sol": gas_sol,  # Gas kinematics
+                            "gas_sol": gas_sol,  # Primary gas kinematics (component 1)
+                            "gas_sol_list": gas_sol_list,  # All gas components if available
                             "weights": pp.weights if hasattr(pp, "weights") else None,
                             "NEL_cal_tmp": NEL_cal_tmp,
                         }
@@ -1694,9 +1771,18 @@ class MUSECube:
                     return i, j, None
 
             # Run fits in parallel - using threading for CPU-intensive fitting
+            # Determine iteration indices (optional smoke subset)
+            iter_indices = range(n_spaxel)
+            if subset_indices is not None:
+                try:
+                    iter_indices = [i for i in subset_indices if 0 <= i < n_spaxel]
+                except Exception:
+                    iter_indices = range(n_spaxel)
+
+            total_tasks = len(iter_indices) if hasattr(iter_indices, '__len__') else n_spaxel
             fit_results = ParallelTqdm(
-                n_jobs=n_jobs, desc="Fitting emission lines", total_tasks=n_spaxel, backend='threading'
-            )(delayed(fit_spaxel_emission)(idx) for idx in range(n_spaxel))
+                n_jobs=n_jobs, desc="Fitting emission lines", total_tasks=total_tasks, backend='threading'
+            )(delayed(fit_spaxel_emission)(idx) for idx in iter_indices)
 
             # Process results
             for fit_result in fit_results:
@@ -1731,27 +1817,55 @@ class MUSECube:
 
                 # Save emission line flux and velocity information
                 if "flux" in result and result["flux"] is not None:
-                    # Process emission line fluxes
+                    # Aggregate per-line across components and choose kinematics from dominant component
+                    per_line_flux = {}
+                    # Build per-component index from gas_names suffix _(1), _(2)
                     for k, full_name in enumerate(gas_names):
-                        if k < len(result["flux"]):
-                            # Get base name without component number
-                            base_name = (
-                                full_name.split("_(")[0]
-                                if "_(" in full_name
-                                else full_name
-                            )
+                        if k >= len(result["flux"]):
+                            continue
+                        base_name = full_name.split("_(")[0] if "_(" in full_name else full_name
+                        comp_idx = 0
+                        if "_(" in full_name:
+                            try:
+                                comp_idx = int(full_name.split("_(")[1].split(")")[0]) - 1
+                            except Exception:
+                                comp_idx = 0
+                        per_line_flux.setdefault(base_name, {})[comp_idx] = result["flux"][k]
 
-                            # Store flux
-                            self._emission_flux[base_name][row, col] = result["flux"][k]
+                    # Now store total flux and pick kinematics
+                    for base_name, comp_flux in per_line_flux.items():
+                        total_flux = np.nansum(list(comp_flux.values()))
+                        self._emission_flux[base_name][row, col] = total_flux
 
-                            # Store kinematics if available
-                            if "gas_sol" in result and result["gas_sol"] is not None:
-                                self._emission_vel[base_name][row, col] = result[
-                                    "gas_sol"
-                                ][0]
-                                self._emission_sig[base_name][row, col] = result[
-                                    "gas_sol"
-                                ][1]
+                        # Store per-component flux
+                        for comp_i, fval in comp_flux.items():
+                            try:
+                                self._emission_flux_components[base_name][comp_i, row, col] = fval
+                            except Exception:
+                                pass
+
+                        # Choose component for kinematics: highest flux
+                        best_comp = max(comp_flux, key=lambda c: comp_flux[c]) if comp_flux else 0
+                        gas_sol_list = result.get("gas_sol_list", [])
+                        sel_sol = None
+                        if gas_sol_list and best_comp < len(gas_sol_list):
+                            sel_sol = gas_sol_list[best_comp]
+                        else:
+                            sel_sol = result.get("gas_sol", None)
+
+                        if sel_sol is not None:
+                            self._emission_vel[base_name][row, col] = sel_sol[0]
+                            self._emission_sig[base_name][row, col] = sel_sol[1]
+
+                    # Persist per-component kinematics for this spaxel if available
+                    gas_sol_list = result.get("gas_sol_list", [])
+                    for comp_i, sol in enumerate(gas_sol_list):
+                        try:
+                            if sol is not None and len(sol) >= 2:
+                                self._component_velocity[comp_i, row, col] = sol[0]
+                                self._component_sigma[comp_i, row, col] = sol[1]
+                        except Exception:
+                            pass
 
             # Post-process emission line results
             self._post_process_emission_results()
@@ -1775,6 +1889,11 @@ class MUSECube:
                     "signal": snr_info["signal"],
                     "noise": snr_info["noise"],
                     "snr": snr_info["snr"],
+                    "emission_components": {
+                        "n_components": ngas_comp,
+                        "component_kinematics": {"velocity": self._component_velocity, "sigma": self._component_sigma},
+                        "flux_components": self._emission_flux_components,
+                    },
                 }
             else:
                 # Use original result dictionary format
@@ -1787,6 +1906,11 @@ class MUSECube:
                     "optimal_tmpls": self._optimal_tmpls,
                     "velocity_field": self._velocity_field,
                     "dispersion_field": self._dispersion_field,
+                    "emission_components": {
+                        "n_components": ngas_comp,
+                        "component_kinematics": {"velocity": self._component_velocity, "sigma": self._component_sigma},
+                        "flux_components": self._emission_flux_components,
+                    },
                 }
 
             return result_dict
@@ -1923,12 +2047,26 @@ class MUSECube:
             sps_ln_lam_temp = self._sps.ln_lam_temp.copy()
 
             # Generate gas templates
+            # Configurable gas components
+            try:
+                from config_manager import get_gas_kinematics_parameters
+                gaskin = get_gas_kinematics_parameters()
+            except Exception:
+                gaskin = {
+                    "components": 1,
+                    "mode": "one",
+                    "narrow_sigma_init": 40.0,
+                    "broad_sigma_init": 120.0,
+                    "narrow_sigma_bounds": (10.0, 150.0),
+                    "broad_sigma_bounds": (60.0, 300.0),
+                    "velocity_window": 300.0,
+                }
+
             gas_templates, gas_names, line_wave = emission_lines(
                 sps_ln_lam_temp, lam_range_gal, FWHM_gal / (1 + redshift)
             )
 
-            # Set up gas components
-            ngas_comp = 1
+            ngas_comp = max(1, min(2, gaskin.get("components", 1)))
             gas_templates = np.tile(gas_templates, ngas_comp)
             gas_names = np.asarray(
                 [a + f"_({p + 1})" for p in range(ngas_comp) for a in gas_names]
@@ -1954,7 +2092,7 @@ class MUSECube:
             # Store emission line wavelengths for reference
             self._emission_wavelength = dict(zip(gas_names, line_wave))
 
-            # Initialize emission line storage
+            # Initialize emission line storage (aggregated per base line)
             for name in gas_names:
                 base_name = name.split("_(")[0] if "_(" in name else name
                 self._bin_emission_flux[base_name] = np.full(n_bins, np.nan)
@@ -1965,6 +2103,20 @@ class MUSECube:
                 self._emission_flux[base_name] = np.full((self._n_y, self._n_x), np.nan)
                 self._emission_vel[base_name] = np.full((self._n_y, self._n_x), np.nan)
                 self._emission_sig[base_name] = np.full((self._n_y, self._n_x), np.nan)
+
+            # Initialize per-component storage (bin-level and pixel-level)
+            self._bin_component_velocity = np.full((ngas_comp, n_bins), np.nan)
+            self._bin_component_sigma = np.full((ngas_comp, n_bins), np.nan)
+            self._component_velocity = np.full((ngas_comp, self._n_y, self._n_x), np.nan)
+            self._component_sigma = np.full((ngas_comp, self._n_y, self._n_x), np.nan)
+            self._bin_emission_flux_components = {}
+            self._emission_flux_components = {}
+            for name in gas_names:
+                base_name = name.split("_(")[0] if "_(" in name else name
+                if base_name not in self._bin_emission_flux_components:
+                    self._bin_emission_flux_components[base_name] = np.full((ngas_comp, n_bins), np.nan)
+                if base_name not in self._emission_flux_components:
+                    self._emission_flux_components[base_name] = np.full((ngas_comp, self._n_y, self._n_x), np.nan)
 
             # Extract data to avoid pickling issues
             bin_optimal_tmpls = self._bin_optimal_tmpls.copy()
@@ -2033,28 +2185,41 @@ class MUSECube:
                     )
 
                     # Define component types
-                    component = [0] + [1] * gas_templates.shape[1]
+                    nlines_per_comp = gas_templates.shape[1] // ngas_comp if ngas_comp > 0 else 0
+                    if ngas_comp == 1:
+                        component = [0] + [1] * (nlines_per_comp)
+                    else:
+                        component = [0] + [1] * nlines_per_comp + [2] * nlines_per_comp
                     gas_component = np.array(component) > 0
 
                     # Define moments for each component type
-                    moments = [2, 2]  # 2 moments for both stellar and gas
+                    if ngas_comp == 1:
+                        moments = [2, 2]
+                    else:
+                        moments = [2, 2, 2]
                     ncomp = len(moments)
 
                     # Set initial parameters
-                    start = [
-                        [
-                            vel_init,
-                            self._bin_dispersion[bin_idx],
-                        ],  # Stellar initial kinematics
-                        [vel_init, ppxf_sig_init],  # Gas initial kinematics
-                    ]
+                    start = []
+                    start.append([vel_init, self._bin_dispersion[bin_idx]])
+                    if ngas_comp == 1:
+                        start.append([vel_init, ppxf_sig_init])
+                    else:
+                        start.append([vel_init, gaskin.get("narrow_sigma_init", 40.0)])
+                        start.append([vel_init, gaskin.get("broad_sigma_init", 120.0)])
 
                     # Set boundary conditions
-                    vlim = lambda x: vel_init + x * np.array([-300, 300])
-                    bounds = [
-                        [vlim(1), [1, 300]],  # Stellar bounds
-                        [vlim(1), [1, 200]],  # Gas bounds
-                    ]
+                    vel_window = float(gaskin.get("velocity_window", 300.0))
+                    vlim = lambda: [vel_init - vel_window, vel_init + vel_window]
+                    bounds = []
+                    bounds.append([vlim(), [1, 300]])
+                    if ngas_comp == 1:
+                        bounds.append([vlim(), [1, 200]])
+                    else:
+                        nmin, nmax = gaskin.get("narrow_sigma_bounds", (10.0, 150.0))
+                        bmin, bmax = gaskin.get("broad_sigma_bounds", (60.0, 300.0))
+                        bounds.append([vlim(), [nmin, nmax]])
+                        bounds.append([vlim(), [bmin, bmax]])
 
                     # Call pPXF with error handling
                     with warnings.catch_warnings():
@@ -2104,9 +2269,18 @@ class MUSECube:
                     # Calculate stellar component
                     stellar_bestfit = bestfit - gas_bestfit
 
-                    # Get stellar and gas solutions
+                    # Get stellar and gas solutions (support multi gas components)
                     stellar_sol = pp.sol[0]
-                    gas_sol = pp.sol[1]
+                    gas_sol_list = []
+                    try:
+                        if hasattr(pp, "gas_kinematics") and pp.gas_kinematics is not None:
+                            gas_sol_list = [g for g in pp.gas_kinematics]
+                        else:
+                            for comp_idx in range(1, min(1 + ngas_comp, len(pp.sol))):
+                                gas_sol_list.append([pp.sol[comp_idx][0], pp.sol[comp_idx][1]])
+                    except Exception:
+                        gas_sol_list = []
+                    gas_sol = gas_sol_list[0] if gas_sol_list else pp.sol[1]
 
                     # Properly calculate and update optimal template with polynomial
                     updated_optimal_template = None
@@ -2152,17 +2326,31 @@ class MUSECube:
                     # Add gas flux if available
                     if hasattr(pp, "gas_flux"):
                         result["gas_flux"] = pp.gas_flux
+                        # Aggregate by base line name across components, choose kinematics by dominant component
+                        per_line_flux = {}
+                        for k, name in enumerate(gas_names):
+                            if k >= len(pp.gas_flux):
+                                continue
+                            base_name = name.split("_(")[0] if "_(" in name else name
+                            comp_idx = 0
+                            if "_(" in name:
+                                try:
+                                    comp_idx = int(name.split("_(")[1].split(")")[0]) - 1
+                                except Exception:
+                                    comp_idx = 0
+                            per_line_flux.setdefault(base_name, {})[comp_idx] = pp.gas_flux[k]
 
-                        # Process each emission line
                         result["emission_flux"] = {}
                         result["emission_vel"] = {}
                         result["emission_sig"] = {}
 
-                        for k, name in enumerate(gas_names):
-                            base_name = name.split("_(")[0] if "_(" in name else name
-                            result["emission_flux"][base_name] = pp.gas_flux[k]
-                            result["emission_vel"][base_name] = gas_sol[0]
-                            result["emission_sig"][base_name] = gas_sol[1]
+                        for base_name, comp_flux in per_line_flux.items():
+                            total_flux = np.nansum(list(comp_flux.values()))
+                            result["emission_flux"][base_name] = total_flux
+                            best_comp = max(comp_flux, key=lambda c: comp_flux[c]) if comp_flux else 0
+                            sel_sol = gas_sol_list[best_comp] if gas_sol_list and best_comp < len(gas_sol_list) else gas_sol
+                            result["emission_vel"][base_name] = sel_sol[0]
+                            result["emission_sig"][base_name] = sel_sol[1]
 
                     return bin_idx, result
 
@@ -2223,18 +2411,39 @@ class MUSECube:
                         self._bin_emission_sig[base_name][bin_idx] = result[
                             "emission_sig"
                         ][base_name]
+                    # Store per-component flux for this bin
+                    if "flux_components" in result and isinstance(result["flux_components"], dict):
+                        for base_name, comp_dict in result["flux_components"].items():
+                            for comp_i, fval in comp_dict.items():
+                                try:
+                                    self._bin_emission_flux_components[base_name][comp_i, bin_idx] = fval
+                                except Exception:
+                                    pass
                 elif "gas_flux" in result and gas_names:
+                    # Fallback: map per-template fluxes without aggregation
+                    per_line_flux = {}
                     for k, name in enumerate(gas_names):
+                        if k >= len(result["gas_flux"]):
+                            continue
                         base_name = name.split("_(")[0] if "_(" in name else name
-                        self._bin_emission_flux[base_name][bin_idx] = result[
-                            "gas_flux"
-                        ][k]
-                        self._bin_emission_vel[base_name][bin_idx] = result["gas_sol"][
-                            0
-                        ]
-                        self._bin_emission_sig[base_name][bin_idx] = result["gas_sol"][
-                            1
-                        ]
+                        per_line_flux[base_name] = per_line_flux.get(base_name, 0.0) + result["gas_flux"][k]
+                    # Choose kinematics: prefer component 0 if available
+                    gas_sol_list = result.get("gas_sol_list", [])
+                    sel_sol = gas_sol_list[0] if gas_sol_list else result.get("gas_sol", [np.nan, np.nan])
+                    for base_name, total_flux in per_line_flux.items():
+                        self._bin_emission_flux[base_name][bin_idx] = total_flux
+                        self._bin_emission_vel[base_name][bin_idx] = sel_sol[0]
+                        self._bin_emission_sig[base_name][bin_idx] = sel_sol[1]
+
+                # Persist per-component kinematics for this bin
+                gas_sol_list = result.get("gas_sol_list", [])
+                for comp_i, sol in enumerate(gas_sol_list):
+                    try:
+                        if sol is not None and len(sol) >= 2:
+                            self._bin_component_velocity[comp_i, bin_idx] = sol[0]
+                            self._bin_component_sigma[comp_i, bin_idx] = sol[1]
+                    except Exception:
+                        pass
 
                 # Map results to pixels
                 if bin_idx in self._bin_pixel_map:
@@ -2257,20 +2466,28 @@ class MUSECube:
                                     self._emission_sig[base_name][row, col] = result[
                                         "emission_sig"
                                     ][base_name]
+                                # Per-component flux to pixel maps
+                                if "flux_components" in result and isinstance(result["flux_components"], dict):
+                                    for base_name, comp_dict in result["flux_components"].items():
+                                        for comp_i, fval in comp_dict.items():
+                                            try:
+                                                self._emission_flux_components[base_name][comp_i, row, col] = fval
+                                            except Exception:
+                                                pass
                             elif "gas_flux" in result and gas_names:
+                                # Fallback mapping: sum duplicated components per base
+                                per_line_flux = {}
                                 for k, name in enumerate(gas_names):
-                                    base_name = (
-                                        name.split("_(")[0] if "_(" in name else name
-                                    )
-                                    self._emission_flux[base_name][row, col] = result[
-                                        "gas_flux"
-                                    ][k]
-                                    self._emission_vel[base_name][row, col] = result[
-                                        "gas_sol"
-                                    ][0]
-                                    self._emission_sig[base_name][row, col] = result[
-                                        "gas_sol"
-                                    ][1]
+                                    if k >= len(result["gas_flux"]):
+                                        continue
+                                    base_name = name.split("_(")[0] if "_(" in name else name
+                                    per_line_flux[base_name] = per_line_flux.get(base_name, 0.0) + result["gas_flux"][k]
+                                gas_sol_list = result.get("gas_sol_list", [])
+                                sel_sol = gas_sol_list[0] if gas_sol_list else result.get("gas_sol", [np.nan, np.nan])
+                                for base_name, total_flux in per_line_flux.items():
+                                    self._emission_flux[base_name][row, col] = total_flux
+                                    self._emission_vel[base_name][row, col] = sel_sol[0]
+                                    self._emission_sig[base_name][row, col] = sel_sol[1]
 
             # Calculate SNR information
             snr_info = self.calculate_snr()
@@ -2291,6 +2508,13 @@ class MUSECube:
                     "signal": snr_info.get("signal", None),
                     "noise": snr_info.get("noise", None),
                     "snr": snr_info.get("snr", None),
+                    "emission_components": {
+                        "n_components": ngas_comp,
+                        "component_kinematics": {"velocity": self._component_velocity, "sigma": self._component_sigma},
+                        "flux_components": self._emission_flux_components,
+                        "bin_component_kinematics": {"velocity": self._bin_component_velocity, "sigma": self._bin_component_sigma},
+                        "bin_flux_components": self._bin_emission_flux_components,
+                    },
                 }
             else:
                 result_dict = {
@@ -2304,6 +2528,13 @@ class MUSECube:
                     "bin_emission_sig": self._bin_emission_sig,
                     "velocity_field": self._velocity_field,
                     "dispersion_field": self._dispersion_field,
+                    "emission_components": {
+                        "n_components": ngas_comp,
+                        "component_kinematics": {"velocity": self._component_velocity, "sigma": self._component_sigma},
+                        "flux_components": self._emission_flux_components,
+                        "bin_component_kinematics": {"velocity": self._bin_component_velocity, "sigma": self._bin_component_sigma},
+                        "bin_flux_components": self._bin_emission_flux_components,
+                    },
                 }
 
             # Restore log level

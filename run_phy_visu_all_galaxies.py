@@ -57,78 +57,80 @@ def load_tmb03_model():
         return None
 
 def load_galaxy_data(galaxy_name):
-    """Load galaxy data from ISAPC output files"""
+    """Load galaxy data from ISAPC output files.
+
+    Accepts either a bare galaxy name (e.g., VCC1588) or a name that already
+    ends with _stack/_obstack. Builds paths accordingly.
+    """
     try:
-        base_path = f'./output/{galaxy_name}_stack/Data'
-        
-        # Check which files exist
-        p2p_file = f'{base_path}/{galaxy_name}_stack_P2P_results.npz'
-        rdb_file = f'{base_path}/{galaxy_name}_stack_RDB_results.npz'
-        vnb_file = f'{base_path}/{galaxy_name}_stack_VNB_results.npz'
-        
-        data = {'galaxy_name': galaxy_name}
-        
-        # Load P2P data (required)
+        # Determine base stem and path
+        if galaxy_name.endswith(("_stack", "_obstack", "_stacked")):
+            base_stem = galaxy_name
+        else:
+            base_stem = f"{galaxy_name}_stack"
+        base_path = f"./output/{base_stem}/Data"
+
+        # File paths
+        p2p_file = f"{base_path}/{base_stem}_P2P_results.npz"
+        rdb_file = f"{base_path}/{base_stem}_RDB_results.npz"
+        vnb_file = f"{base_path}/{base_stem}_VNB_results.npz"
+
+        data = {"galaxy_name": galaxy_name}
+
+        # Load P2P data (required for AIP)
         if os.path.exists(p2p_file):
             p2p_data = np.load(p2p_file, allow_pickle=True)
-            
+
             # Extract spectral indices
-            indices = p2p_data['indices'].item()
-            data['Fe5015'] = indices['Fe5015']
-            data['Mgb'] = indices['Mgb']
-            data['Hbeta'] = indices['Hbeta']
-            
+            indices = p2p_data["indices"].item()
+            data["Fe5015"] = indices["Fe5015"]
+            data["Mgb"] = indices["Mgb"]
+            data["Hbeta"] = indices["Hbeta"]
+
             # Extract stellar population
-            stellar_pop = p2p_data['stellar_population'].item()
-            data['age'] = stellar_pop['age']
-            data['metallicity'] = stellar_pop['metallicity']
-            
+            stellar_pop = p2p_data["stellar_population"].item()
+            data["age"] = stellar_pop["age"]
+            data["metallicity"] = stellar_pop["metallicity"]
+
             # Extract stellar kinematics
-            stellar_kin = p2p_data['stellar_kinematics'].item()
-            data['velocity'] = stellar_kin['velocity_field']
-            data['dispersion'] = stellar_kin['dispersion_field']
-            
-            # Check for error data
-            if 'stellar_kinematics_errors' in p2p_data:
-                errors = p2p_data['stellar_kinematics_errors'].item()
-                data['velocity_error'] = errors.get('velocity_error', None)
-                data['dispersion_error'] = errors.get('dispersion_error', None)
-            
-            data['has_p2p'] = True
+            stellar_kin = p2p_data["stellar_kinematics"].item()
+            data["velocity"] = stellar_kin["velocity_field"]
+            data["dispersion"] = stellar_kin["dispersion_field"]
+
+            # Optional errors
+            if "stellar_kinematics_errors" in p2p_data:
+                errors = p2p_data["stellar_kinematics_errors"].item()
+                data["velocity_error"] = errors.get("velocity_error", None)
+                data["dispersion_error"] = errors.get("dispersion_error", None)
+
+            data["has_p2p"] = True
         else:
             print(f"⚠️  {galaxy_name}: No P2P data found")
-            data['has_p2p'] = False
+            data["has_p2p"] = False
             return None
-        
+
         # Load RDB data (optional)
         if os.path.exists(rdb_file):
             rdb_data = np.load(rdb_file, allow_pickle=True)
-            
-            binning = rdb_data['binning'].item()
-            distance = rdb_data['distance'].item()
-            
-            data['bin_radii'] = distance['bin_distances']
-            data['effective_radius'] = distance['effective_radius']
-            data['has_rdb'] = True
+            distance = rdb_data["distance"].item()
+            data["bin_radii"] = distance["bin_distances"]
+            data["effective_radius"] = distance["effective_radius"]
+            data["has_rdb"] = True
         else:
-            data['has_rdb'] = False
-        
+            data["has_rdb"] = False
+
         # Load VNB data (optional)
-        if os.path.exists(vnb_file):
-            data['has_vnb'] = True
-        else:
-            data['has_vnb'] = False
-        
+        data["has_vnb"] = os.path.exists(vnb_file)
+
         # Data quality assessment
-        fe5015_valid = np.sum(~np.isnan(data['Fe5015']))
-        mgb_valid = np.sum(~np.isnan(data['Mgb']))
-        hbeta_valid = np.sum(~np.isnan(data['Hbeta']))
-        
-        data['n_valid_pixels'] = min(fe5015_valid, mgb_valid, hbeta_valid)
-        data['data_shape'] = data['Fe5015'].shape
-        
+        fe5015_valid = np.sum(~np.isnan(data["Fe5015"]))
+        mgb_valid = np.sum(~np.isnan(data["Mgb"]))
+        hbeta_valid = np.sum(~np.isnan(data["Hbeta"]))
+        data["n_valid_pixels"] = int(min(fe5015_valid, mgb_valid, hbeta_valid))
+        data["data_shape"] = data["Fe5015"].shape
+
         return data
-        
+
     except Exception as e:
         print(f"❌ Error loading {galaxy_name}: {e}")
         return None

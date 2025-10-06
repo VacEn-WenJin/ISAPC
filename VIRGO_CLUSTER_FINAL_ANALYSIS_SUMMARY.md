@@ -6,7 +6,7 @@ This document summarizes the final, definitive analysis of α/Fe abundance gradi
 ## Methodology
 - **Analysis Framework**: Enhanced radial analysis with both RDB (Radial Distance Binning) and VNB (Variable Number Binning) methods
 - **Gradient Units**: d[α/Fe]/d(R/Re) in dex per effective radius
-- **Data Source**: MUSE IFU spectroscopic observations from ISAPC pipeline
+- **Data Source**: IFU spectroscopic observations from the ISAPC pipeline
 - **Coordinate System**: Real galaxy positions from FITS headers
 - **Statistical Approach**: Weighted least squares fitting with proper error propagation
 

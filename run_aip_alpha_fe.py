@@ -29,7 +29,13 @@ from alpha_gradient_analysis import (
 
 
 def run_aip_for_galaxy(galaxy: str, workspace: Path = Path('.')) -> Optional[dict]:
-    out_dir = workspace / 'output' / f'{galaxy}_stack'
+    # Determine output directory and results stem robustly
+    if galaxy.endswith(('_stack', '_obstack', '_stacked')):
+        out_dir = workspace / 'output' / galaxy
+        results_stem = galaxy
+    else:
+        out_dir = workspace / 'output' / f'{galaxy}_stack'
+        results_stem = f'{galaxy}_stack'
     data_dir = out_dir / 'Data'
     plots_dir = out_dir / 'Plots'
     plots_dir.mkdir(parents=True, exist_ok=True)
@@ -69,7 +75,7 @@ def run_aip_for_galaxy(galaxy: str, workspace: Path = Path('.')) -> Optional[dic
     plt.close(fig)
 
     # Load RDB for radial bins
-    rdb_path = data_dir / f'{galaxy}_stack_RDB_results.npz'
+    rdb_path = data_dir / f'{results_stem}_RDB_results.npz'
     if not rdb_path.exists():
         print('RDB results not found; radial gradient will be limited.')
         return None
@@ -91,7 +97,7 @@ def run_aip_for_galaxy(galaxy: str, workspace: Path = Path('.')) -> Optional[dic
         return None
 
     # Fit gradients (RDB, 1.5Re, 2.0Re; VNB optional if available)
-    vnb_path = data_dir / f'{galaxy}_stack_VNB_results.npz'
+    vnb_path = data_dir / f'{results_stem}_VNB_results.npz'
     vnb_data = dict(np.load(vnb_path, allow_pickle=True)) if vnb_path.exists() else None
     gradient_results = fit_alpha_fe_gradient_multi_method(radial_profile,
                                                           vnb_profile=None)

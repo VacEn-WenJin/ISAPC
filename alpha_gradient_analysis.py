@@ -23,6 +23,7 @@ from matplotlib.patches import Circle
 from scipy import stats
 from scipy.optimize import curve_fit
 import os
+import glob
 import sys
 from astropy.io import fits
 import logging
@@ -40,7 +41,42 @@ def setup_logging():
 
 logger = setup_logging()
 
-def load_galaxy_alpha_fe_data(galaxy_name, analysis_dir="alpha_fe_analysis_results/analysis_20250720_091707"):
+def get_latest_analysis_dir(base_dir: str = "alpha_fe_analysis_results") -> str:
+    """
+    Discover the latest alpha/Fe analysis directory.
+
+    Priority:
+    1) Environment variable ALPHA_FE_ANALYSIS_DIR if it exists and is valid
+    2) Newest folder matching base_dir/analysis_*/
+
+    Returns empty string if nothing is found.
+    """
+    # 1) Env override
+    env_dir = os.getenv("ALPHA_FE_ANALYSIS_DIR", "").strip()
+    if env_dir:
+        if os.path.isdir(env_dir):
+            return env_dir
+        logger.warning(f"ALPHA_FE_ANALYSIS_DIR set but not a directory: {env_dir}")
+
+    # 2) Auto-discover by globbing
+    pattern = os.path.join(base_dir, "analysis_*")
+    candidates = glob.glob(pattern)
+    candidates = [d for d in candidates if os.path.isdir(d)]
+    if not candidates:
+        logger.error(f"No analysis directories found under {base_dir}")
+        return ""
+
+    # Sort by mtime (fallback lexicographic)
+    try:
+        candidates.sort(key=lambda d: os.path.getmtime(d), reverse=True)
+    except Exception:
+        candidates.sort(reverse=True)
+
+    latest = candidates[0]
+    logger.info(f"Using latest analysis dir: {latest}")
+    return latest
+
+def load_galaxy_alpha_fe_data(galaxy_name, analysis_dir: str = None):
     """
     Load 2D alpha/Fe data for a galaxy
     
@@ -57,7 +93,13 @@ def load_galaxy_alpha_fe_data(galaxy_name, analysis_dir="alpha_fe_analysis_resul
         Dictionary containing alpha/Fe data and metadata
     """
     try:
-        npz_path = f"{analysis_dir}/{galaxy_name}/{galaxy_name}_alpha_fe_analysis.npz"
+        # Resolve analysis_dir dynamically if not provided
+        analysis_root = analysis_dir or get_latest_analysis_dir()
+        if not analysis_root:
+            logger.error("Cannot resolve analysis directory for alpha/Fe data")
+            return None
+
+        npz_path = f"{analysis_root}/{galaxy_name}/{galaxy_name}_alpha_fe_analysis.npz"
         
         if not os.path.exists(npz_path):
             logger.error(f"Alpha/Fe data not found for {galaxy_name}: {npz_path}")
@@ -525,15 +567,58 @@ def calculate_vnb_alpha_fe_profile(alpha_fe_data, vnb_data, min_pixels_per_bin=5
     try:
         alpha_fe_2d = alpha_fe_data['alpha_fe_2d']
         alpha_fe_errors = alpha_fe_data['alpha_fe_errors']
-        bin_distances = vnb_data['bin_distances']
-        effective_radius = vnb_data['effective_radius']
-        
-        # Get binning information from VNB data
-        binning_info = vnb_data.get('binning_info')
-        if binning_info is None:
-            logger.warning("No binning info found in VNB data, cannot calculate profile")
+
+        # Accept both pre-processed dicts (with flat keys) and raw NPZ dicts
+        bin_distances = None
+        effective_radius = None
+        target_snr = None
+
+        # 1) Direct keys (already processed form)
+        if isinstance(vnb_data, dict) and 'bin_distances' in vnb_data:
+            bin_distances = vnb_data.get('bin_distances')
+            effective_radius = vnb_data.get('effective_radius')
+            target_snr = vnb_data.get('target_snr')
+
+        # 2) Raw NPZ style with nested 'distance' and 'binning'
+        if (bin_distances is None or effective_radius is None) and isinstance(vnb_data, dict):
+            dist = vnb_data.get('distance')
+            if dist is not None:
+                try:
+                    # numpy object arrays require .item() to get dict
+                    if hasattr(dist, 'item'):
+                        dist = dist.item()
+                except Exception:
+                    pass
+                if isinstance(dist, dict):
+                    bin_distances = dist.get('bin_distances', bin_distances)
+                    effective_radius = dist.get('effective_radius', effective_radius)
+
+        # Binning info (for bin_num)
+        binning_info = None
+        if isinstance(vnb_data, dict):
+            binning_info = vnb_data.get('binning_info')
+            if binning_info is None:
+                binning_info = vnb_data.get('binning')
+                if binning_info is not None and hasattr(binning_info, 'item'):
+                    try:
+                        binning_info = binning_info.item()
+                    except Exception:
+                        pass
+
+        if not isinstance(binning_info, dict) or 'bin_num' not in binning_info:
+            logger.warning("No valid binning info with 'bin_num' found in VNB data; cannot calculate profile")
             return None
-        
+
+        # Target SNR if available
+        if target_snr is None and isinstance(binning_info, dict):
+            target_snr = binning_info.get('target_snr', 'N/A')
+
+        if bin_distances is None or effective_radius is None:
+            logger.warning("VNB data missing 'bin_distances' or 'effective_radius'; cannot calculate profile")
+            return None
+
+        bin_distances = np.asarray(bin_distances)
+        effective_radius = float(effective_radius)
         bin_num = binning_info['bin_num']
         
         # Get unique bin numbers (excluding invalid/unassigned pixels)
@@ -551,7 +636,7 @@ def calculate_vnb_alpha_fe_profile(alpha_fe_data, vnb_data, min_pixels_per_bin=5
             'alpha_fe_error': np.full(n_bins, np.nan),
             'n_pixels': np.zeros(n_bins, dtype=int),
             'valid_bins': [],
-            'target_snr': vnb_data.get('target_snr', 'N/A'),
+            'target_snr': target_snr if target_snr is not None else 'N/A',
             'binning_method': 'VNB'
         }
         
@@ -1155,8 +1240,11 @@ def main():
     logger.info("Enhanced with velocity analysis and proper redshift correction")
     
     # List of galaxies to analyze
-    analysis_dir = "alpha_fe_analysis_results/analysis_20250720_091707"
-    galaxy_dirs = [d for d in os.listdir(analysis_dir) 
+    analysis_dir = get_latest_analysis_dir()
+    if not analysis_dir:
+        logger.error("No analysis directory available; run alpha/Fe analysis first.")
+        return []
+    galaxy_dirs = [d for d in os.listdir(analysis_dir)
                    if os.path.isdir(os.path.join(analysis_dir, d)) and d.startswith('VCC')]
     
     logger.info(f"Found {len(galaxy_dirs)} galaxies to analyze: {galaxy_dirs}")

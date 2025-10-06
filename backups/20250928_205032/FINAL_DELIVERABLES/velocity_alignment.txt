@@ -1,0 +1,23 @@
+Galaxy     Frame   Rest? z_sys    med_dv   std      Status
+VCC0308    rest    True   0.00550   -985.1    238.0 FLAG
+VCC0667    rest    True   0.00480    635.3    985.9 FLAG
+VCC0688    rest    True   0.00380     43.1    668.2 OK
+VCC0990    rest    True   0.00580     46.4      0.0 OK
+VCC1049    rest    True   0.00210   -739.2    356.9 FLAG
+VCC1146    rest    True   0.00230   1332.9      0.0 FLAG
+VCC1193    rest    True   0.00250     44.3    250.4 OK
+VCC1368    rest    True   0.00350     49.5    312.6 OK
+VCC1410    rest    True   0.00540    431.0      0.0 FLAG
+VCC1431    rest    True   0.00500   -804.4      0.0 FLAG
+VCC1486    rest    True   0.00040  -1487.2   1404.1 FLAG
+VCC1499    rest    True   0.00420      nan      nan OK
+VCC1549    rest    True   0.00460     50.2    464.2 OK
+VCC1588    rest    True   0.00420     50.4      0.0 OK
+VCC1695    rest    True   0.00580     46.5    175.8 OK
+VCC1811    rest    True   0.00230  -1487.3    511.6 FLAG
+VCC1890    rest    True   0.00400   -572.4     86.9 FLAG
+VCC1902    rest    True   0.00380     47.6      0.0 OK
+VCC1910    rest    True   0.00070    924.5    724.1 FLAG
+VCC1949    rest    True   0.00580   -971.6    212.3 FLAG
+
+Galaxies exceeding |Δv|>80.0 km/s: VCC0308, VCC0667, VCC1049, VCC1146, VCC1410, VCC1431, VCC1486, VCC1811, VCC1890, VCC1910, VCC1949

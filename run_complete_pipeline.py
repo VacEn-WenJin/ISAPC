@@ -27,6 +27,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Determine python executable to use (avoid relying on conda in detached shells)
+PYTHON_CMD = os.environ.get("PYTHON_CMD", sys.executable)
+
 # Galaxy list: build from central catalog so z/type are consistent everywhere
 GALAXIES = [
     {"name": name, "redshift": get_redshift(name), "type": get_type(name)}
@@ -35,9 +38,10 @@ GALAXIES = [
 
 # Pipeline configuration
 PIPELINE_CONFIG = {
-    "template_file": "data/templates/spectra_emiles_9.0.npz",
+    # Use existing template and data locations in this repo
+    "template_file": "templates/spectra_emiles_9.0.npz",
     "output_dir": "output",
-    "data_dir": "data/MUSE",
+    "data_dir": "data/IFU",
     "n_workers": 4,  # Parallel processing
     "modes": ["P2P", "VNB", "RDB"],  # Analysis modes
     "target_snr": 20.0,
@@ -82,9 +86,9 @@ def run_single_galaxy(galaxy_info):
         return {"galaxy": galaxy_name, "status": "failed", "error": "Template file not found"}
     
     try:
-        # Build command for main.py using conda environment
+        # Build command for main.py using current Python interpreter (robust in screen)
         cmd = [
-            "conda", "run", "-n", "Siqi_AstPy_312", "python", "main.py",
+            PYTHON_CMD, "main.py",
             str(data_file),
             "-z", str(redshift),
             "-t", str(template_file),
@@ -107,7 +111,8 @@ def run_single_galaxy(galaxy_info):
         if PIPELINE_CONFIG["cvt"]:
             cmd.append("--cvt")
         if PIPELINE_CONFIG["physical_radius"]:
-            cmd.append("--physical_radius")
+            # main.py expects --physical-radius (dash), not underscore
+            cmd.append("--physical-radius")
 
         # Environment tuning to avoid BLAS oversubscription
         env = os.environ.copy()
@@ -169,8 +174,8 @@ def run_physics_visualization():
     logger.info("Starting physics visualization and alpha/Fe analysis...")
     
     try:
-        # Run Phy_Visu.py using conda environment
-        cmd = ["conda", "run", "-n", "Siqi_AstPy_312", "python", "Phy_Visu.py"]
+        # Run Phy_Visu.py using current Python interpreter
+        cmd = [PYTHON_CMD, "Phy_Visu.py"]
         result = subprocess.run(
             cmd,
             cwd=Path(__file__).parent,
@@ -273,7 +278,7 @@ def main():
                     try:
                         logger.info(f"Running AIP alpha/Fe for {galaxy['name']}…")
                         aip_res = subprocess.run(
-                            ["python", "run_aip_alpha_fe.py", "--galaxy", galaxy['name']],
+                            [PYTHON_CMD, "run_aip_alpha_fe.py", "--galaxy", galaxy['name']],
                             cwd=Path(__file__).parent,
                             capture_output=True,
                             text=True,
@@ -305,6 +310,44 @@ def main():
         ], cwd=Path(__file__).parent, check=False)
     except Exception:
         logger.warning("Deliverables collection step skipped due to error.")
+
+    # Collect normalized RDB plots (first 3 bins + overlays) into a flat folder
+    try:
+        logger.info("Collecting RDB normalized plots …")
+        subprocess.run([
+            PYTHON_CMD, "tools/collect_rdb_plots.py", "--dest", "combined_rdb_plots", "--flat"
+        ], cwd=Path(__file__).parent, check=False)
+        # Optionally mirror into FINAL_DELIVERABLES
+        (Path("FINAL_DELIVERABLES")/"rdb_plots").mkdir(parents=True, exist_ok=True)
+        subprocess.run([
+            "bash", "-lc", "cp -r combined_rdb_plots/* FINAL_DELIVERABLES/rdb_plots/ 2>/dev/null || true"
+        ], cwd=Path(__file__).parent, check=False)
+    except Exception as e:
+        logger.warning(f"RDB plot collection failed: {e}")
+
+    # Rebuild combined alpha/Fe gradient summary and copy to FINAL_DELIVERABLES
+    try:
+        logger.info("Rebuilding combined alpha/Fe gradient summary …")
+        subprocess.run([PYTHON_CMD, "alpha_gradient_dual/build_combined_gradient_summary.py"],
+                       cwd=Path(__file__).parent, check=False)
+        (Path("FINAL_DELIVERABLES")/"tables").mkdir(parents=True, exist_ok=True)
+        subprocess.run([
+            "bash", "-lc", "cp -f alpha_gradient_dual/combined_gradient_summary.csv FINAL_DELIVERABLES/tables/ 2>/dev/null || true"
+        ], cwd=Path(__file__).parent, check=False)
+    except Exception as e:
+        logger.warning(f"Combined gradient summary rebuild failed: {e}")
+
+    # Run velocity alignment diagnostic and save to FINAL_DELIVERABLES
+    try:
+        logger.info("Running velocity alignment diagnostic …")
+        with (Path("FINAL_DELIVERABLES")/"velocity_alignment.txt").open('w') as f:
+            f.write("Velocity Alignment (threshold=80 km/s)\n")
+        subprocess.run([PYTHON_CMD, "tools/check_velocity_alignment.py", "--threshold", "80"],
+                       cwd=Path(__file__).parent, check=False,
+                       stdout=open(Path("FINAL_DELIVERABLES")/"velocity_alignment.txt", 'a'),
+                       stderr=subprocess.STDOUT)
+    except Exception as e:
+        logger.warning(f"Velocity alignment diagnostic failed: {e}")
 
     # Create summary report
     create_summary_report(results)

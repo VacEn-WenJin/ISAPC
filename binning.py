@@ -109,6 +109,12 @@ class RadialBinnedData(BinnedData):
         
     def save(self, filename):
         """Save binned data to file with error support"""
+        # Ensure metadata includes rest-frame bookkeeping keys (non-destructive)
+        if self.metadata is not None:
+            self.metadata.setdefault('wave_frame', 'unknown')            # 'rest' or 'observed'
+            self.metadata.setdefault('systemic_redshift_used', None)
+            self.metadata.setdefault('rest_frame_applied', False)       # True if systemic shift removed
+            self.metadata.setdefault('rest_frame_classification', None) # 'rest','observed','ambiguous'
         save_dict = {
             'bin_num': self.bin_num,
             'bin_indices': np.array(self.bin_indices, dtype=object),  # Force object dtype for inhomogeneous arrays
@@ -612,7 +618,7 @@ def calculate_radial_bins_re_based(x, y, center_x=None, center_y=None,
     else:
         r_ellipse = r_galaxy
     
-    # Create Re-based bins
+    # Create Re-based bins (default template)
     # Use finer sampling near center, coarser at large radii
     bin_edges_re = np.array([0.0, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 2.5, 3.0])
     
@@ -657,6 +663,129 @@ def calculate_radial_bins_re_based(x, y, center_x=None, center_y=None,
     logger.info(f"Bin edges (Re): {bin_edges_re}")
     logger.info(f"Bin edges (arcsec): {bin_edges_arcsec}")
     
+    return bin_num, bin_edges_arcsec, bin_radii
+
+
+def calculate_flux_equalized_bins(
+    x, y, flux_2d, center_x=None, center_y=None, pa=0.0, ellipticity=0.0,
+    effective_radius=1.0, r_galaxy=None, max_radius_scale=3.0,
+    n_bins=10, n_inner_equalize=3, bin2_bias=1.0
+):
+    """
+    Calculate radial bins where the first n_inner_equalize annuli have equal total flux.
+    Remaining bins follow default Re-based spacing.
+
+    Inputs
+    - x, y: pixel coords (1D arrays matching flux_2d.ravel order: y*nx + x)
+    - flux_2d: 2D flux image used for cumulative flux
+    - center_x/y, pa, ellipticity: ellipse geometry
+    - effective_radius: Re in arcsec
+    - r_galaxy: optional precomputed elliptical radius map (2D) in arcsec
+    - max_radius_scale: outer limit in units of Re
+    - n_bins: total bins desired
+    - n_inner_equalize: number of inner bins to equalize by flux (default 3)
+    - bin2_bias: multiply the 2nd bin flux quota by this factor (<1 makes it smaller)
+
+    Returns (bin_num, bin_edges_arcsec, bin_radii)
+    """
+    import numpy as np
+    # Prepare radii map in arcsec
+    if r_galaxy is None:
+        # Compute elliptical radius in pixels from geometry
+        if center_x is None:
+            center_x = np.mean(x)
+        if center_y is None:
+            center_y = np.mean(y)
+        pa_rad = np.radians(pa)
+        dx = x - center_x
+        dy = y - center_y
+        x_rot = dx * np.cos(pa_rad) + dy * np.sin(pa_rad)
+        y_rot = -dx * np.sin(pa_rad) + dy * np.cos(pa_rad)
+        b_over_a = 1 - float(ellipticity)
+        r_pix = np.sqrt(x_rot**2 + (y_rot / max(b_over_a, 1e-3))**2)
+        # Try to infer pixel scale from flux_2d shape and x/y indexing; assume isotropic if unknown
+        # We don't have direct pixel scale here, so we work in Re units via normalization below.
+        r_map = r_pix
+    else:
+        r_map = np.asarray(r_galaxy)
+
+    # Build 1D vectors aligned to flux_2d.ravel order
+    ny, nx = flux_2d.shape
+    # If x,y were provided as meshgrid.ravel order, we assume alignment. Otherwise, rebuild consistent vectors.
+    if x.size != nx * ny or y.size != nx * ny:
+        yy, xx = np.mgrid[0:ny, 0:nx]
+        x = xx.ravel(); y = yy.ravel()
+    r_vec = r_map.ravel() if r_map.ndim == 2 else r_map
+    f_vec = np.asarray(flux_2d, dtype=float).ravel()
+
+    # Clip to valid outer radius
+    r_max_arcsec = float(max_radius_scale) * float(effective_radius)
+    valid = np.isfinite(f_vec) & np.isfinite(r_vec) & (r_vec >= 0)
+    rv = r_vec[valid]
+    fv = f_vec[valid]
+    sel = rv <= r_max_arcsec if np.nanmax(rv) > 10 else np.ones_like(rv, dtype=bool)
+    rv = rv[sel]; fv = fv[sel]
+
+    # Sort by radius and compute cumulative flux
+    order = np.argsort(rv)
+    rv = rv[order]; fv = fv[order]
+    cflux = np.cumsum(np.nan_to_num(fv, nan=0.0))
+    total = cflux[-1] if cflux.size else 0.0
+    if total <= 0:
+        # Fallback: default Re-based bins
+        return calculate_radial_bins_re_based(x, y, center_x, center_y, pa, ellipticity,
+                                              effective_radius, r_galaxy, max_radius_scale, n_bins)
+
+    # Determine quotas for inner bins
+    n_inner = int(max(1, min(n_inner_equalize, n_bins)))
+    base_quota = total / float(n_inner)
+    quotas = [base_quota]
+    if n_inner >= 2:
+        quotas.append(base_quota * float(bin2_bias))
+    for _ in range(2, n_inner):
+        quotas.append(base_quota)
+
+    # Find radii where cumulative flux reaches each quota increment
+    edges = [0.0]
+    running = 0.0
+    for q in quotas:
+        target = running + q
+        idx = int(np.searchsorted(cflux, target, side='left'))
+        if idx >= rv.size:
+            r_edge = rv[-1]
+        else:
+            r_edge = float(rv[idx])
+        # Ensure monotonic and within r_max_arcsec
+        r_edge = max(edges[-1] + 1e-6, min(r_edge, r_max_arcsec))
+        edges.append(r_edge)
+        running = target
+
+    # If we still have bins to fill, append default Re-based edges from last edge to outer limit
+    remaining = n_bins - n_inner
+    if remaining > 0:
+        last = edges[-1]
+        outer = r_max_arcsec
+        # Create remaining edges uniformly in Re units between last and outer
+        rem_edges = np.linspace(last, outer, remaining + 1)[1:]
+        edges.extend(list(rem_edges))
+
+    bin_edges_arcsec = np.array(edges, dtype=float)
+    # Digitize pixels into bins based on r_vec
+    full_r = r_map.ravel() if r_map.ndim == 2 else r_map
+    bin_num = np.digitize(full_r, bin_edges_arcsec) - 1
+    bin_num[bin_num < 0] = 0
+    bin_num[bin_num >= len(bin_edges_arcsec) - 1] = len(bin_edges_arcsec) - 2
+
+    # Mean radius per bin
+    n_actual = len(bin_edges_arcsec) - 1
+    bin_radii = np.zeros(n_actual)
+    for i in range(n_actual):
+        mask = (bin_num == i)
+        if np.any(mask):
+            bin_radii[i] = float(np.nanmean(full_r[mask]))
+        else:
+            bin_radii[i] = 0.5 * (bin_edges_arcsec[i] + bin_edges_arcsec[i+1])
+
     return bin_num, bin_edges_arcsec, bin_radii
 
 

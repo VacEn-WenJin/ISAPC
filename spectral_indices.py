@@ -140,6 +140,7 @@ class LineIndexCalculator:
         velocity_error=5.0,
         continuum_mode="auto",
         show_warnings=True,
+        apply_velocity_shift: bool = False,
     ):
         """
         Initialize the absorption line index calculator with enhanced error support
@@ -184,13 +185,19 @@ class LineIndexCalculator:
         # Use stellar velocity for gas if gas velocity not provided
         self.gas_velocity = (
             gas_velocity_correction
-            if gas_velocity_correction is not None
+            if gas_velocity_correction is not None and gas_velocity_correction != 0
             else velocity_correction
         )
         self.continuum_mode = continuum_mode
 
         # Create copies and ensure finite values
-        self.wave = self._apply_velocity_correction(wave, self.velocity)
+        # Avoid double shifting: by default do NOT apply per-bin velocity shift to wavelength
+        # since MUSE binned spectra are commonly stored in rest-frame already.
+        self.wave = (
+            self._apply_velocity_correction(wave, self.velocity)
+            if apply_velocity_shift
+            else np.array(wave, copy=True)
+        )
         self.flux = np.array(flux, copy=True)
 
         # Replace any NaN or Inf values with zeros
@@ -200,6 +207,14 @@ class LineIndexCalculator:
 
         self.fit_wave = fit_wave
         self.fit_flux = fit_flux
+        # Align fit_flux to self.wave grid early to avoid downstream broadcasting issues
+        try:
+            if self.fit_wave is not None and not np.array_equal(self.fit_wave, self.wave):
+                from utils.calc import spectres as _spectres
+                self.fit_flux = _spectres(self.wave, self.fit_wave, self.fit_flux)
+                self.fit_wave = self.wave
+        except Exception as _e:
+            self._warn(f"Could not resample fit_flux to wave grid: {_e}")
 
         # Handle NaNs in fitted flux
         if np.any(~np.isfinite(self.fit_flux)):
@@ -248,8 +263,24 @@ class LineIndexCalculator:
         # Process emission lines - now with separate gas velocity
         if em_wave is not None and em_flux_list is not None:
             # Apply gas velocity correction to emission lines
-            self.em_wave = self._apply_velocity_correction(em_wave, self.gas_velocity)
-            self.em_flux_list = em_flux_list
+            try:
+                self.em_wave = self._apply_velocity_correction(em_wave, self.gas_velocity)
+            except Exception:
+                self.em_wave = np.array(em_wave)
+            # Ensure emission flux is 1-D aligned with wavelength dimension
+            try:
+                em_arr = np.array(em_flux_list)
+                if em_arr.ndim > 1:
+                    # Prefer last axis if it matches wavelength length; otherwise squeeze
+                    if em_arr.shape[0] == len(self.em_wave):
+                        em_arr = em_arr[:, 0]
+                    elif em_arr.shape[-1] == len(self.em_wave):
+                        em_arr = em_arr[..., 0]
+                    else:
+                        em_arr = np.squeeze(em_arr)
+                self.em_flux_list = em_arr
+            except Exception:
+                self.em_flux_list = np.array(em_flux_list)
 
             # Handle NaNs in emission line flux
             if np.any(~np.isfinite(self.em_flux_list)):
@@ -339,6 +370,19 @@ class LineIndexCalculator:
         # Resample emission line spectrum to the original wavelength grid
         try:
             em_flux_resampled = spectres(self.wave, self.em_wave, self.em_flux_list)
+            # Ensure 1D emission array aligned with wavelength
+            try:
+                em_flux_resampled = np.array(em_flux_resampled)
+                if em_flux_resampled.ndim > 1:
+                    if em_flux_resampled.shape[0] == len(self.wave):
+                        em_flux_resampled = np.nanmean(em_flux_resampled, axis=1)
+                    else:
+                        em_flux_resampled = np.squeeze(em_flux_resampled)
+                if em_flux_resampled.shape[0] != len(self.wave):
+                    raise ValueError("Resampled emission shape mismatch")
+            except Exception:
+                # Fallback to zeros if cannot coerce properly
+                em_flux_resampled = np.zeros_like(self.wave)
 
             # Verify the result is valid before subtraction
             if np.any(~np.isfinite(em_flux_resampled)):
@@ -353,6 +397,11 @@ class LineIndexCalculator:
             # Also resample emission error if available
             if hasattr(self, 'em_error') and self.em_error is not None:
                 em_error_resampled = spectres(self.wave, self.em_wave, self.em_error)
+                if isinstance(em_error_resampled, np.ndarray) and em_error_resampled.ndim > 1:
+                    if em_error_resampled.shape[0] == len(self.wave):
+                        em_error_resampled = np.nanmean(em_error_resampled, axis=1)
+                    else:
+                        em_error_resampled = np.squeeze(em_error_resampled)
                 # Add emission error in quadrature
                 self.error = np.sqrt(self.error**2 + em_error_resampled**2)
                 
@@ -1010,7 +1059,8 @@ class LineIndexCalculator:
         return results
 
     def plot_all_lines(self, mode=None, number=None, save_path=None, show_index=False,
-                      show_errors=False):
+                      show_errors=False, save_normalized: bool = False, normalized_suffix: str = "_norm",
+                      normalized_smoothing: int = 0):
         """
         Plot all spectral lines in a complete figure with error visualization
 
@@ -1031,6 +1081,7 @@ class LineIndexCalculator:
         --------
         fig, axes : Figure and Axes objects for further customization
         """
+
         # Validate mode and number parameters
         if mode is not None and number is not None:
             mode_title = f"{mode}{number}" if mode is not None else None
@@ -1077,6 +1128,14 @@ class LineIndexCalculator:
         if hasattr(self, "em_flux_list"):
             try:
                 em_flux_resampled = spectres(self.wave, self.em_wave, self.em_flux_list)
+                em_flux_resampled = np.array(em_flux_resampled)
+                if em_flux_resampled.ndim > 1:
+                    if em_flux_resampled.shape[0] == len(self.wave):
+                        em_flux_resampled = np.nanmean(em_flux_resampled, axis=1)
+                    else:
+                        em_flux_resampled = np.squeeze(em_flux_resampled)
+                if em_flux_resampled.shape[0] != len(self.wave):
+                    raise ValueError("Resampled emission length mismatch in plot_all_lines")
                 flux_range = self.flux[wave_mask] + em_flux_resampled[wave_mask]
             except Exception as e:
                 flux_range = self.flux[wave_mask]
@@ -1120,7 +1179,13 @@ class LineIndexCalculator:
         if hasattr(self, "em_flux_list"):
             try:
                 em_flux_resampled = spectres(self.wave, self.em_wave, self.em_flux_list)
-                if not np.all(np.isfinite(em_flux_resampled)):
+                em_flux_resampled = np.array(em_flux_resampled)
+                if em_flux_resampled.ndim > 1:
+                    if em_flux_resampled.shape[0] == len(self.wave):
+                        em_flux_resampled = np.nanmean(em_flux_resampled, axis=1)
+                    else:
+                        em_flux_resampled = np.squeeze(em_flux_resampled)
+                if em_flux_resampled.shape[0] != len(self.wave) or not np.all(np.isfinite(em_flux_resampled)):
                     em_flux_resampled = np.zeros_like(self.wave)
                 ax1.plot(
                     self.wave,
@@ -1618,6 +1683,152 @@ class LineIndexCalculator:
                 # Save figure
                 fig.savefig(filepath, format="pdf", bbox_inches="tight")
                 print(f"Figure saved as: {filepath}")
+                
+                # Optionally also create a normalized-only figure using index-based pseudo-continuum
+                if save_normalized:
+                    try:
+                        # Defer import to avoid cycles
+                        from visualization import compute_index_based_continuum, safe_tight_layout as _safe_tl
+                        # Ensure fit spectrum is on the same grid
+                        fit_on_wave = self.fit_flux
+                        if hasattr(self, "fit_wave") and self.fit_wave is not None and not np.array_equal(self.fit_wave, self.wave):
+                            try:
+                                fit_on_wave = spectres(self.wave, self.fit_wave, self.fit_flux)
+                            except Exception:
+                                fit_on_wave = self.fit_flux
+
+                        index_names = list(all_windows.keys())
+                        continuum = compute_index_based_continuum(self.wave, fit_on_wave, index_names)
+                        with np.errstate(invalid="ignore", divide="ignore"):
+                            norm_flux_obs = self.flux / continuum
+                            norm_flux_fit = fit_on_wave / continuum
+
+                        # Optional light smoothing for visualization only (boxcar)
+                        if isinstance(normalized_smoothing, int) and normalized_smoothing > 1:
+                            try:
+                                k = int(normalized_smoothing)
+                                k = k if k % 2 == 1 else k + 1  # enforce odd kernel
+                                kernel = np.ones(k, dtype=float) / k
+                                norm_flux_obs = np.convolve(norm_flux_obs, kernel, mode="same")
+                                norm_flux_fit = np.convolve(norm_flux_fit, kernel, mode="same")
+                            except Exception:
+                                pass
+
+                        figN = plt.figure(figsize=(12, 5))
+                        axN = figN.add_subplot(111)
+                        # SAURON-like color convention for clarity
+                        axN.plot(self.wave, norm_flux_obs, color="tab:red", lw=0.9, label="Observed (norm)")
+                        axN.plot(self.wave, norm_flux_fit, color="0.3", lw=0.9, ls="--", alpha=0.8, label="Template (norm)")
+                        axN.axhline(1.0, color="0.6", lw=0.8, alpha=0.7, label="Continuum = 1")
+
+                        # Determine robust y-limits and baseline for label placement
+                        finiteN = np.isfinite(norm_flux_obs)
+                        if np.any(finiteN):
+                            loN, hiN = np.nanpercentile(norm_flux_obs[finiteN], [1, 99])
+                            if not np.isfinite(loN) or not np.isfinite(hiN) or loN >= hiN:
+                                loN, hiN = 0.5, 1.5
+                        else:
+                            loN, hiN = 0.5, 1.5
+
+                        alpha_win = 0.2
+                        for line_name, windows in all_windows.items():
+                            band_range = windows.get("band", windows.get("line", None))
+                            if band_range is None:
+                                continue
+                            axN.axvspan(windows["blue"][0], windows["blue"][1], alpha=alpha_win, color="tab:blue")
+                            axN.axvspan(band_range[0], band_range[1], alpha=alpha_win, color="tab:green")
+                            axN.axvspan(windows["red"][0], windows["red"][1], alpha=alpha_win, color="tab:red")
+                            # Place label near bottom using robust baseline
+                            yN = loN
+                            try:
+                                if not np.isfinite(yN):
+                                    yN = 0.9
+                            except Exception:
+                                yN = 0.9
+                            axN.text(np.mean(band_range), yN, line_name, ha="center", va="top",
+                                     bbox=dict(facecolor="white", alpha=0.7, edgecolor="none"), fontsize="x-small")
+
+                        axN.set_xlim(min_wave, max_wave)
+                        if np.any(finiteN):
+                            lo, hi = loN, hiN
+                            pad = max(0.05, 0.1 * (hi - lo))
+                            axN.set_ylim(max(0.0, lo - pad), hi + pad)
+                        axN.set_xlabel("Rest-frame Wavelength (Å)")
+                        axN.set_ylabel("Normalized Flux")
+                        axN.legend(loc="upper right")
+                        try:
+                            _safe_tl(figN)
+                        except Exception:
+                            pass
+
+                        norm_path = os.path.join(save_path, f"{mode_title}{normalized_suffix}.png")
+                        figN.savefig(norm_path, dpi=150, bbox_inches="tight")
+                        print(f"Normalized figure saved as: {norm_path}")
+                        plt.close(figN)
+                    except Exception as e:
+                        self._warn(f"Failed to create/save normalized figure for {mode_title}: {e}")
+
+                # SAURON-style figure: observed in red with piecewise green pseudo-continuum over index bands
+                try:
+                    from visualization import compute_index_based_continuum as _build_cont, safe_tight_layout as _safe_tl2
+                    fit_on_wave = self.fit_flux
+                    if hasattr(self, "fit_wave") and self.fit_wave is not None and not np.array_equal(self.fit_wave, self.wave):
+                        try:
+                            fit_on_wave = spectres(self.wave, self.fit_wave, self.fit_flux)
+                        except Exception:
+                            fit_on_wave = self.fit_flux
+                    index_names = list(all_windows.keys())
+                    continuum = _build_cont(self.wave, fit_on_wave, index_names)
+
+                    figS = plt.figure(figsize=(12, 5))
+                    axS = figS.add_subplot(111)
+                    # Observed (emission-reduced) in red
+                    axS.plot(self.wave, self.flux, color="tab:red", lw=1.0, label="Observed")
+                    # Shade index windows and draw green pseudo-continuum segments across band regions
+                    alpha_win = 0.20
+                    for line_name, windows in all_windows.items():
+                        blue = windows.get("blue")
+                        band = windows.get("band", windows.get("line"))
+                        red = windows.get("red")
+                        if not band or not blue or not red:
+                            continue
+                        axS.axvspan(blue[0], blue[1], alpha=alpha_win, color="lightgray")
+                        axS.axvspan(band[0], band[1], alpha=alpha_win, color="silver")
+                        axS.axvspan(red[0], red[1], alpha=alpha_win, color="lightgray")
+                        # Draw pseudo-continuum only over the band region
+                        band_mask = (self.wave >= band[0]) & (self.wave <= band[1])
+                        if np.any(band_mask):
+                            axS.plot(self.wave[band_mask], continuum[band_mask], color="tab:green", lw=1.4)
+                            # Label near bottom of band
+                            try:
+                                xlbl = float(np.nanmean([band[0], band[1]]))
+                                ybase = np.nanpercentile(self.flux[np.isfinite(self.flux)], 2)
+                                axS.text(xlbl, ybase, line_name, ha="center", va="bottom", fontsize="x-small",
+                                         bbox=dict(facecolor="white", alpha=0.6, edgecolor="none"))
+                            except Exception:
+                                pass
+
+                    # Axis limits and labels
+                    finiteS = np.isfinite(self.flux)
+                    if np.any(finiteS):
+                        loS, hiS = np.nanpercentile(self.flux[finiteS], [1, 99])
+                        padS = max(0.05, 0.1 * (hiS - loS))
+                        axS.set_ylim(loS - padS, hiS + padS)
+                    axS.set_xlim(min_wave, max_wave)
+                    axS.set_xlabel("Rest-frame Wavelength (Å)")
+                    axS.set_ylabel("Counts [arb. units]")
+                    axS.legend(loc="upper right", frameon=False)
+                    try:
+                        _safe_tl2(figS)
+                    except Exception:
+                        pass
+                    sauron_path = os.path.join(save_path, f"{mode_title}_sauron.png")
+                    figS.savefig(sauron_path, dpi=150, bbox_inches="tight")
+                    print(f"SAURON-style figure saved as: {sauron_path}")
+                    plt.close(figS)
+                except Exception as e:
+                    self._warn(f"Failed to create SAURON-style figure for {mode_title}: {e}")
+
                 plt.close(fig)
             except Exception as e:
                 self._warn(f"Error saving figure: {str(e)}")

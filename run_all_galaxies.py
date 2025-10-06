@@ -128,7 +128,7 @@ def run_isapc_for_galaxy(galaxy_info):
         "-t", template_file,
         "-o", output_dir,
         "-m", "ALL",  # Run all analysis modes
-        "--error-propagation",  # Enable error propagation
+    # --error-propagation flag removed: error handling configured via existing --error-mode etc.
         "--correlation-length", "3.0",
         "--error-floor", "0.01",
         "--systematic-error", "0.02"

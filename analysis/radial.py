@@ -2222,18 +2222,23 @@ def create_rdb_plots(cube, rdb_results, galaxy_name, plots_dir, args):
                 try:
                     if isinstance(bin_indices, dict):
                         # Process each key-value pair in the dictionary
+                        # Keys like 'bin_indices' or 'pixel_indices' are metadata/nested; skip quietly
+                        known_non_numeric = {"bin_indices", "pixel_indices"}
                         for idx_name, idx_values in bin_indices.items():
+                            if idx_name in known_non_numeric:
+                                logger.debug(f"Skipping non-numeric spectral index entry: {idx_name}")
+                                continue
                             try:
                                 # Skip if not a numeric array
                                 if isinstance(idx_values, (dict, np.lib.npyio.NpzFile)):
-                                    logger.warning(f"Skipping nested dictionary for index {idx_name}")
+                                    logger.debug(f"Skipping nested dictionary for index {idx_name}")
                                     continue
                                     
                                 # Convert to numpy array
                                 try:
                                     idx_array = np.asarray(idx_values, dtype=float)
                                 except (ValueError, TypeError):
-                                    logger.warning(f"Could not convert {idx_name} to numeric array")
+                                    logger.debug(f"Could not convert {idx_name} to numeric array")
                                     continue
                                 
                                 # Create radial profile if array is valid
