@@ -9,6 +9,8 @@ import logging
 import sys
 import traceback
 from pathlib import Path
+import numpy as np
+from utils.concurrency import set_safe_thread_limits, recommend_n_jobs
 
 from analysis.p2p import run_p2p_analysis
 from analysis.radial import run_rdb_analysis
@@ -226,6 +228,17 @@ def setup_parser():
 
     # Analysis options
     parser.add_argument(
+        "--smoke",
+        action="store_true",
+        help="Quick smoke test: process a small central subset of pixels",
+    )
+    parser.add_argument(
+        "--smoke-size",
+        type=int,
+        default=10,
+        help="Square size (pixels per side) for central subset when using --smoke",
+    )
+    parser.add_argument(
         "--no-emission", action="store_true", help="Skip emission line fitting"
     )
     parser.add_argument(
@@ -264,6 +277,24 @@ def setup_parser():
         "--physical-radius",
         action="store_true",
         help="Use flux-based elliptical physical radius for radial binning"
+    )
+    # RDB binning strategy options
+    parser.add_argument(
+        "--rdb-equalize-flux",
+        action="store_true",
+        help="Enable flux-equalized radial bins (equal total flux per bin; inner bins first)"
+    )
+    parser.add_argument(
+        "--rdb-equalize-n-inner",
+        type=int,
+        default=3,
+        help="Number of inner bins to equalize by flux (default: 3)"
+    )
+    parser.add_argument(
+        "--rdb-bin2-bias",
+        type=float,
+        default=1.0,
+        help="Bias factor for the 2nd bin flux quota (<1 makes it a bit smaller; default 1.0)"
     )
     parser.add_argument(
         "--high-snr-mode",
@@ -380,6 +411,13 @@ def main():
     parser = setup_parser()
     args = parser.parse_args()
 
+    # Concurrency: cap BLAS threads to avoid oversubscription; choose sane n_jobs
+    # Only set limits if user hasn't explicitly configured via environment.
+    set_safe_thread_limits(blas_threads=1)
+    if args.n_jobs == -1:
+        # Default to a conservative parallelism level; can be overridden with -j
+        args.n_jobs = recommend_n_jobs(default=8)
+
     # Configure logging level based on verbose/quiet flags
     if args.quiet:
         logging.getLogger().setLevel(logging.WARNING)
@@ -419,6 +457,7 @@ def main():
 
     logger.info(f"Starting ISAPC analysis for {galaxy_name} in mode {args.mode}")
     logger.info(f"Error propagation mode: {args.error_mode}")
+    logger.info(f"Using n_jobs={args.n_jobs} with BLAS threads pinned to 1")
 
     # Import the MUSECube class here to avoid circular imports
     try:
@@ -499,6 +538,25 @@ def main():
         # P2P analysis
         if args.mode in ["P2P", "ALL"]:
             logger.info("Running P2P analysis with error propagation...")
+            # Compute optional smoke subset indices
+            if args.smoke:
+                try:
+                    n_y, n_x = cube._n_y, cube._n_x
+                    cy, cx = n_y // 2, n_x // 2
+                    half = max(1, args.smoke_size // 2)
+                    y0, y1 = max(0, cy - half), min(n_y, cy + half)
+                    x0, x1 = max(0, cx - half), min(n_x, cx + half)
+                    yy, xx = np.indices((n_y, n_x))
+                    mask = (yy >= y0) & (yy < y1) & (xx >= x0) & (xx < x1)
+                    subset_indices = np.where(mask.ravel())[0].tolist()
+                    logger.info(f"Smoke mode enabled: processing {len(subset_indices)} central pixels ({x1-x0}x{y1-y0})")
+                    args.subset_indices = subset_indices
+                except Exception as e:
+                    logger.warning(f"Failed to compute smoke subset; proceeding full. Reason: {e}")
+                    args.subset_indices = None
+            else:
+                args.subset_indices = None
+
             p2p_results = run_p2p_analysis(args, cube, Pmode=True)
 
             # Save results with errors
